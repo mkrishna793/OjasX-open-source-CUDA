@@ -1,4 +1,4 @@
-
+Coming soon the backend building is almost completing new math+c++ hardware complier is in perp the sooner OJASX foundation work complete the project will be completely new a ture openCUDA not just the cuda breaking we are coming with the new innovation where you can build models in your locally hardware where tradtionall it takes a hug gpu memory 
 <h1 align="center">⚡ O J A S X</h1>
 
 <p align="center">
