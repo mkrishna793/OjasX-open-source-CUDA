@@ -1,4 +1,8 @@
-Coming soon the backend building is almost completing new math+c++ hardware complier is in perp the sooner OJASX foundation work complete the project will be completely new a ture openCUDA not just the cuda breaking we are coming with the new innovation where you can build models in your locally hardware where tradtionall it takes a hug gpu memory 
+Coming soon: The backend is almost complete. OjasX is evolving into a new math + C++ hardware compiler.
+
+Once the OjasX foundation work is finished, the project will take a major new direction: a true open alternative to CUDA—not simply a CUDA-compatible layer, but a new compiler stack designed to run and train AI models efficiently on local hardware.
+
+The goal is to make model training and inference possible on consumer GPUs, unified-memory systems, and integrated GPUs that would traditionally require much larger GPU memory.
 <h1 align="center">⚡ O J A S X</h1>
 
 <p align="center">
