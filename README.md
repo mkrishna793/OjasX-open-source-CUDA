@@ -395,26 +395,6 @@ OjasX v0.3.0 is a solid foundation, and we are actively working on the next set 
 - [ ] **Native Kernel Launchers for Linux CUDA / ROCm / SYCL:** Upgrade the generated CUDA, ROCm, and SYCL source templates in `tile_hal.py` into full runtime-compiled execution backends alongside Apple Metal and CPU.
 - [ ] **Automated Mixed-Precision (`BF16` / `FP16`) Grad-Free Hooks:** Add dynamic loss scaling and master-weight accumulation options to `HolonomicGradFreeOptimizer`.
 
-Subspace / Low-Rank or Quantized Backward Input Streaming for 
-𝑑
-𝑊
-2
-dW
-2
-	​
-
-: Compressing that 3,456 MB fc2 input + 1,152 MB fc1 input by 4x–8x during forward will cut another ~3.5 GB of VRAM.
-Mixed-Precision (BF16 / FP16) Grad-Free Hooks: Halving weight and activation storage from 4 bytes to 2 bytes will cut the remaining footprint in half again — bringing that 533.9M workload from 16.43 GB (Standard FP32) 
-→
-→ 9.32 GB (OjasX v0.3.0 FP32) 
-→
-→ ~3.2 GB (OjasX BF16 + compressed input residuals).
-Online Tiled Attention (
-𝑂
-(
-𝑇
-)
-O(T) Memory): Allowing 8K–32K context length training on the same laptop or T4 GPU.
 ---
 
 ## 10. Reproduce All Tests & Benchmarks
