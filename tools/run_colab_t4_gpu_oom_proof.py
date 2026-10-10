@@ -110,6 +110,65 @@ def choose_workload_for_vram(total_vram_gb: float) -> Tuple[int, int, int, int, 
     return dim, hidden, num_layers, vocab_size, batch, seq
 
 
+def run_standard_pytorch_test(
+    dim: int,
+    hidden: int,
+    num_layers: int,
+    vocab_size: int,
+    batch: int,
+    seq: int,
+    device: str,
+    total_vram_mb: float,
+) -> Tuple[bool, str, float, int]:
+    import traceback
+
+    _clean_cuda()
+    std_oom_triggered = False
+    std_oom_message = ""
+    std_peak_mb_before_crash = 0.0
+    total_params = 0
+
+    try:
+        std_model = StandardModelWithLMHead(dim, hidden, num_layers, vocab_size, seed=2026).to(device)
+        total_params = sum(p.numel() for p in std_model.parameters())
+        print(
+            f"  -> Instantiated Standard Model : {total_params:,} FP32 parameters "
+            f"({total_params*4/(1024**2):.1f} MB weights)"
+        )
+        std_opt = torch.optim.AdamW(std_model.parameters(), lr=1e-4)
+
+        torch.manual_seed(99)
+        x = (torch.randn(batch, seq, dim, device=device) * 0.02).requires_grad_(True)
+        targets = torch.randint(0, vocab_size, (batch, seq), device=device)
+
+        for _ in range(1, 3):
+            std_opt.zero_grad()
+            loss = std_model(x, targets)
+            loss.backward()
+            std_opt.step()
+        torch.cuda.synchronize()
+        std_peak_mb_before_crash = torch.cuda.max_memory_allocated() / (1024.0**2)
+        print(f"  -> Standard PyTorch completed at {std_peak_mb_before_crash:.1f} MB peak VRAM.")
+    except torch.cuda.OutOfMemoryError as exc:
+        std_oom_triggered = True
+        std_oom_message = str(exc).splitlines()[0]
+        std_peak_mb_before_crash = torch.cuda.max_memory_allocated() / (1024.0**2)
+        print("  🛑 STANDARD PYTORCH CRASHED WITH REAL CUDA OUT-OF-MEMORY ON THIS GPU!")
+        print(f"     CUDA Driver Error : {std_oom_message}")
+        print(f"     Allocated Before Crash : {std_peak_mb_before_crash:.1f} MB / {total_vram_mb:.0f} MB Total GPU VRAM")
+        if exc.__traceback__ is not None:
+            traceback.clear_frames(exc.__traceback__)
+    finally:
+        std_model = None
+        std_opt = None
+        x = None
+        targets = None
+        loss = None
+        _clean_cuda()
+
+    return std_oom_triggered, std_oom_message, std_peak_mb_before_crash, total_params
+
+
 def main() -> None:
     if not torch.cuda.is_available():
         print("ERROR: CUDA GPU not detected. In Google Colab, select Runtime -> Change runtime type -> T4 GPU.")
@@ -137,41 +196,12 @@ def main() -> None:
     # TEST 1: Standard PyTorch (Expected to exceed T4 15GB VRAM and OOM)
     # -------------------------------------------------------------------------
     print("\n[TEST 1/2] Running Standard PyTorch (`nn.RMSNorm` + `nn.Linear` + Un-chunked `LM Head` + `AdamW`)...")
+    std_oom_triggered, std_oom_message, std_peak_mb_before_crash, _ = run_standard_pytorch_test(
+        dim, hidden, num_layers, vocab_size, batch, seq, device, total_vram_mb
+    )
     _clean_cuda()
-    std_oom_triggered = False
-    std_oom_message = ""
-    std_peak_mb_before_crash = 0.0
-
-    try:
-        std_model = StandardModelWithLMHead(dim, hidden, num_layers, vocab_size, seed=2026).to(device)
-        total_params = sum(p.numel() for p in std_model.parameters())
-        print(f"  -> Instantiated Standard Model : {total_params:,} FP32 parameters ({total_params*4/(1024**2):.1f} MB weights)")
-        std_opt = torch.optim.AdamW(std_model.parameters(), lr=1e-4)
-
-        torch.manual_seed(99)
-        x = (torch.randn(batch, seq, dim, device=device) * 0.02).requires_grad_(True)
-        targets = torch.randint(0, vocab_size, (batch, seq), device=device)
-
-        for step in range(1, 3):
-            std_opt.zero_grad()
-            loss = std_model(x, targets)
-            loss.backward()
-            std_opt.step()
-        torch.cuda.synchronize()
-        std_peak_mb_before_crash = torch.cuda.max_memory_allocated() / (1024.0**2)
-        print(f"  -> Standard PyTorch completed at {std_peak_mb_before_crash:.1f} MB peak VRAM.")
-    except torch.cuda.OutOfMemoryError as exc:
-        std_oom_triggered = True
-        std_oom_message = str(exc).splitlines()[0]
-        std_peak_mb_before_crash = torch.cuda.max_memory_allocated() / (1024.0**2)
-        print("  🛑 STANDARD PYTORCH CRASHED WITH REAL CUDA OUT-OF-MEMORY ON THIS GPU!")
-        print(f"     CUDA Driver Error : {std_oom_message}")
-        print(f"     Allocated Before Crash : {std_peak_mb_before_crash:.1f} MB / {total_vram_mb:.0f} MB Total GPU VRAM")
-    finally:
-        for var in ("std_model", "std_opt", "x", "targets", "loss"):
-            if var in locals():
-                del locals()[var]
-        _clean_cuda()
+    residual_vram_mb = torch.cuda.memory_allocated() / (1024.0**2)
+    print(f"  -> Cleaned up Test 1 CUDA state (Residual GPU VRAM allocated: {residual_vram_mb:.1f} MB)")
 
     # -------------------------------------------------------------------------
     # TEST 2: OjasX on the EXACT SAME Model, Batch Size & GPU
@@ -196,11 +226,13 @@ def main() -> None:
     steps = 5
     for step in range(1, steps + 1):
         torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
         t0 = time.perf_counter()
         oj_opt.zero_grad()
 
         x_step = x_oj_base.detach().clone().requires_grad_(True)
         loss_oj = oj_model(x_step, targets_oj, chunk_tokens=512)
+        loss_val = float(loss_oj.detach().item())
         loss_oj.backward()
         oj_opt.step()
         torch.cuda.synchronize()
@@ -211,7 +243,7 @@ def main() -> None:
         assert grad_bytes == 0, "HolonomicGradFreeOptimizer must keep persistent .grad at 0 bytes"
 
         peak_vram_mb = torch.cuda.max_memory_allocated() / (1024.0**2)
-        loss_val = float(loss_oj.item())
+        del x_step, loss_oj
         print(
             f"  ✅ Step {step:02d}/{steps:02d} | Loss: {loss_val:.6f} | "
             f"Peak GPU VRAM: {peak_vram_mb:.1f} MB / {total_vram_mb:.0f} MB ({peak_vram_mb/total_vram_mb*100:.1f}%) | "
@@ -226,7 +258,6 @@ def main() -> None:
                 "step_ms": round(dt_ms, 2),
             }
         )
-        del x_step, loss_oj
 
     final_peak_mb = max(r["peak_vram_mb"] for r in step_records)
     converged = step_records[-1]["loss"] < step_records[0]["loss"]
