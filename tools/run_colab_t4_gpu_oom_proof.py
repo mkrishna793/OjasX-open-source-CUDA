@@ -153,7 +153,7 @@ def run_standard_pytorch_test(
         std_oom_triggered = True
         std_oom_message = str(exc).splitlines()[0]
         std_peak_mb_before_crash = torch.cuda.max_memory_allocated() / (1024.0**2)
-        print("  🛑 STANDARD PYTORCH CRASHED WITH REAL CUDA OUT-OF-MEMORY ON THIS GPU!")
+        print("  [OOM] STANDARD PYTORCH CRASHED WITH REAL CUDA OUT-OF-MEMORY ON THIS GPU!")
         print(f"     CUDA Driver Error : {std_oom_message}")
         print(f"     Allocated Before Crash : {std_peak_mb_before_crash:.1f} MB / {total_vram_mb:.0f} MB Total GPU VRAM")
         if exc.__traceback__ is not None:
@@ -184,7 +184,7 @@ def main() -> None:
     batch_tokens = batch * seq
 
     print("=" * 98)
-    print(f"🚀 OJASX GOOGLE COLAB GPU BENCHMARK — {gpu_name} ({total_vram_gib:.2f} GiB / {total_vram_mb:.0f} MB VRAM)")
+    print(f"OJASX GOOGLE COLAB GPU BENCHMARK — {gpu_name} ({total_vram_gib:.2f} GiB / {total_vram_mb:.0f} MB VRAM)")
     print("=" * 98)
     print(
         f"  Target Workload : {num_layers} Blocks, Dim={dim}, Hidden={hidden}, Vocab={vocab_size:,} | "
@@ -245,7 +245,7 @@ def main() -> None:
         peak_vram_mb = torch.cuda.max_memory_allocated() / (1024.0**2)
         del x_step, loss_oj
         print(
-            f"  ✅ Step {step:02d}/{steps:02d} | Loss: {loss_val:.6f} | "
+            f"  Step {step:02d}/{steps:02d} | Loss: {loss_val:.6f} | "
             f"Peak GPU VRAM: {peak_vram_mb:.1f} MB / {total_vram_mb:.0f} MB ({peak_vram_mb/total_vram_mb*100:.1f}%) | "
             f"Persistent .grad: 0.00 MB | Time: {dt_ms:.1f} ms"
         )
@@ -263,15 +263,15 @@ def main() -> None:
     converged = step_records[-1]["loss"] < step_records[0]["loss"]
 
     print("\n" + "=" * 98)
-    print(f"🏆 COLAB {gpu_name} VERIFICATION SUMMARY")
+    print(f"COLAB {gpu_name} VERIFICATION SUMMARY")
     print("=" * 98)
     print(f"  Model Size & Batch       : {total_params:,} Parameters | {batch_tokens:,} Tokens/Step ({batch}x{seq}) | Vocab={vocab_size:,}")
     print(
         f"  Standard PyTorch Verdict : "
-        f"{'🛑 CRASHED (torch.cuda.OutOfMemoryError > ' + str(round(total_vram_mb)) + ' MB VRAM)' if std_oom_triggered else str(round(std_peak_mb_before_crash, 1)) + ' MB'}"
+        f"{'CRASHED (torch.cuda.OutOfMemoryError > ' + str(round(total_vram_mb)) + ' MB VRAM)' if std_oom_triggered else str(round(std_peak_mb_before_crash, 1)) + ' MB'}"
     )
     print(
-        f"  OjasX Verdict            : ✅ TRAINED & CONVERGED IN {final_peak_mb:.1f} MB PEAK VRAM "
+        f"  OjasX Verdict            : TRAINED & CONVERGED IN {final_peak_mb:.1f} MB PEAK VRAM "
         f"({final_peak_mb/1024.0:.2f} GiB / {total_vram_gib:.2f} GiB Total)"
     )
     print(f"  Loss Trajectory (5 Steps): {step_records[0]['loss']:.6f} -> {step_records[-1]['loss']:.6f} ({'CONVERGED' if converged else 'STABLE'})")
