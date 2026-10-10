@@ -1,0 +1,64 @@
+{
+  "generated_at_utc": "2026-10-10T17:07:35.905489+00:00",
+  "gpu_name": "Tesla T4",
+  "total_vram_mb": 14912.69,
+  "workload": {
+    "parameters": 533891072,
+    "num_layers": 16,
+    "dim": 2048,
+    "hidden": 6144,
+    "vocab_size": 64000,
+    "batch": 9,
+    "seq": 1024,
+    "batch_tokens": 9216
+  },
+  "standard_pytorch": {
+    "oom_crashed": true,
+    "cuda_error": "CUDA out of memory. Tried to allocate 2.20 GiB. GPU 0 has a total capacity of 14.56 GiB of which 589.81 MiB is free. Including non-PyTorch memory, this process has 13.98 GiB memory in use. Of the allocated memory 13.85 GiB is allocated by PyTorch, and 13.57 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)",
+    "allocated_before_crash_mb": 14178.43
+  },
+  "ojasx": {
+    "oom_crashed": false,
+    "peak_vram_mb": 9542.64,
+    "vram_utilization_pct": 63.99,
+    "persistent_grad_mb": 0.0,
+    "loss_converged": true,
+    "steps": [
+      {
+        "step": 1,
+        "loss": 11.487175,
+        "peak_vram_mb": 9542.64,
+        "persistent_grad_mb": 0.0,
+        "step_ms": 8927.14
+      },
+      {
+        "step": 2,
+        "loss": 11.466572,
+        "peak_vram_mb": 9540.64,
+        "persistent_grad_mb": 0.0,
+        "step_ms": 8680.19
+      },
+      {
+        "step": 3,
+        "loss": 11.446618,
+        "peak_vram_mb": 9540.64,
+        "persistent_grad_mb": 0.0,
+        "step_ms": 8850.66
+      },
+      {
+        "step": 4,
+        "loss": 11.427443,
+        "peak_vram_mb": 9540.64,
+        "persistent_grad_mb": 0.0,
+        "step_ms": 8970.36
+      },
+      {
+        "step": 5,
+        "loss": 11.408827,
+        "peak_vram_mb": 9540.64,
+        "persistent_grad_mb": 0.0,
+        "step_ms": 9065.92
+      }
+    ]
+  }
+}
