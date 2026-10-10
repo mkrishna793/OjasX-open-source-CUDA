@@ -18,3 +18,13 @@ rocq/.*.aux
 rocq/.Makefile.d
 rocq/Makefile
 rocq/Makefile.conf
+reports/*.txt
+reports/*.xml
+reports/*.json
+!reports/INDUSTRIAL_ALL_LEVEL_BENCHMARK_SCORE.json
+!reports/REAL_WORLD_CPP_AND_MESH_REPORT.json
+!reports/mps-qualification.json
+!reports/rocq-verification.json
+!reports/verification.json
+!reports/z3-results.json
+*.tmp

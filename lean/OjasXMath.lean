@@ -13,6 +13,7 @@ import OjasXMath.Discovered
 import OjasXMath.Geometry
 import OjasXMath.GradientDiscovered
 import OjasXMath.GradientFactors
+import OjasXMath.HolonomicJet
 import OjasXMath.InvariantDiscovered
 import OjasXMath.InvariantRadial
 import OjasXMath.LossCompiler
@@ -274,6 +275,17 @@ import OjasXMath.StreamedDagger
 #print axioms OjasXMath.factor_complete_cost_choice
 #print axioms OjasXMath.factor_shared_linear_cost_difference
 #print axioms OjasXMath.factor_relu_rank_growth
+#print axioms OjasXMath.holonomic_pullback_eq_frechet
+#print axioms OjasXMath.holonomic_adjoint_pairing
+#print axioms OjasXMath.symplectic_form_alternating
+#print axioms OjasXMath.symplectic_form_left_linear
+#print axioms OjasXMath.symplectic_form_right_linear
+#print axioms OjasXMath.symplectic_form_skew_symmetric
+#print axioms OjasXMath.universal_cotangent_scaling_invariance
+#print axioms OjasXMath.holonomic_has_fderiv_at
+#print axioms OjasXMath.holonomic_replay_arithmetic_accounting
+#print axioms OjasXMath.holonomic_fused_activation_memory_saving
+#print axioms OjasXMath.holonomic_swiglu_activation_memory_saving
 #print axioms OjasXMath.invariant_discovered_primal
 #print axioms OjasXMath.invariant_discovered_gradient_x0
 #print axioms OjasXMath.invariant_discovered_gradient_x1

@@ -14,9 +14,9 @@
     "opcheck_passed": true,
     "z3_smt_zero_bank_conflicts": true,
     "cross_backend_cpu_metal_bit_exact_mask": true,
-    "cpp_l1_rmsnorm_speedup_x": 1.498,
-    "pytorch_rmsnorm_us": 1307.63,
-    "ojasx_cpp_rmsnorm_us": 873.06
+    "cpp_l1_rmsnorm_speedup_x": 1.25,
+    "pytorch_rmsnorm_us": 1349.75,
+    "ojasx_cpp_rmsnorm_us": 1080.21
   },
   "level_2_pytorch_official_opinfo": {
     "passed": 70,
@@ -33,8 +33,8 @@
     "llama3_loss_std": 8.417201,
     "llama3_loss_ojasx": 8.417201,
     "llama3_saved_tape_std_mb": 13.506,
-    "llama3_saved_tape_ojasx_mb": 3.629,
-    "llama3_tape_reduction_pct": 73.13,
+    "llama3_saved_tape_ojasx_mb": 2.006,
+    "llama3_tape_reduction_pct": 85.15,
     "persistent_grad_mb": 0.0,
     "lora_smart_router_saved_pct": 33.15
   },
@@ -43,5 +43,5 @@
     "tcp_wire_compression_x": 3.76,
     "gradient_cosine_similarity": 0.999986
   },
-  "residual_gpu_memory_mb": 82.427
+  "residual_gpu_memory_mb": 82.921
 }

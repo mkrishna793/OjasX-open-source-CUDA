@@ -24,5 +24,6 @@ LossCompiler.v
 CotangentQuotient.v
 DemandAlgebra.v
 DenseJoint.v
+HolonomicJet.v
 Extract.v
 Audit.v

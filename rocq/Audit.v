@@ -1,4 +1,4 @@
-From Ojasx Require Import Product Matrix Nonlinear Optimizer Planner Contracts Structured RankSeven Foundation Compact Indexed TaylorDiscovered CoordinateCompiler CoordinateDiscovered GradientFactors GradientDiscovered InvariantRadial InvariantDiscovered SpectralFoundation SpectralDiscovered ObjectiveCompiler LossCompiler CotangentQuotient DemandAlgebra DenseJoint.
+From Ojasx Require Import Product Matrix Nonlinear Optimizer Planner Contracts Structured RankSeven Foundation Compact Indexed TaylorDiscovered CoordinateCompiler CoordinateDiscovered GradientFactors GradientDiscovered InvariantRadial InvariantDiscovered SpectralFoundation SpectralDiscovered ObjectiveCompiler LossCompiler CotangentQuotient DemandAlgebra DenseJoint HolonomicJet.
 
 Print Assumptions Product.scale_compose.
 Print Assumptions Product.scale_one.

@@ -20,19 +20,28 @@ import torch.nn as nn
 
 _CSRC_DIR = Path(__file__).resolve().parent / "csrc"
 _TILE_DYLIB_PATH = _CSRC_DIR / "libojasx_tile_kernels.dylib"
+_TILE_LIB_CANDIDATES = (
+    _CSRC_DIR / "libojasx_tile_kernels.dylib",
+    _CSRC_DIR / "libojasx_tile_kernels.so",
+    _CSRC_DIR / "libojasx_tile_kernels.pyd",
+)
 _LOADED_TILE_DYLIB = False
 
 
 def ensure_tile_kernels_loaded() -> bool:
-    """Load the compiled C++17 `libojasx_tile_kernels.dylib` into `torch.ops.ojasx_hal`."""
+    """Load the compiled C++17 `libojasx_tile_kernels` shared library into `torch.ops.ojasx_hal`."""
     global _LOADED_TILE_DYLIB
     if _LOADED_TILE_DYLIB:
         return True
-    if not _TILE_DYLIB_PATH.exists():
-        raise FileNotFoundError(f"Missing compiled C++ kernel library: {_TILE_DYLIB_PATH}")
-    torch.ops.load_library(str(_TILE_DYLIB_PATH))
-    _LOADED_TILE_DYLIB = True
-    return True
+    for candidate in _TILE_LIB_CANDIDATES:
+        if candidate.exists():
+            torch.ops.load_library(str(candidate))
+            _LOADED_TILE_DYLIB = True
+            return True
+    raise FileNotFoundError(
+        f"Missing compiled C++ kernel library in {_CSRC_DIR}. "
+        "Run `OJASX_REBUILD_NATIVE=1 python setup.py build_py` to build for your platform."
+    )
 
 
 ensure_tile_kernels_loaded()

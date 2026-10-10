@@ -81,13 +81,15 @@ class SmartWorkloadReport:
 class _FrozenLinearZeroTapeFn(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x: torch.Tensor, weight: torch.Tensor, bias: Optional[torch.Tensor]) -> torch.Tensor:
-        # Never save `x` on the autograd tape because `weight` is frozen (requires_grad=False)!
-        ctx.weight = weight.detach()
-        return torch.nn.functional.linear(x, ctx.weight, bias.detach() if bias is not None else None)
+        # Never save activation `x` on the autograd tape because `weight` is frozen (requires_grad=False).
+        # Pass `weight` through `ctx.save_for_backward` so SavedTensorAudit accounts for all retained references.
+        ctx.save_for_backward(weight)
+        return torch.nn.functional.linear(x, weight, bias)
 
     @staticmethod
     def backward(ctx, grad_out: torch.Tensor):
-        dx = torch.matmul(grad_out, ctx.weight) if ctx.needs_input_grad[0] else None
+        (weight,) = ctx.saved_tensors
+        dx = torch.matmul(grad_out, weight) if ctx.needs_input_grad[0] else None
         return dx, None, None
 
 
@@ -266,17 +268,25 @@ class SmartWorkloadRouter:
                         i += 2
                         continue
 
-                    act_map = {
-                        nn.GELU: "gelu_tanh",
-                        nn.SiLU: "silu",
-                        nn.ReLU: "relu",
-                        nn.LeakyReLU: "leaky_relu",
-                    }
-                    act_name = act_map[type(mod_b)]
+                    negative_slope = 0.01
+                    if isinstance(mod_b, nn.GELU):
+                        approx = getattr(mod_b, "approximate", "none")
+                        act_name = "gelu_tanh" if approx == "tanh" else "gelu_exact"
+                    elif isinstance(mod_b, nn.SiLU):
+                        act_name = "silu"
+                    elif isinstance(mod_b, nn.ReLU):
+                        act_name = "relu"
+                    elif isinstance(mod_b, nn.LeakyReLU):
+                        act_name = "leaky_relu"
+                        negative_slope = float(getattr(mod_b, "negative_slope", 0.01))
+                    else:
+                        act_name = "none"
+
                     rep = HolonomicLinear(
                         mod_a.in_features, mod_a.out_features,
                         bias=mod_a.bias is not None,
                         act=act_name,
+                        negative_slope=negative_slope,
                         device=mod_a.weight.device, dtype=mod_a.weight.dtype,
                     )
                     rep.weight = mod_a.weight

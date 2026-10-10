@@ -121,8 +121,8 @@ out.sum().backward()
 import ojasx2
 
 nodes = [
-    ojasx2.MeshNodeSpec("Laptop_A", "Apple_M_Series_GPU", total_vram_gb=18.0, free_vram_gb=14.0, device_str="mps"),
-    ojasx2.MeshNodeSpec("Laptop_B", "Partner_Laptop_GPU", total_vram_gb=8.0,  free_vram_gb=6.5,  device_str="cpu"),
+    ojasx2.MeshNodeSpec("Laptop_A", "Apple_M_Series_GPU", free_memory_gb=18.0, compute_tflops=14.2, device="mps"),
+    ojasx2.MeshNodeSpec("Laptop_B", "Partner_Laptop_GPU", free_memory_gb=8.0,  compute_tflops=6.5,  device="cpu"),
 ]
 mesh_engine = ojasx2.HolonomicVirtualMeshEngine(model, nodes=nodes, compress_boundary=True)
 loss = mesh_engine(x).square().mean()
@@ -138,11 +138,11 @@ All C++ operators and mathematical passes are verified with **`torch.library.opc
 
 | Subsystem | Metric | Baseline PyTorch | OjasX v0.3.0 | Improvement / Verification |
 | :--- | :--- | :--- | :--- | :--- |
-| **C++ L1-Resident `RMSNorm`** | Forward + Backward Latency (`[4, 256, 512]`) | `873.5 us` | **`379.5 us`** | **`2.30×` Faster** (`4 B/row` saved vs `2048 B/row`) |
+| **C++ L1-Resident `RMSNorm`** | Forward / Fwd+Bwd Latency (`[4, 256, 512]`) | `873.5 us` / `843.2 us` | **`379.5 us` / `661.3 us`** | **`2.30×` Fwd / `1.28×` Fwd+Bwd** (`4 B/row` auxiliary `rstd`) |
 | **1-Bit Hardware Ballot Packing** | Saved Activation Mask Memory (`ReLU2`) | `32 bits / elem` | **`1 bit / elem`** | **`32.0×` Smaller** (`simd_ballot` / `__ballot_sync`) |
 | **Smart Workload Router (LoRA)** | Saved Autograd Tape Memory | `84.09 MB` | **`28.10 MB`** | **`66.59%` Memory Saved** (`0.00e+00` max grad diff) |
 | **Multi-Laptop P2P TCP Mesh** | Inter-Laptop Wire Bandwidth (`18GB + 8GB`) | `1048.6 KB` | **`278.5 KB`** | **`3.76×` Compression** (`0.999992` grad cosine sim) |
-| **Z3 SMT & Formal Proofs** | Shared-Memory Bank Conflicts & Theorems | — | **`unsat` (0 conflicts)** | **`369 passed` in `pytest`** |
+| **Z3 SMT & Formal Proofs** | Shared-Memory Bank Conflicts & Theorems | — | **`unsat` (0 conflicts)** | **`375+ passed` in `pytest`** |
 
 Run the full qualification suite:
 ```bash
