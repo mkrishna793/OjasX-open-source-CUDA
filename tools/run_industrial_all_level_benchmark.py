@@ -2,19 +2,19 @@
 """
 tools/run_industrial_all_level_benchmark.py
 
-OjasX v0.3.0 — Official 5-Level Industrial Benchmark & Scorecard Suite (Zero Synthetic/Dummy Harnesses):
-  - LEVEL 1 (C++17 / TileLang 6-Backend Hardware Kernel Level):
+OjasX five-level local qualification and benchmark sample suite:
+  - LEVEL 1 (native CPU / Metal operator checks):
       Official `torch.library.opcheck` + `Z3 SMT BitVec32` + `torch.utils.benchmark.Compare`
   - LEVEL 2 (Official PyTorch `OpInfo` `op_db` Conformance Level):
       Directly tests against `torch.testing._internal.common_methods_invocations.op_db`
   - LEVEL 3 (Meta `BackendBench` Production Parquet Trace Level):
       Directly loads `third_party/backend_bench_problems.parquet` (19,171 real production rows)
-      and benchmarks real captured production matrix shapes (`mm` / `addmm`)
+      selects 25 traces and tests capped, contiguous FP32 linear/ReLU2 workloads
   - LEVEL 4 (Industry Model Training & LoRA Smart-Router Level):
-      End-to-end Llama-3 Decoder (`RMSNorm` + `RoPE` + `SwiGLU` + `Selective LMHead` + `0B .grad`)
+      Small LLaMA-style RMSNorm/SwiGLU/residual/loss block (no attention or RoPE)
       and LoRA Fine-Tuning via `SmartWorkloadRouter`
   - LEVEL 5 (Multi-Laptop P2P Heterogeneous Virtual Unified GPU Mesh Level):
-      Real OS TCP socket P2P training (`18 GB + 8 GB = 26 GB` Virtual GPU) with C++ Block-INT8 compression
+      Same-process local MPS/CPU or CPU/CPU loopback, with estimated capacity descriptors
 """
 
 from __future__ import annotations
@@ -23,6 +23,8 @@ import ast
 import copy
 import gc
 import json
+import hashlib
+from datetime import datetime, timezone
 import sys
 import time
 from pathlib import Path
@@ -32,12 +34,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.benchmark as benchmark
-from torch.testing._internal.common_methods_invocations import op_db
 
 import ojasx2
 from ojasx2 import (
@@ -59,6 +59,7 @@ from ojasx2 import (
     tilelang_universal_gemm_relu2,
     verify_xor_swizzle_and_ballot_smt,
 )
+from ojasx2.tile_hal import tile_kernel_status
 
 
 def init_safe_gpu() -> torch.device:
@@ -95,19 +96,36 @@ def parse_backendbench_shape(arg_str: str) -> Tuple[List[int], torch.dtype, List
     return shape, dtype, stride
 
 
+def qualify_backendbench_case(y_ref, y_actual, x_ref_grad, x_actual_grad, w_ref_grad, w_actual_grad):
+    """Require output and both operand gradients to agree before counting a pass."""
+    for expected, actual in ((y_ref, y_actual), (x_ref_grad, x_actual_grad), (w_ref_grad, w_actual_grad)):
+        torch.testing.assert_close(actual, expected, rtol=1e-3, atol=1e-3)
+    if torch.count_nonzero(x_ref_grad) == 0 and torch.count_nonzero(x_actual_grad) == 0:
+        return 1.0
+    similarity = F.cosine_similarity(x_ref_grad.flatten(), x_actual_grad.flatten(), dim=0).item()
+    if not torch.isfinite(torch.tensor(similarity)) or similarity < 0.999:
+        raise AssertionError(f"Input gradient cosine similarity below qualification threshold: {similarity}")
+    return similarity
+
+
 def main() -> None:
+    import pandas as pd
+    from torch.testing._internal.common_methods_invocations import op_db
+    if not tile_kernel_status()["native_tilelang_loaded"]:
+        raise RuntimeError("This native-kernel benchmark requires the optional native TileLang library; reference fallback timings are not native measurements")
+    torch.manual_seed(20261010)
     device = init_safe_gpu()
     silicon = probe_hardware_profile()
 
     print("=" * 100)
-    print("OJASX v0.3.0 — OFFICIAL 5-LEVEL INDUSTRIAL BENCHMARK & SCORECARD SUITE")
+    print("OJASX v0.3.0 — FIVE-LEVEL LOCAL SAMPLE QUALIFICATION & BENCHMARK")
     print(f"Silicon Probed: {silicon.chip_class} | {silicon.physical_cpu_cores} Cores | L1d={silicon.l1d_cache_bytes // 1024}KB | L2={silicon.l2_cache_bytes // 1024}KB | Device={device}")
     print("=" * 100)
 
     # =========================================================================
     # LEVEL 1: C++17 / TileLang 6-Backend Kernel Level (opcheck + Z3 + Compare)
     # =========================================================================
-    print("\n[LEVEL 1/5] C++17 & Universal 6-Backend TileLang Hardware Kernel Qualification...")
+    print("\n[LEVEL 1/5] Native CPU operators and CPU/Metal mask comparison...")
     smt_res = verify_xor_swizzle_and_ballot_smt()
     assert smt_res["zero_bank_conflicts_proven"] is True
 
@@ -167,12 +185,12 @@ def main() -> None:
     benchmark.Compare([m_py_rms, m_oj_rms]).print()
     rmsnorm_speedup = m_py_rms.median / m_oj_rms.median
     print(f"  -> C++ L1 RMSNorm Speedup         : {rmsnorm_speedup:.2f}x faster ({m_py_rms.median*1e6:.1f} us -> {m_oj_rms.median*1e6:.1f} us)")
-    print(f"  -> 6-Backend TileLang Bit-Exact   : {cross_backend_bit_exact} (CPU NEON == Metal SIMDGroup GPU)")
+    print(f"  -> CPU/Metal mask comparison     : {cross_backend_bit_exact} (Metal GPU availability={silicon.has_mps_gpu})")
 
     # =========================================================================
     # LEVEL 2: Official PyTorch `OpInfo` (`op_db`) Conformance Suite
     # =========================================================================
-    print("\n[LEVEL 2/5] Official PyTorch `OpInfo` (`op_db`) Conformance Suite...")
+    print("\n[LEVEL 2/5] Sampled FP32 linear conformance using PyTorch OpInfo inputs...")
     linear_op = next(op for op in op_db if op.name == "nn.functional.linear")
     samples = list(linear_op.sample_inputs(str(device), torch.float32, requires_grad=True))
     opinfo_passed = 0
@@ -210,15 +228,18 @@ def main() -> None:
             torch.testing.assert_close(y_ref, y_holo, rtol=1e-3, atol=1e-3)
             torch.testing.assert_close(x1.grad, x2.grad, rtol=1e-3, atol=1e-3)
             torch.testing.assert_close(w1.grad, w2.grad, rtol=1e-3, atol=1e-3)
+            if b1 is not None:
+                torch.testing.assert_close(b1.grad, b2.grad, rtol=1e-3, atol=1e-3)
             opinfo_passed += 1
 
     cleanup_gpu()
-    print(f"  -> Official PyTorch `op_db` Cases : {opinfo_passed}/{opinfo_total} PASSED (100.0% Conformance)")
+    assert opinfo_total > 0 and opinfo_passed == opinfo_total
+    print(f"  -> Linear FP32 first-order cases : {opinfo_passed}/{opinfo_total} PASSED (sampled numerical conformance)")
 
     # =========================================================================
     # LEVEL 3: Meta `BackendBench` Real Production Trace (`19,171` Parquet Rows)
     # =========================================================================
-    print("\n[LEVEL 3/5] Meta `BackendBench` Real-World Production Parquet Trace (`19,171` Rows)...")
+    print("\n[LEVEL 3/5] Capped synthetic workloads derived from BackendBench traces...")
     parquet_path = REPO_ROOT / "third_party" / "backend_bench_problems.parquet"
     df = pd.read_parquet(parquet_path)
     total_parquet_rows = len(df)
@@ -244,6 +265,7 @@ def main() -> None:
     }
 
     bb_passed = 0
+    bb_total = 0
     bb_cos_sims: List[float] = []
     bb_saved_ratio_list: List[float] = []
 
@@ -259,12 +281,13 @@ def main() -> None:
         else:
             continue
 
-        # Cap huge production shapes to protect laptop RAM while preserving real aspect ratios
+        # Independent caps change aspect ratios; this is a synthetic trace-derived workload.
         M = min(int(M), 512)
         K = min(int(K), 1024)
         N = min(int(N), 1024)
         if M <= 0 or K <= 0 or N <= 0:
             continue
+        bb_total += 1
 
         x_bb = torch.randn(M, K, device="cpu", dtype=torch.float32, requires_grad=True)
         w_bb = torch.randn(N, K, device="cpu", dtype=torch.float32, requires_grad=True)
@@ -279,23 +302,24 @@ def main() -> None:
             y_oj, _ = torch.ops.ojasx_hal.fused_amx_linear_relu2_fwd(x_bb, w_bb, None)
         y_oj.sum().backward()
 
-        cos_x = F.cosine_similarity(x_ref.grad.flatten(), x_bb.grad.flatten(), dim=0).item()
+        cos_x = qualify_backendbench_case(y_ref, y_oj, x_ref.grad, x_bb.grad, w_ref.grad, w_bb.grad)
         bb_cos_sims.append(cos_x)
         ref_bytes = max(1, aud_ref.summary()["fresh_saved_storage_bytes"])
         oj_bytes = max(1, aud_oj.summary()["fresh_saved_storage_bytes"])
         bb_saved_ratio_list.append(ref_bytes / oj_bytes)
         bb_passed += 1
 
+    assert bb_total > 0 and bb_passed == bb_total
     min_bb_cos = min(bb_cos_sims)
     avg_bb_compression = sum(bb_saved_ratio_list) / len(bb_saved_ratio_list)
     print(f"  -> Meta BackendBench Parquet Rows : {total_parquet_rows:,} production traces loaded")
-    print(f"  -> Production Shapes Qualified    : {bb_passed}/{bb_passed} PASSED (min grad cosine sim = {min_bb_cos:.6f})")
+    print(f"  -> Capped FP32 trace-derived cases: {bb_passed}/{bb_total} PASSED (min grad cosine sim = {min_bb_cos:.6f})")
     print(f"  -> Avg Activation Mask Compression: {avg_bb_compression:.1f}x smaller saved state vs PyTorch")
 
     # =========================================================================
     # LEVEL 4: End-to-End Industry Model Training (Llama-3 Decoder + LoRA Router)
     # =========================================================================
-    print("\n[LEVEL 4/5] End-to-End Industry Model Training (Llama-3 Block + LoRA Smart Router)...")
+    print("\n[LEVEL 4/5] Small LLaMA-style block and LoRA-style model...")
 
     # 4A: Llama-3 Decoder Block with Holonomic RMSNorm + SwiGLU + Selective LMHead + 0B .grad
     torch.manual_seed(42)
@@ -354,6 +378,8 @@ def main() -> None:
     with SavedTensorAudit(list(oj_llama.parameters()) + [x_tok_oj]) as aud_oj_llama:
         loss_oj = oj_llama(x_tok_oj, targets)
     loss_oj.backward()
+    torch.testing.assert_close(loss_oj, loss_std, rtol=1e-4, atol=1e-4)
+    torch.testing.assert_close(x_tok_oj.grad, x_tok.grad, rtol=1e-3, atol=1e-3)
     oj_llama_tape_mb = aud_oj_llama.summary()["fresh_saved_storage_bytes"] / (1024 * 1024)
     persistent_grad_mb = opt_gf.persistent_grad_bytes() / (1024 * 1024)
     opt_gf.remove_hooks()
@@ -389,6 +415,7 @@ def main() -> None:
         lora_std(x_l1).sum().backward()
     with SavedTensorAudit(list(lora_smart.parameters()) + [x_l2]) as aud_l2:
         lora_smart(x_l2).sum().backward()
+    torch.testing.assert_close(x_l2.grad, x_l1.grad, rtol=1e-3, atol=1e-3)
 
     lora_std_mb = aud_l1.summary()["fresh_saved_storage_bytes"] / (1024 * 1024)
     lora_smart_mb = aud_l2.summary()["fresh_saved_storage_bytes"] / (1024 * 1024)
@@ -400,7 +427,7 @@ def main() -> None:
     # =========================================================================
     # LEVEL 5: Multi-Laptop P2P Heterogeneous Virtual Unified GPU Mesh Level
     # =========================================================================
-    print("\n[LEVEL 5/5] Multi-Laptop P2P Heterogeneous Virtual Unified GPU Mesh (TCP Socket)...")
+    print("\n[LEVEL 5/5] Same-process local-device TCP loopback...")
     nodes = [
         MeshNodeSpec("Laptop_A_Primary", "Apple_Silicon_GPU", 18.0, 14.0, str(device)),
         MeshNodeSpec("Laptop_B_Partner", "Partner_GPU_Node", 8.0, 6.5, "cpu"),
@@ -421,6 +448,7 @@ def main() -> None:
     ref_net(x_r).square().mean().backward()
 
     mesh_cos = F.cosine_similarity(x_m.grad.flatten(), x_r.grad.flatten(), dim=0).item()
+    assert mesh_cos > 0.999, f"Loopback gradient qualification failed: {mesh_cos}"
     mesh_comp = mesh_engine.telemetry.compression_ratio
     mesh_pooled_gb = mesh_engine.plan.pooled_memory_gb
     mesh_engine.close()
@@ -433,18 +461,26 @@ def main() -> None:
     del x_tok, x_tok_oj, targets, x_l1, x_l2, x_m, x_r
 
     residual_gpu_mb = cleanup_gpu()
-    print(f"  -> Pooled Virtual GPU Capacity    : {mesh_pooled_gb:.1f} GB (18.0 GB + 8.0 GB)")
+    print(f"  -> Caller-supplied capacity estimate: {mesh_pooled_gb:.1f} GB (local loopback, not measured GPU pooling)")
     print(f"  -> TCP Boundary Wire Compression  : {mesh_comp:.2f}x smaller ({compressed_kb:.1f} KB vs {uncompressed_kb:.1f} KB)")
-    print(f"  -> Distributed Grad Cosine Sim    : {mesh_cos:.6f}")
+    print(f"  -> Loopback Grad Cosine Sim       : {mesh_cos:.6f}")
     print(f"  -> Post-Run Residual GPU Memory   : {residual_gpu_mb:.2f} MB")
 
     scorecard = {
+        "status": "passed",
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "scope": "Local sampled numerical qualification; no full-model, multi-machine or six-vendor hardware certification",
+        "device": str(device),
+        "source_sha256": {p: hashlib.sha256((REPO_ROOT / p).read_bytes()).hexdigest() for p in (
+            "tools/run_industrial_all_level_benchmark.py", "ojasx2/holonomic_math_compiler.py",
+            "ojasx2/mesh_hal.py", "ojasx2/tile_hal.py")},
         "version": "0.3.0",
         "silicon": silicon.__dict__,
         "level_1_cpp_tilelang_kernels": {
             "opcheck_passed": True,
             "z3_smt_zero_bank_conflicts": True,
             "cross_backend_cpu_metal_bit_exact_mask": cross_backend_bit_exact,
+            "metal_gpu_available": silicon.has_mps_gpu,
             "cpp_l1_rmsnorm_speedup_x": round(rmsnorm_speedup, 3),
             "pytorch_rmsnorm_us": round(m_py_rms.median * 1e6, 2),
             "ojasx_cpp_rmsnorm_us": round(m_oj_rms.median * 1e6, 2),
@@ -452,15 +488,21 @@ def main() -> None:
         "level_2_pytorch_official_opinfo": {
             "passed": opinfo_passed,
             "total": opinfo_total,
-            "pass_rate_pct": 100.0,
+            "pass_rate_pct": 100.0 * opinfo_passed / opinfo_total,
+            "scope": "nn.functional.linear nonempty FP32 samples, five activations, forward and first-order input/weight/bias gradients",
         },
         "level_3_meta_backendbench_parquet": {
             "total_parquet_rows_loaded": total_parquet_rows,
-            "production_shapes_verified": bb_passed,
+            "sampled_capped_cases_verified": bb_passed,
+            "sampled_capped_cases_total": bb_total,
+            "scope": "First 25 runnable mm/addmm traces; independent caps M<=512 K,N<=1024; contiguous FP32 synthetic linear/ReLU2",
             "min_gradient_cosine_similarity": round(min_bb_cos, 6),
             "avg_activation_mask_compression_x": round(avg_bb_compression, 2),
         },
         "level_4_industry_model_training": {
+            "workload": "Custom LLaMA-style RMSNorm/SwiGLU/residual/loss block without attention or RoPE",
+            "dimensions": {"batch": B, "sequence": S, "width": D, "hidden": H, "vocabulary": V},
+            "memory_scope": "Fresh autograd-saved storage, excluding caller-supplied inputs and parameters; not peak training memory",
             "llama3_loss_std": round(loss_std_val, 6),
             "llama3_loss_ojasx": round(loss_oj_val, 6),
             "llama3_saved_tape_std_mb": round(std_llama_tape_mb, 3),
@@ -470,7 +512,8 @@ def main() -> None:
             "lora_smart_router_saved_pct": round(lora_saved_pct, 2),
         },
         "level_5_multi_laptop_p2p_mesh": {
-            "pooled_virtual_gpu_gb": mesh_pooled_gb,
+            "topology": "same-process local loopback",
+            "declared_capacity_gb": mesh_pooled_gb,
             "tcp_wire_compression_x": round(mesh_comp, 2),
             "gradient_cosine_similarity": round(mesh_cos, 6),
         },
@@ -480,9 +523,16 @@ def main() -> None:
     report_path = REPO_ROOT / "reports" / "INDUSTRIAL_ALL_LEVEL_BENCHMARK_SCORE.json"
     report_path.write_text(json.dumps(scorecard, indent=2))
     print("\n" + "=" * 100)
-    print(f"SAVED OFFICIAL 5-LEVEL INDUSTRIAL SCORECARD TO: {report_path}")
+    print(f"SAVED LOCAL SAMPLE QUALIFICATION SCORECARD TO: {report_path}")
     print("=" * 100)
 
 
 if __name__ == "__main__":
-    main()
+    report = REPO_ROOT / "reports" / "INDUSTRIAL_ALL_LEVEL_BENCHMARK_SCORE.json"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(json.dumps({"status": "running", "generated_at_utc": datetime.now(timezone.utc).isoformat()}, indent=2))
+    try:
+        main()
+    except Exception as exc:
+        report.write_text(json.dumps({"status": "failed", "error": str(exc), "generated_at_utc": datetime.now(timezone.utc).isoformat()}, indent=2))
+        raise

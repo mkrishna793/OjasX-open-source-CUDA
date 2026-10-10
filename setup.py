@@ -3,8 +3,9 @@
 Supports:
   - macOS (Apple Silicon / Intel): compiles `ojasx_tile_kernels.cpp` + `ojasx_tilelang_metal.mm`
     with `-framework Accelerate -framework Metal -framework Foundation` into `libojasx_tile_kernels.dylib`.
-  - Linux / Windows: compiles portable C++17 `ojasx_tile_kernels.cpp` into `libojasx_tile_kernels.so` / `.pyd`,
-    or installs cleanly with the pure-PyTorch `ojasx_hal` fallback when no C++ toolchain is present.
+   - Linux: optionally compiles portable C++17 `ojasx_tile_kernels.cpp` into `libojasx_tile_kernels.so`.
+   - Default installations, including Windows, use the pure-PyTorch numerical fallback.
+     Native builds require OJASX_REBUILD_NATIVE=1 and an installed torch in the build environment.
 """
 
 from __future__ import annotations
@@ -16,9 +17,10 @@ import sys
 from pathlib import Path
 from setuptools import setup
 from setuptools.command.build_py import build_py
+from setuptools.dist import Distribution
 
 
-def build_native_tile_library() -> None:
+def build_native_tile_library():
     root = Path(__file__).resolve().parent
     csrc_dir = root / "ojasx2" / "csrc"
     tilelang_src = root / "third_party" / "tilelang" / "src"
@@ -26,6 +28,7 @@ def build_native_tile_library() -> None:
     try:
         import torch
     except ImportError:
+        sys.stderr.write("[OjasX setup.py] torch is absent in the build environment; using PyTorch fallback. For a native build, install torch and use --no-build-isolation.\n")
         return
 
     import sysconfig
@@ -98,6 +101,7 @@ def build_native_tile_library() -> None:
     try:
         subprocess.run(cmd, check=True)
         os.replace(tmp_lib, out_lib)
+        return out_lib
     except Exception as exc:
         if tmp_lib.exists():
             tmp_lib.unlink()
@@ -106,10 +110,29 @@ def build_native_tile_library() -> None:
 
 class BuildPyWithNativeKernels(build_py):
     def run(self) -> None:
+        self.native_library = None
         if os.environ.get("OJASX_REBUILD_NATIVE", "0") == "1":
-            build_native_tile_library()
+            self.native_library = build_native_tile_library()
         super().run()
+        # A previous native build may have left binaries in the reused build directory.
+        for binary in (Path(self.build_lib) / "ojasx2" / "csrc").glob("*"):
+            if binary.suffix in (".dylib", ".so", ".pyd", ".dll") and (
+                self.native_library is None or binary.name != self.native_library.name
+            ):
+                binary.unlink()
+
+    def find_data_files(self, package, src_dir):
+        files = super().find_data_files(package, src_dir)
+        # Never ship an author-machine binary in a default platform-independent wheel.
+        built = getattr(self, "native_library", None)
+        return [p for p in files if Path(p).suffix not in (".dylib", ".so", ".pyd", ".dll")
+                or (built is not None and Path(p).resolve() == built.resolve())]
+
+
+class OjasXDistribution(Distribution):
+    def has_ext_modules(self):
+        return os.environ.get("OJASX_REBUILD_NATIVE") == "1"
 
 
 if __name__ == "__main__":
-    setup(cmdclass={"build_py": BuildPyWithNativeKernels})
+    setup(cmdclass={"build_py": BuildPyWithNativeKernels}, distclass=OjasXDistribution)

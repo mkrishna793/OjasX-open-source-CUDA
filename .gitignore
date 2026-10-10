@@ -27,4 +27,5 @@ reports/*.json
 !reports/rocq-verification.json
 !reports/verification.json
 !reports/z3-results.json
+!reports/review-fix-validation.json
 *.tmp

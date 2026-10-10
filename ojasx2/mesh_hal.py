@@ -1,19 +1,14 @@
-"""OjasX Multi-Laptop Heterogeneous Virtual Unified GPU Engine (`ojasx2.mesh_hal`).
+"""Sequential model partitioning over local devices and preloaded TCP workers.
 
-Combines multiple heterogeneous laptops (e.g., Laptop A with 18 GB Apple GPU/ANE +
-Laptop B with 8 GB dGPU/iGPU = 26 GB Virtual Unified Accelerator) over a real TCP/P2P
-socket transport:
-  1. Zero manual model splitting: automatically assigns layers/tiles proportionally
-     to each node's free memory capacity and Roofline TFLOPS.
-  2. Real TCP socket transport (supporting both multi-machine `host:port` endpoints and
-     local loopback channels) with deterministic C-struct binary framing and C++ Block-Scaled
-     8-Bit Holonomic Boundary Compression (`torch.ops.ojasx_hal.compress_boundary_int8`),
-     cutting actual TCP wire traffic by ~3.76x while each node uses 0-byte/minimal internal
-     Holonomic activation memory.
+Plans use caller-supplied capacity estimates. Optional block-int8 compression is
+lossy; telemetry counts application frames, not IP/TCP network overhead. Remote
+execution supports first-order training and explicit worker-local optimizer steps.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import socket
 import struct
 import threading
@@ -46,7 +41,7 @@ class MeshNodeSpec:
     compute_tflops: float
     device: str = "cpu"
     host: str = "127.0.0.1"
-    port: int = 0
+    port: int = 0  # 0: local device; positive port: preloaded remote partition worker
 
 
 @dataclass
@@ -71,6 +66,7 @@ class MeshTransferTelemetry:
 
 @dataclass
 class VirtualMeshPartitionPlan:
+    """Capacity estimates supplied by the caller; not measured usable GPU memory."""
     pooled_memory_gb: float
     pooled_tflops: float
     node_assignments: Dict[str, List[int]] = field(default_factory=dict)
@@ -268,8 +264,25 @@ class _TCPLoopbackP2PChannel:
                     pass
 
 
+def _partition_signature(module: nn.Module) -> str:
+    """Check architecture and initial state without serializing executable Python objects."""
+    digest = hashlib.sha256(repr(module).encode())
+    digest.update(str([(name, p.requires_grad) for name, p in module.named_parameters()]).encode())
+    digest.update(str([(name, m.training) for name, m in module.named_modules()]).encode())
+    for name, tensor in module.state_dict().items():
+        digest.update(f"{name}:{tensor.dtype}:{tuple(tensor.shape)}".encode())
+        digest.update(tensor.detach().cpu().contiguous().reshape(-1).view(torch.uint8).numpy().tobytes())
+    return digest.hexdigest()
+
+
 class MeshRemoteWorkerServer:
-    """Standalone TCP worker daemon that executes assigned layers on a remote machine."""
+    """TCP worker owning a preloaded partition and its parameter gradients.
+
+    The coordinator verifies the initial partition state before using it. An optional
+    worker-local optimizer is stepped only on an explicit coordinator request.
+    One coordinator connection is served at a time; multiple outstanding forwards
+    are identified separately, so reverse-order backward is safe.
+    """
 
     def __init__(
         self,
@@ -278,59 +291,185 @@ class MeshRemoteWorkerServer:
         port: int = 0,
         device: str = "cpu",
         compress_int8: bool = True,
+        optimizer: Optional[torch.optim.Optimizer] = None,
+        timeout: float = 30.0,
     ) -> None:
         self.device = torch.device(device)
         self.sub_module = sub_module.to(self.device)
         self.compress_int8 = compress_int8
+        self.optimizer = optimizer
+        if optimizer is not None:
+            owned = {id(p) for p in self.sub_module.parameters()}
+            if any(id(p) not in owned for group in optimizer.param_groups for p in group["params"]):
+                raise ValueError("Move the worker partition to its device before constructing its optimizer")
+        self.timeout = timeout
+        self.last_error: Optional[str] = None
         self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_sock.bind((host, port))
         self.server_sock.listen(1)
+        self.server_sock.settimeout(0.2)
         self.host, self.port = self.server_sock.getsockname()
         self._stop = False
-        self._last_inp: Optional[torch.Tensor] = None
-        self._last_out: Optional[torch.Tensor] = None
+        self._conn: Optional[socket.socket] = None
         self._thread = threading.Thread(target=self._serve_loop, daemon=True)
         self._thread.start()
 
     def _serve_loop(self) -> None:
-        try:
-            conn, _ = self.server_sock.accept()
-            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            while not self._stop:
-                header = conn.recv(8)
-                if not header:
-                    break
-                (length,) = struct.unpack("!Q", header)
-                msg = _recv_exact(conn, length)
-                op_code = msg[0]
-                tensor_payload = msg[1:]
-                if op_code == 1:  # FORWARD
-                    inp = unpack_tensor_from_wire(tensor_payload, self.device, torch.float32)
-                    inp.requires_grad_(True)
-                    out = self.sub_module(inp)
-                    self._last_inp = inp
-                    self._last_out = out
-                    out_payload, _, _ = pack_tensor_for_wire(out.detach(), compress_int8=self.compress_int8)
-                    _send_framed_bytes(conn, out_payload)
-                elif op_code == 2:  # BACKWARD
-                    grad_out = unpack_tensor_from_wire(tensor_payload, self.device, torch.float32)
-                    assert self._last_out is not None and self._last_inp is not None
-                    self._last_out.backward(grad_out)
-                    grad_in = self._last_inp.grad
-                    assert grad_in is not None
-                    grad_payload, _, _ = pack_tensor_for_wire(grad_in.detach(), compress_int8=self.compress_int8)
-                    _send_framed_bytes(conn, grad_payload)
-            conn.close()
-        except Exception:
-            pass
+        while not self._stop:
+            try:
+                conn, _ = self.server_sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            self._conn = conn
+            graphs = {}
+            response_compression = self.compress_int8
+            try:
+                conn.settimeout(self.timeout)
+                conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                while not self._stop:
+                    # TCP is a byte stream: both header and payload require exact reads.
+                    msg = _recv_framed_bytes(conn)
+                    if not msg:
+                        raise ValueError("Empty mesh request")
+                    op_code = msg[0]
+                    if op_code == 8:  # Initial partition handshake
+                        if len(msg) > 1:
+                            response_compression = bool(msg[1])
+                        metadata = {"signature": _partition_signature(self.sub_module),
+                                    "parameters": sum(p.numel() for p in self.sub_module.parameters())}
+                        _send_framed_bytes(conn, json.dumps(metadata).encode())
+                        continue
+                    if op_code in (5, 6, 9):  # Optimizer step / gradient reset / train mode
+                        if graphs:
+                            raise RuntimeError("Finish outstanding backwards before updating remote parameters")
+                        if op_code == 5:
+                            if self.optimizer is None:
+                                raise RuntimeError("Remote worker has no configured optimizer")
+                            self.optimizer.step()
+                        elif op_code == 6:
+                            self.sub_module.zero_grad(set_to_none=True)
+                        else:
+                            self.sub_module.train(bool(msg[1]))
+                        _send_framed_bytes(conn, b"OK")
+                        continue
+                    if op_code not in (1, 2, 3, 4, 7):
+                        raise ValueError(f"Unknown mesh opcode {op_code}")
+                    request_id = 0 if op_code in (1, 2) else struct.unpack("!Q", msg[1:9])[0]
+                    tensor_payload = msg[1:] if op_code in (1, 2) else msg[10:]
+                    dtype = torch.float32 if op_code in (1, 2) else _CODE_TO_DTYPE[msg[9]]
+                    if op_code in (1, 3, 7):
+                        if request_id in graphs:
+                            raise RuntimeError("Duplicate outstanding forward request")
+                        inp = unpack_tensor_from_wire(tensor_payload, self.device, dtype).requires_grad_(op_code != 7)
+                        with torch.set_grad_enabled(op_code != 7):
+                            out = self.sub_module(inp)
+                        if op_code != 7:
+                            graphs[request_id] = (inp, out)
+                        response = out.detach()
+                    else:
+                        if request_id not in graphs:
+                            raise RuntimeError("Backward has no matching forward request")
+                        inp, out = graphs.pop(request_id)
+                        grad_out = unpack_tensor_from_wire(tensor_payload, self.device, out.dtype)
+                        out.backward(grad_out)
+                        if inp.grad is None:
+                            raise RuntimeError("Remote partition did not produce an input gradient")
+                        response = inp.grad.detach()
+                    payload, _, _ = pack_tensor_for_wire(response, compress_int8=response_compression)
+                    if op_code not in (1, 2):
+                        payload = bytes([_DTYPE_TO_CODE[response.dtype]]) + payload
+                    _send_framed_bytes(conn, payload)
+            except (ConnectionError, OSError) as exc:
+                if not self._stop:
+                    self.last_error = str(exc)
+            except Exception as exc:
+                self.last_error = str(exc)
+                try:
+                    _send_framed_bytes(conn, b"\xff" + str(exc).encode())
+                except OSError:
+                    pass
+            finally:
+                graphs.clear()
+                conn.close()
+                self._conn = None
+
+    def wait(self) -> None:
+        """Keep a standalone worker process alive until it is closed or interrupted."""
+        self._thread.join()
 
     def close(self) -> None:
         self._stop = True
+        for sock in (self._conn, self.server_sock):
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                sock.close()
+        self._thread.join(timeout=1.0)
+
+
+class _RemotePartitionClient:
+    def __init__(self, node, expected_module, telemetry, compress_int8, timeout):
+        self.telemetry = telemetry
+        self.compress_int8 = compress_int8
+        self.sock = socket.create_connection((node.host, node.port), timeout=timeout)
+        self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.lock = threading.Lock()
+        self.next_request_id = 1
         try:
-            self.server_sock.close()
+            metadata = json.loads(self._exchange(b"\x08" + bytes([compress_int8])))
+            if metadata["signature"] != _partition_signature(expected_module):
+                raise ValueError(f"Remote partition {node.node_id} differs from its assigned architecture or initial weights")
         except Exception:
+            self.close()
+            raise
+
+    def _exchange(self, message):
+        with self.lock:
+            _send_framed_bytes(self.sock, message)
+            response = _recv_framed_bytes(self.sock)
+        if response.startswith(b"\xff"):
+            raise RuntimeError("Remote mesh worker: " + response[1:].decode(errors="replace"))
+        return response
+
+    def tensor_request(self, opcode, request_id, tensor):
+        payload, _, raw_bytes = pack_tensor_for_wire(tensor, compress_int8=self.compress_int8)
+        message = bytes([opcode]) + struct.pack("!Q", request_id) + bytes([_DTYPE_TO_CODE[tensor.dtype]]) + payload
+        response = self._exchange(message)
+        if opcode in (3, 7):
+            self.telemetry.forward_packets += 2
+        else:
+            self.telemetry.backward_packets += 2
+        self.telemetry.compressed_wire_bytes += 8 + len(message) + 8 + len(response)
+        output = unpack_tensor_from_wire(response[1:], tensor.device, _CODE_TO_DTYPE[response[0]])
+        self.telemetry.uncompressed_fp32_bytes += raw_bytes + output.numel() * 4
+        return output
+
+    def close(self):
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
             pass
+        self.sock.close()
+
+
+class _RemotePartitionFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, anchor, client):
+        ctx.client = client
+        ctx.request_id = client.next_request_id
+        client.next_request_id += 1
+        return client.tensor_request(3, ctx.request_id, x)
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    def backward(ctx, grad_out):
+        grad_in = ctx.client.tensor_request(4, ctx.request_id, grad_out)
+        return grad_in if ctx.needs_input_grad[0] else None, None, None
 
 
 class _MeshSocketBoundaryBridge(torch.autograd.Function):
@@ -372,11 +511,47 @@ class _MeshSocketBoundaryBridge(torch.autograd.Function):
         return grad_in, None, None, None, None
 
 
-class HolonomicVirtualMeshEngine(nn.Module):
-    """Pools multiple heterogeneous laptops into a single Virtual Unified Accelerator.
+def plan_mesh_partitions(model, nodes) -> VirtualMeshPartitionPlan:
+    """Plan contiguous layer assignments without moving modules or opening sockets.
 
-    Zero manual model splitting required: pass any `nn.Sequential` model and a list of
-    `MeshNodeSpec` descriptors (e.g., 18 GB Laptop A + 8 GB Laptop B).
+    Use the same model/checkpoint and descriptors on both machines when preloading
+    remote partitions. Descriptor capacity totals are estimates, not measured RAM.
+    """
+    if not nodes or not len(model) or len({n.node_id for n in nodes}) != len(nodes):
+        raise ValueError("Partitioning requires layers and uniquely named nodes")
+    if any(n.free_memory_gb <= 0 or n.compute_tflops <= 0 for n in nodes):
+        raise ValueError("Node capacities must be positive")
+    total_mem = sum(n.free_memory_gb for n in nodes)
+    total_tflops = sum(n.compute_tflops for n in nodes)
+    shares = [0.65 * n.free_memory_gb / total_mem + 0.35 * n.compute_tflops / total_tflops for n in nodes]
+    assignments = {n.node_id: [] for n in nodes}
+    counts = {n.node_id: 0 for n in nodes}
+    weights = [max(1, sum(p.numel() for p in layer.parameters())) for layer in model]
+    cumulative_weight = 0
+    node_idx = 0
+    target = shares[0]
+    total_weight = sum(weights)
+    for idx, weight in enumerate(weights):
+        cumulative_weight += weight / total_weight
+        while cumulative_weight > target + 1e-6 and node_idx < len(nodes) - 1:
+            node_idx += 1
+            target += shares[node_idx]
+        node_id = nodes[node_idx].node_id
+        assignments[node_id].append(idx)
+        counts[node_id] += sum(p.numel() for p in model[idx].parameters())
+    return VirtualMeshPartitionPlan(total_mem, total_tflops, assignments, counts,
+        {n.node_id: 100 * n.free_memory_gb / total_mem for n in nodes},
+        {n.node_id: 100 * share for n, share in zip(nodes, shares)})
+
+
+class HolonomicVirtualMeshEngine(nn.Module):
+    """Sequential partitioning across local devices and preloaded remote workers.
+
+    A node with port=0 is local; port>0 connects to its host:port. Remote workers
+    must own the corresponding Sequential partition with matching initial state.
+    Their parameters are removed from the coordinator's module/optimizer. Capacity
+    totals are planning estimates supplied by the caller, not measured GPU pooling.
+    Remote execution supports first-order autograd; higher derivatives are rejected.
     """
 
     def __init__(
@@ -384,83 +559,54 @@ class HolonomicVirtualMeshEngine(nn.Module):
         model: nn.Sequential,
         nodes: List[MeshNodeSpec],
         compress_boundary: bool = True,
+        timeout: float = 30.0,
     ) -> None:
         super().__init__()
         if len(nodes) < 2:
             raise ValueError("HolonomicVirtualMeshEngine requires at least 2 MeshNodeSpec nodes")
+        if len({n.node_id for n in nodes}) != len(nodes):
+            raise ValueError("Mesh node IDs must be unique")
+        if not isinstance(model, nn.Sequential) or len(model) == 0:
+            raise ValueError("Mesh requires a nonempty nn.Sequential model")
+        if any(n.port < 0 or n.free_memory_gb <= 0 or n.compute_tflops <= 0 for n in nodes):
+            raise ValueError("Mesh node capacities must be positive and ports nonnegative")
         self.nodes = nodes
         self.compress_boundary = compress_boundary
         self.telemetry = MeshTransferTelemetry()
-        bind_host = nodes[0].host if nodes[0].host else "127.0.0.1"
-        self.channel = _TCPLoopbackP2PChannel(bind_host=bind_host, bind_port=nodes[0].port)
+        self.channel = None
+        self.remote_clients = {}
+        # A non-parameter autograd anchor ensures remote weights receive gradients
+        # even when the coordinator input and preceding local layers are frozen.
+        self.register_buffer("_remote_anchor", torch.zeros((), requires_grad=True), persistent=False)
         self.layers = nn.ModuleList(list(model.children()))
         self.plan = self._build_capacity_weighted_plan()
+        owners = {}
+        for node in nodes:
+            for i in self.plan.node_assignments[node.node_id]:
+                for parameter in self.layers[i].parameters():
+                    previous = owners.setdefault(id(parameter), node.node_id)
+                    if previous != node.node_id:
+                        raise ValueError("Parameters shared across mesh partitions are unsupported")
+        for node in nodes:
+            for i in self.plan.node_assignments[node.node_id]:
+                if node.port == 0:
+                    self.layers[i].to(torch.device(node.device))
+        try:
+            for node in nodes:
+                indices = self.plan.node_assignments[node.node_id]
+                if node.port > 0 and indices:
+                    partition = nn.Sequential(*(self.layers[i] for i in indices))
+                    self.remote_clients[node.node_id] = _RemotePartitionClient(
+                        node, partition, self.telemetry, compress_boundary, timeout
+                    )
+                    for i in indices:
+                        self.layers[i] = nn.Identity()
+        except Exception:
+            self.close()
+            raise
 
     def _build_capacity_weighted_plan(self) -> VirtualMeshPartitionPlan:
-        total_mem = max(1e-6, sum(n.free_memory_gb for n in self.nodes))
-        total_tflops = max(1e-6, sum(n.compute_tflops for n in self.nodes))
-
-        # Joint Roofline Capacity Score: 65% free memory capacity + 35% compute TFLOPS
-        raw_scores = [
-            0.65 * (n.free_memory_gb / total_mem) + 0.35 * (n.compute_tflops / total_tflops)
-            for n in self.nodes
-        ]
-        score_sum = max(1e-6, sum(raw_scores))
-        norm_scores = [s / score_sum for s in raw_scores]
-
-        layer_weights = [
-            max(1, sum(p.numel() for p in layer.parameters())) for layer in self.layers
-        ]
-        total_weight = sum(layer_weights)
-
-        node_assignments: Dict[str, List[int]] = {n.node_id: [] for n in self.nodes}
-        node_param_counts: Dict[str, int] = {n.node_id: 0 for n in self.nodes}
-        node_mem_share: Dict[str, float] = {
-            n.node_id: 100.0 * (n.free_memory_gb / total_mem) for n in self.nodes
-        }
-        node_cap_share: Dict[str, float] = {
-            n.node_id: 100.0 * norm_scores[i] for i, n in enumerate(self.nodes)
-        }
-
-        cum_targets = []
-        running = 0.0
-        for share in norm_scores:
-            running += share
-            cum_targets.append(running)
-
-        cum_weight = 0.0
-        for idx, lw in enumerate(layer_weights):
-            cum_weight += lw / float(total_weight)
-            chosen_node = self.nodes[-1]
-            for n_idx, target in enumerate(cum_targets):
-                if cum_weight <= target + 1e-6 or n_idx == len(self.nodes) - 1:
-                    chosen_node = self.nodes[n_idx]
-                    break
-            self.layers[idx].to(torch.device(chosen_node.device))
-            node_assignments[chosen_node.node_id].append(idx)
-            node_param_counts[chosen_node.node_id] += sum(
-                p.numel() for p in self.layers[idx].parameters()
-            )
-
-        if len(self.layers) >= 2 and len(node_assignments[self.nodes[-1].node_id]) == 0:
-            last_idx = len(self.layers) - 1
-            first_id = self.nodes[0].node_id
-            last_id = self.nodes[-1].node_id
-            node_assignments[first_id].remove(last_idx)
-            node_assignments[last_id].append(last_idx)
-            moved_params = sum(p.numel() for p in self.layers[last_idx].parameters())
-            node_param_counts[first_id] -= moved_params
-            node_param_counts[last_id] += moved_params
-            self.layers[last_idx].to(torch.device(self.nodes[-1].device))
-
-        return VirtualMeshPartitionPlan(
-            pooled_memory_gb=total_mem,
-            pooled_tflops=total_tflops,
-            node_assignments=node_assignments,
-            node_param_counts=node_param_counts,
-            node_memory_share_pct=node_mem_share,
-            node_capacity_share_pct=node_cap_share,
-        )
+        return plan_mesh_partitions(self.layers, self.nodes)
 
     def _owner_node_for_layer(self, layer_idx: int) -> MeshNodeSpec:
         for n in self.nodes:
@@ -469,22 +615,54 @@ class HolonomicVirtualMeshEngine(nn.Module):
         return self.nodes[0]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        current_node = self._owner_node_for_layer(0)
-        h = x.to(torch.device(current_node.device))
-
-        for idx, layer in enumerate(self.layers):
-            next_node = self._owner_node_for_layer(idx)
-            if next_node.node_id != current_node.node_id:
+        h = x
+        current_node = None
+        idx = 0
+        while idx < len(self.layers):
+            node = self._owner_node_for_layer(idx)
+            if node.port > 0:
+                client = self.remote_clients[node.node_id]
+                if torch.is_grad_enabled():
+                    h = _RemotePartitionFunction.apply(h, self._remote_anchor, client)
+                else:
+                    h = client.tensor_request(7, 0, h)
+                idx += len(self.plan.node_assignments[node.node_id])
+                current_node = node
+                continue
+            if current_node is not None and current_node.port == 0 and node.node_id != current_node.node_id:
+                if self.channel is None:
+                    self.channel = _TCPLoopbackP2PChannel()
                 h = _MeshSocketBoundaryBridge.apply(
                     h,
                     self.channel,
-                    torch.device(next_node.device),
+                    torch.device(node.device),
                     self.telemetry,
                     self.compress_boundary,
                 )
-                current_node = next_node
-            h = layer(h)
+            else:
+                h = h.to(torch.device(node.device))
+            h = self.layers[idx](h)
+            current_node = node
+            idx += 1
         return h
 
+    def step_remote(self):
+        """Explicitly step worker-local optimizers after completing backward."""
+        for client in self.remote_clients.values():
+            client._exchange(b"\x05")
+
+    def train(self, mode=True):
+        super().train(mode)
+        for client in getattr(self, "remote_clients", {}).values():
+            client._exchange(b"\x09" + bytes([mode]))
+        return self
+
+    def zero_remote_grad(self):
+        for client in self.remote_clients.values():
+            client._exchange(b"\x06")
+
     def close(self) -> None:
-        self.channel.close()
+        if self.channel is not None:
+            self.channel.close()
+        for client in self.remote_clients.values():
+            client.close()

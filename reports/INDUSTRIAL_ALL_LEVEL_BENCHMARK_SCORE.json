@@ -1,4 +1,14 @@
 {
+  "status": "passed",
+  "generated_at_utc": "2026-10-10T12:54:03.003980+00:00",
+  "scope": "Local sampled numerical qualification; no full-model, multi-machine or six-vendor hardware certification",
+  "device": "mps",
+  "source_sha256": {
+    "tools/run_industrial_all_level_benchmark.py": "071c6766e4504b4867f355e6dd03d9998729326403cef141fb6a052a689f411e",
+    "ojasx2/holonomic_math_compiler.py": "a3787718afa71da5871f0425cdd60c2e64e539c12de79f2692dc5a3610d674c3",
+    "ojasx2/mesh_hal.py": "7f8cf6d914d3977a9e7f69a1945cb00996b7cb0f509cd31d16fd8723a1c71589",
+    "ojasx2/tile_hal.py": "b62737f9cc2802b6dd34361a0de3f88a675adeb5edf4e479cda55233ab07b878"
+  },
   "version": "0.3.0",
   "silicon": {
     "l1d_cache_bytes": 65536,
@@ -14,22 +24,35 @@
     "opcheck_passed": true,
     "z3_smt_zero_bank_conflicts": true,
     "cross_backend_cpu_metal_bit_exact_mask": true,
-    "cpp_l1_rmsnorm_speedup_x": 1.25,
-    "pytorch_rmsnorm_us": 1349.75,
-    "ojasx_cpp_rmsnorm_us": 1080.21
+    "metal_gpu_available": true,
+    "cpp_l1_rmsnorm_speedup_x": 1.486,
+    "pytorch_rmsnorm_us": 1307.48,
+    "ojasx_cpp_rmsnorm_us": 880.12
   },
   "level_2_pytorch_official_opinfo": {
     "passed": 70,
     "total": 70,
-    "pass_rate_pct": 100.0
+    "pass_rate_pct": 100.0,
+    "scope": "nn.functional.linear nonempty FP32 samples, five activations, forward and first-order input/weight/bias gradients"
   },
   "level_3_meta_backendbench_parquet": {
     "total_parquet_rows_loaded": 19171,
-    "production_shapes_verified": 25,
+    "sampled_capped_cases_verified": 25,
+    "sampled_capped_cases_total": 25,
+    "scope": "First 25 runnable mm/addmm traces; independent caps M<=512 K,N<=1024; contiguous FP32 synthetic linear/ReLU2",
     "min_gradient_cosine_similarity": 1.0,
     "avg_activation_mask_compression_x": 32.0
   },
   "level_4_industry_model_training": {
+    "workload": "Custom LLaMA-style RMSNorm/SwiGLU/residual/loss block without attention or RoPE",
+    "dimensions": {
+      "batch": 4,
+      "sequence": 128,
+      "width": 256,
+      "hidden": 512,
+      "vocabulary": 4096
+    },
+    "memory_scope": "Fresh autograd-saved storage, excluding caller-supplied inputs and parameters; not peak training memory",
     "llama3_loss_std": 8.417201,
     "llama3_loss_ojasx": 8.417201,
     "llama3_saved_tape_std_mb": 13.506,
@@ -39,9 +62,10 @@
     "lora_smart_router_saved_pct": 33.15
   },
   "level_5_multi_laptop_p2p_mesh": {
-    "pooled_virtual_gpu_gb": 26.0,
+    "topology": "same-process local loopback",
+    "declared_capacity_gb": 26.0,
     "tcp_wire_compression_x": 3.76,
     "gradient_cosine_similarity": 0.999986
   },
-  "residual_gpu_memory_mb": 82.921
+  "residual_gpu_memory_mb": 82.421
 }

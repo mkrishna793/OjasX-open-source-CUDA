@@ -638,14 +638,16 @@ class HolonomicChunkedLMHeadLossFunction(torch.autograd.Function):
 
         h_2d = h.reshape(-1, d)
         t_1d = target.reshape(-1)
-        valid = (t_1d != ignore_index) & (t_1d >= 0)
+        valid = t_1d != ignore_index
         if not valid.any():
             ctx.has_valid = False
             return h.new_zeros(())
 
         ctx.has_valid = True
         indices = valid.nonzero().flatten()
-        total_loss = h.new_zeros((), dtype=torch.float32)
+        compute_dtype = torch.float32 if h.dtype in (torch.float16, torch.bfloat16) else h.dtype
+        ctx.compute_dtype = compute_dtype
+        total_loss = h.new_zeros((), dtype=compute_dtype)
         total_count = float(indices.numel()) if reduction == "mean" else 1.0
 
         with torch.no_grad():
@@ -656,7 +658,7 @@ class HolonomicChunkedLMHeadLossFunction(torch.autograd.Function):
                 if bias is not None:
                     logits_chunk = logits_chunk + bias
                 chunk_loss = F.cross_entropy(
-                    logits_chunk.float(),
+                    logits_chunk.to(compute_dtype),
                     t_chunk,
                     reduction="sum",
                     label_smoothing=label_smoothing,
@@ -680,10 +682,10 @@ class HolonomicChunkedLMHeadLossFunction(torch.autograd.Function):
 
         h_2d = h.reshape(-1, d)
         t_1d = target.reshape(-1)
-        valid = (t_1d != ctx.ignore_index) & (t_1d >= 0)
+        valid = t_1d != ctx.ignore_index
         indices = valid.nonzero().flatten()
         total_count = float(indices.numel()) if ctx.reduction == "mean" else 1.0
-        scale = grad_output.float() / total_count
+        scale = grad_output.to(ctx.compute_dtype) / total_count
         smoothing = ctx.label_smoothing
 
         # Higher-order derivative path (`create_graph=True`)
@@ -696,11 +698,14 @@ class HolonomicChunkedLMHeadLossFunction(torch.autograd.Function):
                 if bias is not None:
                     logits_chunk = logits_chunk + bias
                 total_loss = total_loss + F.cross_entropy(
-                    logits_chunk, t_chunk, reduction="sum", label_smoothing=smoothing
+                    logits_chunk.to(ctx.compute_dtype), t_chunk, reduction="sum", label_smoothing=smoothing
                 )
-            scaled_loss = (total_loss / total_count) * grad_output
             inputs = [t for idx_t, t in ((0, h), (1, weight), (3, bias)) if t is not None and ctx.needs_input_grad[idx_t]]
-            grads = torch.autograd.grad(scaled_loss, inputs, create_graph=True)
+            # Treat the incoming cotangent as the VJP coefficient. Differentiating
+            # a product here would incorrectly differentiate grad_output itself.
+            grads = torch.autograd.grad(
+                total_loss / total_count, inputs, grad_outputs=grad_output.to(ctx.compute_dtype), create_graph=True
+            )
             grad_iter = iter(grads)
             dh = next(grad_iter) if ctx.needs_input_grad[0] else None
             dw = next(grad_iter) if ctx.needs_input_grad[1] else None
@@ -719,9 +724,8 @@ class HolonomicChunkedLMHeadLossFunction(torch.autograd.Function):
             if bias is not None:
                 logits_chunk = logits_chunk + bias
 
-            probs = torch.softmax(logits_chunk.float(), dim=-1)
+            probs = torch.softmax(logits_chunk.to(ctx.compute_dtype), dim=-1)
             if smoothing > 0.0:
-                probs.mul_(1.0 - smoothing)
                 probs.scatter_add_(
                     1,
                     t_chunk.unsqueeze(1),
@@ -768,6 +772,10 @@ def holonomic_lm_head_loss(
     """
     if chunk_tokens is not None:
         chunk_rows = int(chunk_tokens)
+    if reduction not in ("mean", "sum"):
+        raise ValueError("Chunked LM loss supports reduction='mean' or 'sum'")
+    if chunk_rows <= 0:
+        raise ValueError("chunk_rows must be positive")
     if weight.shape[0] != h.shape[-1] and weight.shape[1] != h.shape[-1]:
         raise ValueError(f"Weight shape {weight.shape} incompatible with hidden dim {h.shape[-1]}")
 

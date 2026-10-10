@@ -12,7 +12,9 @@ Connects the compiled C++17 / LibTorch / Apple Accelerate AMX kernel library
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
+import sys
 from typing import Dict, Optional, Tuple
 
 import torch
@@ -26,22 +28,46 @@ _TILE_LIB_CANDIDATES = (
     _CSRC_DIR / "libojasx_tile_kernels.pyd",
 )
 _LOADED_TILE_DYLIB = False
+_TILE_KERNELS_READY = False
+_NATIVE_TILELANG_LOADED = False
+_NATIVE_LOAD_ERRORS = []
+
+
+def _native_library_candidates():
+    suffixes = {"darwin": (".dylib",), "win32": (".pyd", ".dll")}.get(sys.platform, (".so",))
+    return tuple(p for p in _TILE_LIB_CANDIDATES if p.suffix in suffixes)
 
 
 def ensure_tile_kernels_loaded() -> bool:
-    """Load the compiled C++17 `libojasx_tile_kernels` shared library into `torch.ops.ojasx_hal`."""
-    global _LOADED_TILE_DYLIB
-    if _LOADED_TILE_DYLIB:
-        return True
-    for candidate in _TILE_LIB_CANDIDATES:
+    """Initialize operators, returning whether a compatible native library was loaded.
+
+    Missing/incompatible optional binaries use portable PyTorch numerical operators.
+    Set OJASX_DISABLE_NATIVE=1 to explicitly select the reference implementation.
+    """
+    global _LOADED_TILE_DYLIB, _TILE_KERNELS_READY, _NATIVE_TILELANG_LOADED
+    if _TILE_KERNELS_READY:
+        return _LOADED_TILE_DYLIB
+    candidates = () if os.environ.get("OJASX_DISABLE_NATIVE") == "1" else _native_library_candidates()
+    for candidate in candidates:
         if candidate.exists():
-            torch.ops.load_library(str(candidate))
+            try:
+                torch.ops.load_library(str(candidate))
+            except (OSError, RuntimeError) as exc:
+                _NATIVE_LOAD_ERRORS.append(f"{candidate}: {exc}")
+                continue
             _LOADED_TILE_DYLIB = True
-            return True
-    raise FileNotFoundError(
-        f"Missing compiled C++ kernel library in {_CSRC_DIR}. "
-        "Run `OJASX_REBUILD_NATIVE=1 python setup.py build_py` to build for your platform."
-    )
+            break
+    _NATIVE_TILELANG_LOADED = _LOADED_TILE_DYLIB and hasattr(torch.ops.ojasx_hal, "tilelang_emit_universal_source")
+    from .tile_fallback import register_tile_fallbacks
+    register_tile_fallbacks()
+    _TILE_KERNELS_READY = True
+    return _LOADED_TILE_DYLIB
+
+
+def tile_kernel_status():
+    ensure_tile_kernels_loaded()
+    return {"native_loaded": _LOADED_TILE_DYLIB, "native_tilelang_loaded": _NATIVE_TILELANG_LOADED,
+            "load_errors": list(_NATIVE_LOAD_ERRORS)}
 
 
 ensure_tile_kernels_loaded()

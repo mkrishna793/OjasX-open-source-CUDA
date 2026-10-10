@@ -71,6 +71,8 @@ from .mesh_hal import (
     MeshTransferTelemetry,
     VirtualMeshPartitionPlan,
     HolonomicVirtualMeshEngine,
+    MeshRemoteWorkerServer,
+    plan_mesh_partitions,
 )
 
 __version__ = "0.3.0"

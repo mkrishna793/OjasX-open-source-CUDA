@@ -1,0 +1,36 @@
+{
+  "status": "passed",
+  "generated_at_utc": "2026-10-10T12:56:18.028057+00:00",
+  "pytest": {
+    "collected": 399,
+    "passed": 398,
+    "skipped": 1,
+    "failures": 0,
+    "errors": 0,
+    "seconds": 15.508
+  },
+  "regression_tests_added": 24,
+  "benchmark_status": "passed",
+  "benchmark_source_hashes_match": true,
+  "remote_execution": "Verified over TCP in two independent local processes, including forward/backward parity, multiple tapes, worker SGD updates, frozen coordinator parameters and inference",
+  "portable_installation": "Built py3-none-any wheel, checked no dylib/so/pyd/dll payloads, installed into isolated target, verified fallback import and reference gradients",
+  "limits": [
+    "Physical two-laptop deployment not tested",
+    "Linux loader selection simulated; physical Linux/Windows installation not run",
+    "Lean/Rocq specifications unchanged; formal verification not rerun",
+    "Native CUDA/ROCm/SYCL/Ascend execution remains unavailable; README says source templates only"
+  ],
+  "source_sha256": {
+    ".gitignore": "1cb3195238fc9d1dc8c6294cebcee24b9717a4b920e285c0b9ed359bede3bbe2",
+    "README.md": "b5e6cc26e4ff340cb7c0223a336f2a419027bdc762b401d75872ce798bde87be",
+    "pyproject.toml": "56083aeaf75e0923c020488660153a1ba04e5f1de8830f63d40d2e8e88deb2e3",
+    "setup.py": "89178fc3638826ee73c85003fa9770204658b9e0208220d3d53cd8f28761b666",
+    "ojasx2/__init__.py": "9f35d0e35c61606c3479256f2676b170fb2cc00a99cdd9296679bc367eb3f55f",
+    "ojasx2/holonomic_math_compiler.py": "a3787718afa71da5871f0425cdd60c2e64e539c12de79f2692dc5a3610d674c3",
+    "ojasx2/tile_hal.py": "b62737f9cc2802b6dd34361a0de3f88a675adeb5edf4e479cda55233ab07b878",
+    "ojasx2/tile_fallback.py": "298317a794aa6e3431d6a94a03843b5015d0bf0ad01ff0a61155b592e78514be",
+    "ojasx2/mesh_hal.py": "7f8cf6d914d3977a9e7f69a1945cb00996b7cb0f509cd31d16fd8723a1c71589",
+    "tests/test_review_regressions.py": "e744b75eb6f762354e0687419f010c2ad2aa47980fec65d559dcdd20e139f927",
+    "tools/run_industrial_all_level_benchmark.py": "071c6766e4504b4867f355e6dd03d9998729326403cef141fb6a052a689f411e"
+  }
+}
