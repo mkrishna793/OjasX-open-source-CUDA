@@ -1,0 +1,62 @@
+name: Official OjasX Release & Package Publisher
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build Wheel/SDist & Publish GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build Portable Wheel (.whl) and Source Distribution (.tar.gz)
+        run: |
+          python -m pip install --upgrade pip build setuptools wheel
+          python -m build --sdist --wheel --outdir dist/
+          ls -lh dist/
+
+      - name: Publish Official GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "OjasX ${{ github.ref_name }} — Math-Level PyTorch Training & Memory Compiler"
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+          generate_release_notes: true
+          body: |
+            ## OjasX ${{ github.ref_name }} Official Release
+
+            ### Quick Install Directly in PyTorch
+            ```bash
+            # Option 1: Install pre-built wheel directly from this GitHub Release
+            pip install https://github.com/mkrishna793/OjasX-open-source-CUDA/releases/download/${{ github.ref_name }}/ojasx_verified_core-0.3.0-py3-none-any.whl
+
+            # Option 2: Install directly from the release tag via git
+            pip install git+https://github.com/mkrishna793/OjasX-open-source-CUDA.git@${{ github.ref_name }}
+            ```
+
+            ### Drop-In PyTorch Usage
+            ```python
+            import torch
+            import ojasx2
+            from ojasx2.smart_router import optimize_model
+            from ojasx2.grad_free_optimizer import HolonomicGradFreeOptimizer
+            from ojasx2.holonomic_math_compiler import holonomic_lm_head_loss
+
+            model = optimize_model(model).to(device)
+            optimizer = HolonomicGradFreeOptimizer(model.parameters(), lr=1e-4, algorithm="adamw")
+            ```

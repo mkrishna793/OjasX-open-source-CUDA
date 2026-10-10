@@ -5,10 +5,28 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ojasx-verified-core"
 version = "0.3.0"
-description = "PyTorch activation-memory research backend with mathematical specifications, optional CPU/Metal kernels and experimental TCP partitions"
+description = "OjasX: Open-source math-level PyTorch training & memory-optimization compiler with Lean/Rocq specs, C++/Metal kernels, and TCP sharding"
 readme = "README.md"
 requires-python = ">=3.9"
-dependencies = ["torch>=2.8,<2.9", "numpy>=1.26", "z3-solver>=4.13", "sympy>=1.13"]
+license = { file = "LICENSE" }
+authors = [{ name = "Mohana Krishna" }]
+keywords = ["pytorch", "compiler", "autograd", "memory-optimization", "metal", "apple-silicon", "lean4", "coq", "deep-learning"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: C++",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = ["torch>=2.4", "numpy>=1.24", "z3-solver>=4.12", "sympy>=1.12"]
+
+[project.urls]
+Homepage = "https://github.com/mkrishna793/OjasX-open-source-CUDA"
+Repository = "https://github.com/mkrishna793/OjasX-open-source-CUDA"
+Issues = "https://github.com/mkrishna793/OjasX-open-source-CUDA/issues"
+Releases = "https://github.com/mkrishna793/OjasX-open-source-CUDA/releases"
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
