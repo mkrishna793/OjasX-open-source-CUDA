@@ -1,0 +1,80 @@
+{
+  "stage1_single_laptop_tradeoff": {
+    "parameters": 75558912,
+    "std_loss": 1.0547375679016113,
+    "ojasx_loss": 1.0547361373901367,
+    "std_fresh_tape_mb": 736.09,
+    "ojasx_fresh_tape_mb": 500.59,
+    "std_persistent_grad_mb": 288.23,
+    "ojasx_persistent_grad_mb": 0.0,
+    "memory_overhead_saved_pct": 51.13
+  },
+  "stage2_sharded_mesh": {
+    "total_parameters": 226615296,
+    "probed_free_ram_mb": 8069.1,
+    "standard_pytorch_single_node_footprint_mb": {
+      "weights_mb": 864.47,
+      "persistent_grad_mb": 864.47,
+      "optimizer_state_mb": 1728.94,
+      "activation_tape_mb": 12288.0,
+      "total_training_mb": 15745.88
+    },
+    "single_node_blocked_by_safety_guard": true,
+    "laptop_a_sharded_footprint_mb": {
+      "weights_mb": 540.29,
+      "persistent_grad_mb": 0.0,
+      "optimizer_state_mb": 0.0,
+      "activation_tape_mb": 3840.62,
+      "total_training_mb": 4380.92
+    },
+    "laptop_b_sharded_footprint_mb": {
+      "weights_mb": 324.18,
+      "persistent_grad_mb": 0.0,
+      "optimizer_state_mb": 0.0,
+      "activation_tape_mb": 2304.38,
+      "total_training_mb": 2628.55
+    },
+    "sharded_fits_both_nodes_safely": true,
+    "loss_converged": true,
+    "steps": [
+      {
+        "step": 1,
+        "sharded_loss": 0.05528168007731438,
+        "coordinator_persistent_grad_mb": 0.0,
+        "step_ms": 533.66
+      },
+      {
+        "step": 2,
+        "sharded_loss": 0.054809994995594025,
+        "coordinator_persistent_grad_mb": 0.0,
+        "step_ms": 375.15
+      },
+      {
+        "step": 3,
+        "sharded_loss": 0.05434253811836243,
+        "coordinator_persistent_grad_mb": 0.0,
+        "step_ms": 363.9
+      },
+      {
+        "step": 4,
+        "sharded_loss": 0.05388089641928673,
+        "coordinator_persistent_grad_mb": 0.0,
+        "step_ms": 363.62
+      },
+      {
+        "step": 5,
+        "sharded_loss": 0.053430166095495224,
+        "coordinator_persistent_grad_mb": 0.0,
+        "step_ms": 363.68
+      }
+    ],
+    "telemetry": {
+      "forward_packets": 10,
+      "backward_packets": 10,
+      "compressed_wire_bytes": 16713470,
+      "uncompressed_fp32_bytes": 62914560,
+      "compression_ratio": 3.7643,
+      "bandwidth_saved_pct": 73.43
+    }
+  }
+}

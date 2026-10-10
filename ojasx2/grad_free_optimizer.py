@@ -34,6 +34,7 @@ class HolonomicGradFreeOptimizer:
         if algorithm not in ("sgd", "adamw"):
             raise ValueError(f"Unsupported algorithm: {algorithm}. Choose 'sgd' or 'adamw'.")
         self.params: List[nn.Parameter] = [p for p in params if p.requires_grad]
+        self.param_groups: List[Dict[str, Any]] = [{"params": self.params}]
         self.lr = float(lr)
         self.algorithm = algorithm
         self.betas = (float(betas[0]), float(betas[1]))
@@ -109,6 +110,19 @@ class HolonomicGradFreeOptimizer:
     def reset_step_metrics(self) -> None:
         self.last_step_freed_bytes = 0
         self.last_step_updated_params = 0
+
+    def zero_grad(self, set_to_none: bool = True) -> None:
+        self.reset_step_metrics()
+        for p in self.params:
+            if p.grad is not None:
+                if set_to_none:
+                    p.grad = None
+                else:
+                    p.grad.zero_()
+
+    def step(self) -> None:
+        """No-op for drop-in compatibility: updates are already applied in-place during backward hooks."""
+        return None
 
     def persistent_grad_bytes(self) -> int:
         """Returns bytes currently occupied by persistent `.grad` tensors (should be 0 after backward)."""
