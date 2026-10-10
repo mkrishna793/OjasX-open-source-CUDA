@@ -1,0 +1,106 @@
+$ nvidia-smi --query-gpu=name,memory.total,memory.free,driver_version --format=csv
+name, memory.total [MiB], memory.free [MiB], driver_version
+Tesla T4, 15360 MiB, 14913 MiB, 580.82.07
+$ rm -rf /content/OjasX-open-source-CUDA && git clone https://github.com/mkrishna793/OjasX-open-source-CUDA.git /content/OjasX-open-source-CUDA
+Cloning into '/content/OjasX-open-source-CUDA'...
+$ pip install -q --no-deps -e /content/OjasX-open-source-CUDA && pip install -q z3-solver sympy
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 33.1/33.1 MB 18.5 MB/s eta 0:00:00
+$ python3 -u /content/OjasX-open-source-CUDA/tools/run_colab_t4_gpu_oom_proof.py
+==================================================================================================
+🚀 OJASX GOOGLE COLAB GPU BENCHMARK — Tesla T4 (14.56 GiB / 14913 MB VRAM)
+==================================================================================================
+  Target Workload : 16 Blocks, Dim=2048, Hidden=6144, Vocab=64,000 | Batch=9 x Seq=1024 (9,216 tokens/step)
+--------------------------------------------------------------------------------------------------
+
+[TEST 1/2] Running Standard PyTorch (`nn.RMSNorm` + `nn.Linear` + Un-chunked `LM Head` + `AdamW`)...
+  -> Instantiated Standard Model : 533,891,072 FP32 parameters (2036.6 MB weights)
+  🛑 STANDARD PYTORCH CRASHED WITH REAL CUDA OUT-OF-MEMORY ON THIS GPU!
+     CUDA Driver Error : CUDA out of memory. Tried to allocate 2.20 GiB. GPU 0 has a total capacity of 14.56 GiB of which 589.81 MiB is free. Including non-PyTorch memory, this process has 13.98 GiB memory in use. Of the allocated memory 13.85 GiB is allocated by PyTorch, and 13.57 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
+     Allocated Before Crash : 14178.4 MB / 14913 MB Total GPU VRAM
+  -> Cleaned up Test 1 CUDA state (Residual GPU VRAM allocated: 9.1 MB)
+
+--------------------------------------------------------------------------------------------------
+[TEST 2/2] Running OjasX (`HolonomicRMSNorm` + `HolonomicLinear` + Chunked `LM Head` + `0-Byte GradFree`)...
+  -> Instantiated OjasX Model    : 533,891,072 FP32 parameters (2036.6 MB weights)
+  ✅ Step 01/05 | Loss: 11.487175 | Peak GPU VRAM: 9542.6 MB / 14913 MB (64.0%) | Persistent .grad: 0.00 MB | Time: 8927.1 ms
+  ✅ Step 02/05 | Loss: 11.466572 | Peak GPU VRAM: 9540.6 MB / 14913 MB (64.0%) | Persistent .grad: 0.00 MB | Time: 8680.2 ms
+  ✅ Step 03/05 | Loss: 11.446618 | Peak GPU VRAM: 9540.6 MB / 14913 MB (64.0%) | Persistent .grad: 0.00 MB | Time: 8850.7 ms
+  ✅ Step 04/05 | Loss: 11.427443 | Peak GPU VRAM: 9540.6 MB / 14913 MB (64.0%) | Persistent .grad: 0.00 MB | Time: 8970.4 ms
+  ✅ Step 05/05 | Loss: 11.408827 | Peak GPU VRAM: 9540.6 MB / 14913 MB (64.0%) | Persistent .grad: 0.00 MB | Time: 9065.9 ms
+
+==================================================================================================
+🏆 COLAB Tesla T4 VERIFICATION SUMMARY
+==================================================================================================
+  Model Size & Batch       : 533,891,072 Parameters | 9,216 Tokens/Step (9x1024) | Vocab=64,000
+  Standard PyTorch Verdict : 🛑 CRASHED (torch.cuda.OutOfMemoryError > 14913 MB VRAM)
+  OjasX Verdict            : ✅ TRAINED & CONVERGED IN 9542.6 MB PEAK VRAM (9.32 GiB / 14.56 GiB Total)
+  Loss Trajectory (5 Steps): 11.487175 -> 11.408827 (CONVERGED)
+  Persistent .grad Buffers : 0.00 MB (100% eliminated via HolonomicGradFreeOptimizer hooks)
+==================================================================================================
+___JSON_REPORT_START___
+{
+  "generated_at_utc": "2026-10-10T17:07:35.905489+00:00",
+  "gpu_name": "Tesla T4",
+  "total_vram_mb": 14912.69,
+  "workload": {
+    "parameters": 533891072,
+    "num_layers": 16,
+    "dim": 2048,
+    "hidden": 6144,
+    "vocab_size": 64000,
+    "batch": 9,
+    "seq": 1024,
+    "batch_tokens": 9216
+  },
+  "standard_pytorch": {
+    "oom_crashed": true,
+    "cuda_error": "CUDA out of memory. Tried to allocate 2.20 GiB. GPU 0 has a total capacity of 14.56 GiB of which 589.81 MiB is free. Including non-PyTorch memory, this process has 13.98 GiB memory in use. Of the allocated memory 13.85 GiB is allocated by PyTorch, and 13.57 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)",
+    "allocated_before_crash_mb": 14178.43
+  },
+  "ojasx": {
+    "oom_crashed": false,
+    "peak_vram_mb": 9542.64,
+    "vram_utilization_pct": 63.99,
+    "persistent_grad_mb": 0.0,
+    "loss_converged": true,
+    "steps": [
+      {
+        "step": 1,
+        "loss": 11.487175,
+        "peak_vram_mb": 9542.64,
+        "persistent_grad_mb": 0.0,
+        "step_ms": 8927.14
+      },
+      {
+        "step": 2,
+        "loss": 11.466572,
+        "peak_vram_mb": 9540.64,
+        "persistent_grad_mb": 0.0,
+        "step_ms": 8680.19
+      },
+      {
+        "step": 3,
+        "loss": 11.446618,
+        "peak_vram_mb": 9540.64,
+        "persistent_grad_mb": 0.0,
+        "step_ms": 8850.66
+      },
+      {
+        "step": 4,
+        "loss": 11.427443,
+        "peak_vram_mb": 9540.64,
+        "persistent_grad_mb": 0.0,
+        "step_ms": 8970.36
+      },
+      {
+        "step": 5,
+        "loss": 11.408827,
+        "peak_vram_mb": 9540.64,
+        "persistent_grad_mb": 0.0,
+        "step_ms": 9065.92
+      }
+    ]
+  }
+}
+
+___JSON_REPORT_END___
