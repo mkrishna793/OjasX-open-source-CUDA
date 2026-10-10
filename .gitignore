@@ -28,4 +28,11 @@ reports/*.json
 !reports/verification.json
 !reports/z3-results.json
 !reports/review-fix-validation.json
+!reports/TWO_LAPTOP_PHYSICAL_MESH_REPORT.json
+!reports/COLAB_T4_GPU_OOM_PROOF_REPORT.json
+ojasx2/csrc/*.dylib
+ojasx2/csrc/*.so
+ojasx2/csrc/*.dll
+ojasx2/csrc/*.pyd
+rocq/extracted/*.o
 *.tmp

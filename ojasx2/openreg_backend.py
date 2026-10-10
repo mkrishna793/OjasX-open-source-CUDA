@@ -85,6 +85,7 @@ class _OjasXDeviceModule(ModuleType):
 
 import ctypes
 import os
+import sys
 
 _OPENREG_REGISTERED = False
 _PRIVATEUSE1_BOUND = False
@@ -94,16 +95,19 @@ ojasx_device_module = _OjasXDeviceModule()
 
 def register_ojasx_openreg(bind_privateuse1: bool = False) -> _OjasXDeviceModule:
     """
-    Load C++ `DeviceGuardImplInterface` (`libojasx_openreg.dylib`) and mount `torch.ojasx`.
-    Note: In PyTorch 2.8, calling `rename_privateuse1_backend` overrides `at::getAccelerator()`,
-    which conflicts with `MPS` stream checks in `autograd/engine.cpp:1084`. Therefore, `bind_privateuse1`
-    is opt-in for standalone `ojasx` device simulations, while `MPS` workloads keep `MPS` as primary accelerator.
+    Load optional C++ `DeviceGuardImplInterface` (`libojasx_openreg`) and mount `torch.ojasx`.
+    Falls back cleanly on Linux/Windows or when native libraries are absent or incompatible.
     """
     global _OPENREG_REGISTERED, _PRIVATEUSE1_BOUND, _CPP_GUARD_LIB
     if not _OPENREG_REGISTERED:
-        dylib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "csrc", "libojasx_openreg.dylib")
-        if os.path.exists(dylib_path):
-            _CPP_GUARD_LIB = ctypes.CDLL(dylib_path)
+        if os.environ.get("OJASX_DISABLE_NATIVE", "0") != "1":
+            ext = ".dylib" if sys.platform == "darwin" else (".so" if sys.platform.startswith("linux") else ".dll")
+            lib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "csrc", f"libojasx_openreg{ext}")
+            if os.path.exists(lib_path):
+                try:
+                    _CPP_GUARD_LIB = ctypes.CDLL(lib_path)
+                except OSError:
+                    _CPP_GUARD_LIB = None
         setattr(torch, "ojasx", ojasx_device_module)
         _OPENREG_REGISTERED = True
 
