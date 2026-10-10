@@ -1,18 +1,81 @@
 {
+  "generated_at_utc": "2026-10-10T13:54:46.087670+00:00",
+  "source_sha256": {
+    "tools/run_two_laptop_physical_mesh.py": "7f73085d2ae979b83489f0cd64e413e6879dfeab843a582cf00bef4bc31100e1",
+    "ojasx2/holonomic_math_compiler.py": "a3787718afa71da5871f0425cdd60c2e64e539c12de79f2692dc5a3610d674c3",
+    "ojasx2/grad_free_optimizer.py": "2e7b1699430cabd78c3a7cdb409d144f6a97eff4eb3b0f9dfabfd70bea8759d1",
+    "ojasx2/contractions.py": "f4d0795293e0a4ddc7303e7ecc00f981ac8070ca407fe2364fb7c4bcd7befd7d",
+    "ojasx2/mesh_hal.py": "7f8cf6d914d3977a9e7f69a1945cb00996b7cb0f509cd31d16fd8723a1c71589"
+  },
   "stage1_single_laptop_tradeoff": {
     "parameters": 75558912,
+    "device": "mps",
     "std_loss": 1.0547375679016113,
     "ojasx_loss": 1.0547361373901367,
     "std_fresh_tape_mb": 736.09,
     "ojasx_fresh_tape_mb": 500.59,
     "std_persistent_grad_mb": 288.23,
     "ojasx_persistent_grad_mb": 0.0,
-    "memory_overhead_saved_pct": 51.13
+    "memory_overhead_saved_pct": 51.13,
+    "scope": "Fresh autograd-saved storage plus post-backward persistent .grad buffers on 12-block MLP (replays smooth activation projections during backward)",
+    "stage1b_chunked_lm_head": {
+      "shape_b_s_d_v": [
+        2,
+        1024,
+        4096,
+        32000
+      ],
+      "chunk_tokens": 256,
+      "device": "mps",
+      "dtype": "float32",
+      "std_loss": 10.373178482055664,
+      "ojasx_loss": 10.373177528381348,
+      "max_dx_diff": 1.8189894035458565e-11,
+      "max_dw_diff": 1.5279510989785194e-10,
+      "std_fresh_saved_mb": 250.02,
+      "ojasx_fresh_saved_mb": 0.02,
+      "fresh_saved_reduction_pct": 99.99,
+      "std_median_ms": 537.46,
+      "ojasx_median_ms": 879.59,
+      "speedup_x": 0.61,
+      "scope": "First-order chunked cross-entropy replay vs un-chunked F.linear + F.cross_entropy on sampled shape"
+    },
+    "stage1c_bottleneck_contraction": {
+      "shape_m_k_n_p": [
+        2048,
+        1024,
+        2048,
+        32
+      ],
+      "device": "mps",
+      "dtype": "float32",
+      "mode": "algebraic_joint",
+      "max_dx_diff": 5.542233338928781e-13,
+      "std_fresh_saved_mb": 16.25,
+      "ojasx_fresh_saved_mb": 0.375,
+      "fresh_saved_reduction_pct": 97.69,
+      "std_median_ms": 8.088,
+      "ojasx_median_ms": 0.93,
+      "speedup_x": 8.69,
+      "scope": "Two consecutive linear layers without intermediate nonlinearity, narrow output p << n (exact real-algebra reassociation)"
+    }
   },
   "stage2_sharded_mesh": {
+    "scope": "16,384-token footprints are analytical component estimates; live TCP execution runs 5 steps with a 512-token microbatch (4x128). Coordinator constructs initial model template in memory before partitioning.",
+    "topology": "coordinator(mps) -> worker(127.0.0.1:52169)",
     "total_parameters": 226615296,
-    "probed_free_ram_mb": 8069.1,
-    "standard_pytorch_single_node_footprint_mb": {
+    "probed_free_ram_mb": 7383.0,
+    "analytical_projection_batch_tokens": 16384,
+    "executed_microbatch_tokens": 512,
+    "coordinator_loads_initial_model_template": true,
+    "standard_pytorch_sgd_single_node_footprint_mb": {
+      "weights_mb": 864.47,
+      "persistent_grad_mb": 864.47,
+      "optimizer_state_mb": 0.0,
+      "activation_tape_mb": 12288.0,
+      "total_training_mb": 14016.94
+    },
+    "standard_pytorch_adamw_single_node_footprint_mb": {
       "weights_mb": 864.47,
       "persistent_grad_mb": 864.47,
       "optimizer_state_mb": 1728.94,
@@ -41,31 +104,31 @@
         "step": 1,
         "sharded_loss": 0.05528168007731438,
         "coordinator_persistent_grad_mb": 0.0,
-        "step_ms": 533.66
+        "step_ms": 455.69
       },
       {
         "step": 2,
         "sharded_loss": 0.054809994995594025,
         "coordinator_persistent_grad_mb": 0.0,
-        "step_ms": 375.15
+        "step_ms": 365.38
       },
       {
         "step": 3,
         "sharded_loss": 0.05434253811836243,
         "coordinator_persistent_grad_mb": 0.0,
-        "step_ms": 363.9
+        "step_ms": 367.9
       },
       {
         "step": 4,
         "sharded_loss": 0.05388089641928673,
         "coordinator_persistent_grad_mb": 0.0,
-        "step_ms": 363.62
+        "step_ms": 361.44
       },
       {
         "step": 5,
         "sharded_loss": 0.053430166095495224,
         "coordinator_persistent_grad_mb": 0.0,
-        "step_ms": 363.68
+        "step_ms": 360.48
       }
     ],
     "telemetry": {

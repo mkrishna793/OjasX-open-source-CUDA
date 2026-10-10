@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import copy
 import gc
+import hashlib
 import json
 import os
 import platform
@@ -30,6 +31,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -40,8 +42,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import ojasx2
+from ojasx2.contractions import linear_chain
 from ojasx2.grad_free_optimizer import HolonomicGradFreeOptimizer
-from ojasx2.holonomic_math_compiler import HolonomicLinear, HolonomicRMSNorm
+from ojasx2.holonomic_math_compiler import HolonomicLinear, HolonomicRMSNorm, holonomic_lm_head_loss
 from ojasx2.mesh_hal import (
     HolonomicVirtualMeshEngine,
     MeshNodeSpec,
@@ -204,26 +207,48 @@ def build_node_specs(worker_host: str, worker_port: int, coordinator_device: str
     ]
 
 
+def _sync_device(device: str) -> None:
+    if device == "mps" and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        torch.mps.synchronize()
+
+
+def _source_sha256() -> Dict[str, str]:
+    root = Path(__file__).resolve().parents[1]
+    rels = [
+        "tools/run_two_laptop_physical_mesh.py",
+        "ojasx2/holonomic_math_compiler.py",
+        "ojasx2/grad_free_optimizer.py",
+        "ojasx2/contractions.py",
+        "ojasx2/mesh_hal.py",
+    ]
+    out: Dict[str, str] = {}
+    for rel in rels:
+        p = root / rel
+        if p.exists():
+            out[rel] = hashlib.sha256(p.read_bytes()).hexdigest()
+    return out
+
+
 def estimate_training_footprint_mb(
     num_params: int,
     batch_tokens: int,
     dim: int,
     num_layers: int,
     is_holonomic_grad_free: bool,
+    optimizer_state_multiplier: float = 0.0,
 ) -> Dict[str, float]:
-    """Compute exact training memory components (Weights, Grads, Optimizer, Saved Tape)."""
+    """Analytical model of training memory components (Weights, Grads, Optimizer, Saved Tape)."""
     weight_mb = (num_params * 4) / (1024.0**2)
     if not is_holonomic_grad_free:
-        # Standard PyTorch + AdamW: Weights (4B) + Persistent .grad (4B) + AdamW m,v (8B) + Full Pre-Act Tape
         grad_mb = weight_mb
-        opt_state_mb = weight_mb * 2.0
+        opt_state_mb = weight_mb * optimizer_state_multiplier
         # Standard un-fused block saves norm input (D), linear1 input (D), pre-act z (3D), act output (3D) = 8D floats/layer
         tape_mb = (num_layers * batch_tokens * (dim * 8) * 4) / (1024.0**2)
     else:
         # OjasX Holonomic + Grad-Free SGD/Hook Optimizer:
         # 0 MB persistent .grad buffers, 0 MB pre-activation z tape!
         grad_mb = 0.0
-        opt_state_mb = 0.0
+        opt_state_mb = weight_mb * optimizer_state_multiplier
         # Only block inputs & 4-byte rstd saved per layer
         tape_mb = (num_layers * batch_tokens * (dim * 4 + 1) * 4) / (1024.0**2)
     total_mb = weight_mb + grad_mb + opt_state_mb + tape_mb
@@ -236,8 +261,186 @@ def estimate_training_footprint_mb(
     }
 
 
+def run_stage1b_chunked_lm_head_proof(device: str) -> Dict[str, object]:
+    """Reproducible benchmark for chunked vocabulary loss (`holonomic_lm_head_loss`) vs un-chunked PyTorch."""
+    b, s, d, v = 2, 1024, 4096, 32000
+    chunk_tokens = 256
+    torch.manual_seed(2026)
+    x_base = (torch.randn(b, s, d, device=device, dtype=torch.float32) * 0.02)
+    w_base = (torch.randn(v, d, device=device, dtype=torch.float32) * 0.02)
+    targets = torch.randint(0, v, (b, s), device=device)
+
+    # 1. Standard PyTorch un-chunked LM head
+    x_std = x_base.detach().clone().requires_grad_(True)
+    w_std = w_base.detach().clone().requires_grad_(True)
+    with SavedTensorAudit(external=[x_std, w_std]) as std_audit:
+        logits = F.linear(x_std, w_std)
+        loss_std = F.cross_entropy(logits.view(-1, v), targets.view(-1))
+    std_saved = std_audit.summary()
+    loss_std.backward()
+    gx_std = x_std.grad.detach().clone()
+    gw_std = w_std.grad.detach().clone()
+    loss_std_val = float(loss_std.item())
+    del logits, loss_std, x_std, w_std
+    _release_memory()
+
+    # 2. OjasX Holonomic chunked LM head
+    x_oj = x_base.detach().clone().requires_grad_(True)
+    w_oj = w_base.detach().clone().requires_grad_(True)
+    with SavedTensorAudit(external=[x_oj, w_oj]) as oj_audit:
+        loss_oj = holonomic_lm_head_loss(x_oj, w_oj, targets, chunk_tokens=chunk_tokens)
+    oj_saved = oj_audit.summary()
+    loss_oj.backward()
+    max_gx_diff = float((x_oj.grad - gx_std).abs().max().item())
+    max_gw_diff = float((w_oj.grad - gw_std).abs().max().item())
+    loss_oj_val = float(loss_oj.item())
+    del loss_oj, gx_std, gw_std
+    _release_memory()
+
+    # Synchronized timing (warmup + 5 repeats)
+    for _ in range(2):
+        x_oj.grad = None
+        w_oj.grad = None
+        F.cross_entropy(F.linear(x_oj, w_oj).view(-1, v), targets.view(-1)).backward()
+        x_oj.grad = None
+        w_oj.grad = None
+        holonomic_lm_head_loss(x_oj, w_oj, targets, chunk_tokens=chunk_tokens).backward()
+    _sync_device(device)
+
+    std_times: List[float] = []
+    oj_times: List[float] = []
+    for _ in range(5):
+        x_oj.grad = None
+        w_oj.grad = None
+        _sync_device(device)
+        t0 = time.perf_counter()
+        F.cross_entropy(F.linear(x_oj, w_oj).view(-1, v), targets.view(-1)).backward()
+        _sync_device(device)
+        std_times.append((time.perf_counter() - t0) * 1000.0)
+
+        x_oj.grad = None
+        w_oj.grad = None
+        _sync_device(device)
+        t0 = time.perf_counter()
+        holonomic_lm_head_loss(x_oj, w_oj, targets, chunk_tokens=chunk_tokens).backward()
+        _sync_device(device)
+        oj_times.append((time.perf_counter() - t0) * 1000.0)
+
+    del x_oj, w_oj, x_base, w_base, targets
+    _release_memory()
+
+    std_times.sort()
+    oj_times.sort()
+    std_med_ms = std_times[len(std_times) // 2]
+    oj_med_ms = oj_times[len(oj_times) // 2]
+    speedup_x = std_med_ms / max(oj_med_ms, 1e-6)
+    std_fresh_mb = std_saved["fresh_saved_storage_bytes"] / (1024.0**2)
+    oj_fresh_mb = oj_saved["fresh_saved_storage_bytes"] / (1024.0**2)
+    fresh_saved_pct = 100.0 * (1.0 - (oj_fresh_mb / max(std_fresh_mb, 1e-6)))
+
+    return {
+        "shape_b_s_d_v": [b, s, d, v],
+        "chunk_tokens": chunk_tokens,
+        "device": device,
+        "dtype": "float32",
+        "std_loss": loss_std_val,
+        "ojasx_loss": loss_oj_val,
+        "max_dx_diff": max_gx_diff,
+        "max_dw_diff": max_gw_diff,
+        "std_fresh_saved_mb": round(std_fresh_mb, 2),
+        "ojasx_fresh_saved_mb": round(oj_fresh_mb, 2),
+        "fresh_saved_reduction_pct": round(fresh_saved_pct, 2),
+        "std_median_ms": round(std_med_ms, 2),
+        "ojasx_median_ms": round(oj_med_ms, 2),
+        "speedup_x": round(speedup_x, 2),
+        "scope": "First-order chunked cross-entropy replay vs un-chunked F.linear + F.cross_entropy on sampled shape",
+    }
+
+
+def run_stage1c_bottleneck_contraction_proof(device: str) -> Dict[str, object]:
+    """Reproducible benchmark for narrow-output two-linear chain reassociation (`linear_chain`)."""
+    m, k, n, p = 2048, 1024, 2048, 32
+    torch.manual_seed(2026)
+    x_base = torch.randn(m, k, device=device, dtype=torch.float32) * 0.02
+    w1_base = torch.randn(n, k, device=device, dtype=torch.float32) * 0.02
+    w2_base = torch.randn(p, n, device=device, dtype=torch.float32) * 0.02
+
+    # 1. Standard un-reassociated F.linear(F.linear(x, w1), w2)
+    x_s = x_base.detach().clone().requires_grad_(True)
+    w1_s = w1_base.detach().clone().requires_grad_(True)
+    w2_s = w2_base.detach().clone().requires_grad_(True)
+    with SavedTensorAudit(external=[x_s, w1_s, w2_s]) as std_audit:
+        y_s = F.linear(F.linear(x_s, w1_s), w2_s)
+        loss_s = y_s.square().mean()
+    std_saved = std_audit.summary()
+    loss_s.backward()
+    gx_s = x_s.grad.detach().clone()
+
+    # 2. OjasX algebraic joint contraction (`linear_chain`)
+    x_o = x_base.detach().clone().requires_grad_(True)
+    w1_o = w1_base.detach().clone().requires_grad_(True)
+    w2_o = w2_base.detach().clone().requires_grad_(True)
+    with SavedTensorAudit(external=[x_o, w1_o, w2_o]) as oj_audit:
+        y_o = linear_chain(x_o, w1_o, w2_o, accuracy="algebraic", mode="joint")
+        loss_o = y_o.square().mean()
+    oj_saved = oj_audit.summary()
+    loss_o.backward()
+    max_dx_diff = float((x_o.grad - gx_s).abs().max().item())
+
+    for _ in range(3):
+        x_s.grad = w1_s.grad = w2_s.grad = None
+        F.linear(F.linear(x_s, w1_s), w2_s).square().mean().backward()
+        x_o.grad = w1_o.grad = w2_o.grad = None
+        linear_chain(x_o, w1_o, w2_o, accuracy="algebraic", mode="joint").square().mean().backward()
+    _sync_device(device)
+
+    std_times: List[float] = []
+    oj_times: List[float] = []
+    for _ in range(7):
+        x_s.grad = w1_s.grad = w2_s.grad = None
+        _sync_device(device)
+        t0 = time.perf_counter()
+        F.linear(F.linear(x_s, w1_s), w2_s).square().mean().backward()
+        _sync_device(device)
+        std_times.append((time.perf_counter() - t0) * 1000.0)
+
+        x_o.grad = w1_o.grad = w2_o.grad = None
+        _sync_device(device)
+        t0 = time.perf_counter()
+        linear_chain(x_o, w1_o, w2_o, accuracy="algebraic", mode="joint").square().mean().backward()
+        _sync_device(device)
+        oj_times.append((time.perf_counter() - t0) * 1000.0)
+
+    del x_s, w1_s, w2_s, x_o, w1_o, w2_o, x_base, w1_base, w2_base, gx_s
+    _release_memory()
+
+    std_times.sort()
+    oj_times.sort()
+    std_med_ms = std_times[len(std_times) // 2]
+    oj_med_ms = oj_times[len(oj_times) // 2]
+    speedup_x = std_med_ms / max(oj_med_ms, 1e-6)
+    std_fresh_mb = std_saved["fresh_saved_storage_bytes"] / (1024.0**2)
+    oj_fresh_mb = oj_saved["fresh_saved_storage_bytes"] / (1024.0**2)
+    fresh_saved_pct = 100.0 * (1.0 - (oj_fresh_mb / max(std_fresh_mb, 1e-6)))
+
+    return {
+        "shape_m_k_n_p": [m, k, n, p],
+        "device": device,
+        "dtype": "float32",
+        "mode": "algebraic_joint",
+        "max_dx_diff": max_dx_diff,
+        "std_fresh_saved_mb": round(std_fresh_mb, 3),
+        "ojasx_fresh_saved_mb": round(oj_fresh_mb, 3),
+        "fresh_saved_reduction_pct": round(fresh_saved_pct, 2),
+        "std_median_ms": round(std_med_ms, 3),
+        "ojasx_median_ms": round(oj_med_ms, 3),
+        "speedup_x": round(speedup_x, 2),
+        "scope": "Two consecutive linear layers without intermediate nonlinearity, narrow output p << n (exact real-algebra reassociation)",
+    }
+
+
 def run_stage1_single_laptop_tradeoff_proof(device: str, dim: int = 1024, num_layers: int = 12) -> Dict[str, object]:
-    """Stage 1A: Prove on THIS laptop that OjasX slashes activation tape & persistent .grad memory."""
+    """Stage 1: Single-laptop memory tradeoff, chunked LM head, and narrow-output contraction benchmarks."""
     print("\n" + "=" * 96)
     print("🧪 STAGE 1A: SINGLE-LAPTOP MEMORY TRADEOFF PROOF (Standard PyTorch vs OjasX on This Laptop)")
     print("=" * 96)
@@ -268,7 +471,6 @@ def run_stage1_single_laptop_tradeoff_proof(device: str, dim: int = 1024, num_la
     std_opt.step()
     std_loss_val = float(loss_s.item())
     std_fresh_tape_mb = std_summary["fresh_saved_storage_bytes"] / (1024.0**2)
-    std_logical_tape_mb = std_summary["logical_saved_bytes"] / (1024.0**2)
 
     del std_model, std_opt, x_s, y_s, loss_s
     _release_memory()
@@ -287,9 +489,8 @@ def run_stage1_single_laptop_tradeoff_proof(device: str, dim: int = 1024, num_la
     oj_opt.step()
     oj_loss_val = float(loss_o.item())
     oj_fresh_tape_mb = oj_summary["fresh_saved_storage_bytes"] / (1024.0**2)
-    oj_logical_tape_mb = oj_summary["logical_saved_bytes"] / (1024.0**2)
 
-    del oj_model, oj_opt, x_o, y_o, loss_o
+    del oj_model, oj_opt, x_o, y_o, loss_o, x_base, target
     _release_memory()
 
     std_total_overhead_mb = std_fresh_tape_mb + std_grad_mb
@@ -304,11 +505,28 @@ def run_stage1_single_laptop_tradeoff_proof(device: str, dim: int = 1024, num_la
     print(f"  {'Saved Tensors Count on Tape':<38} | {std_summary['saved_tensors']:<22d} | {oj_summary['saved_tensors']:<22d}")
     print(f"  {'Fresh Intermediate Activation Tape':<38} | {std_fresh_tape_mb:>19.2f} MB | {oj_fresh_tape_mb:>19.2f} MB")
     print(f"  {'Persistent Parameter .grad Buffers':<38} | {std_grad_mb:>19.2f} MB | {oj_grad_mb:>19.2f} MB (0-Byte GradFree)")
-    print(f"  {'Total Training Memory Overhead':<38} | {std_total_overhead_mb:>19.2f} MB | {oj_total_overhead_mb:>19.2f} MB ({saved_pct:.1f}% Saved)")
+    print(f"  {'Total Retained Training Overhead':<38} | {std_total_overhead_mb:>19.2f} MB | {oj_total_overhead_mb:>19.2f} MB ({saved_pct:.1f}% Saved)")
+    print("-" * 96)
+
+    lm_head_res = run_stage1b_chunked_lm_head_proof(device=device)
+    contraction_res = run_stage1c_bottleneck_contraction_proof(device=device)
+    print(
+        f"  [Stage 1B — Chunked LM Head (2x1024x4096, V=32000)] : "
+        f"{lm_head_res['std_median_ms']:.2f} ms / {lm_head_res['std_fresh_saved_mb']:.1f} MB -> "
+        f"{lm_head_res['ojasx_median_ms']:.2f} ms / {lm_head_res['ojasx_fresh_saved_mb']:.1f} MB "
+        f"({lm_head_res['speedup_x']:.2f}x Speedup, {lm_head_res['fresh_saved_reduction_pct']:.1f}% Fresh Saved Reduction)"
+    )
+    print(
+        f"  [Stage 1C — Narrow Linear Chain (2048x1024->2048->32)]: "
+        f"{contraction_res['std_median_ms']:.2f} ms / {contraction_res['std_fresh_saved_mb']:.2f} MB -> "
+        f"{contraction_res['ojasx_median_ms']:.2f} ms / {contraction_res['ojasx_fresh_saved_mb']:.2f} MB "
+        f"({contraction_res['speedup_x']:.2f}x Speedup, {contraction_res['fresh_saved_reduction_pct']:.1f}% Fresh Saved Reduction)"
+    )
     print("=" * 96)
 
     return {
         "parameters": total_params,
+        "device": device,
         "std_loss": std_loss_val,
         "ojasx_loss": oj_loss_val,
         "std_fresh_tape_mb": round(std_fresh_tape_mb, 2),
@@ -316,6 +534,9 @@ def run_stage1_single_laptop_tradeoff_proof(device: str, dim: int = 1024, num_la
         "std_persistent_grad_mb": round(std_grad_mb, 2),
         "ojasx_persistent_grad_mb": round(oj_grad_mb, 2),
         "memory_overhead_saved_pct": round(saved_pct, 2),
+        "scope": "Fresh autograd-saved storage plus post-backward persistent .grad buffers on 12-block MLP (replays smooth activation projections during backward)",
+        "stage1b_chunked_lm_head": lm_head_res,
+        "stage1c_bottleneck_contraction": contraction_res,
     }
 
 
@@ -381,17 +602,19 @@ def run_coordinator(
 ) -> Dict[str, object]:
     coord_device = "mps" if (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()) else "cpu"
     mem_stat = probe_system_memory_gb()
-    # Dynamic safe ceiling: use actual probed OS free RAM (typically 10-14 GB on a 24GB laptop)
     effective_free_ram_mb = round(mem_stat.available_free_ram_gb * 1024.0, 1)
     model_mesh = build_shared_model(dim=dim, num_layers=num_layers, seed=2026)
     total_params = sum(p.numel() for p in model_mesh.parameters())
 
-    batch, seq = 32, 512  # 16,384 tokens per step
+    batch, seq = 32, 512  # 16,384 tokens per step (analytical capacity projection)
     batch_tokens = batch * seq
 
-    # Compute un-sharded Standard PyTorch single-laptop footprint vs Sharded 2-Laptop OjasX footprint
-    std_single_fp = estimate_training_footprint_mb(
-        total_params, batch_tokens, dim, num_layers, is_holonomic_grad_free=False
+    # Like-for-like SGD comparison (0x momentum state) and AdamW comparison (2x state)
+    std_sgd_single_fp = estimate_training_footprint_mb(
+        total_params, batch_tokens, dim, num_layers, is_holonomic_grad_free=False, optimizer_state_multiplier=0.0
+    )
+    std_adamw_single_fp = estimate_training_footprint_mb(
+        total_params, batch_tokens, dim, num_layers, is_holonomic_grad_free=False, optimizer_state_multiplier=2.0
     )
 
     nodes = build_node_specs(worker_host=worker_host, worker_port=port, coordinator_device=coord_device)
@@ -401,6 +624,9 @@ def run_coordinator(
         compress_boundary=True,
         timeout=90.0,
     )
+    del model_mesh
+    _release_memory()
+
     plan = mesh_engine.plan
     laptop_a_layers = plan.node_assignments[nodes[0].node_id]
     laptop_b_layers = plan.node_assignments[nodes[1].node_id]
@@ -408,49 +634,53 @@ def run_coordinator(
     laptop_b_params = plan.node_param_counts[nodes[1].node_id]
 
     laptop_a_fp = estimate_training_footprint_mb(
-        laptop_a_params, batch_tokens, dim, len(laptop_a_layers), is_holonomic_grad_free=True
+        laptop_a_params, batch_tokens, dim, len(laptop_a_layers), is_holonomic_grad_free=True, optimizer_state_multiplier=0.0
     )
     laptop_b_fp = estimate_training_footprint_mb(
-        laptop_b_params, batch_tokens, dim, len(laptop_b_layers), is_holonomic_grad_free=True
+        laptop_b_params, batch_tokens, dim, len(laptop_b_layers), is_holonomic_grad_free=True, optimizer_state_multiplier=0.0
     )
 
-    single_node_would_exceed_cap = std_single_fp["total_training_mb"] > effective_free_ram_mb
+    single_node_would_exceed_cap = std_sgd_single_fp["total_training_mb"] > effective_free_ram_mb
     sharded_fits_both_nodes = (
         laptop_a_fp["total_training_mb"] <= effective_free_ram_mb
         and laptop_b_fp["total_training_mb"] <= effective_free_ram_mb
     )
 
     print("\n" + "=" * 96)
-    print("⚡ STAGE 2: BEYOND-SINGLE-LAPTOP FREE RAM PROOF (226.6M Params / 15.38 GB Std PyTorch Footprint)")
+    print("⚡ STAGE 2: SHARDED VIRTUAL MESH & ANALYTICAL CAPACITY PROJECTION (226.6M Params)")
     print("=" * 96)
     print(f"  Full Model Architecture       : {num_layers} Blocks, Dim={dim}, Hidden={dim*3} ({total_params:,} Parameters)")
     print(f"  This Laptop Total / Free RAM  : {mem_stat.total_ram_gb:.1f} GB Total | {mem_stat.available_free_ram_gb:.2f} GB ({effective_free_ram_mb:.0f} MB) Free Right Now")
     print("-" * 96)
     print(
-        f"  [1] Standard PyTorch on 1 Laptop Alone : {std_single_fp['total_training_mb']:>8.1f} MB ({std_single_fp['total_training_mb']/1024.0:.2f} GB) "
-        f"[Weights={std_single_fp['weights_mb']:.0f}MB + Grad={std_single_fp['persistent_grad_mb']:.0f}MB + "
-        f"AdamW={std_single_fp['optimizer_state_mb']:.0f}MB + Tape={std_single_fp['activation_tape_mb']:.0f}MB]"
+        f"  [1] Analytical 16K-Token Single-Node (SGD)   : {std_sgd_single_fp['total_training_mb']:>8.1f} MB ({std_sgd_single_fp['total_training_mb']/1024.0:.2f} GB) "
+        f"[Weights={std_sgd_single_fp['weights_mb']:.0f}MB + Grad={std_sgd_single_fp['persistent_grad_mb']:.0f}MB + "
+        f"Tape={std_sgd_single_fp['activation_tape_mb']:.0f}MB]"
     )
     print(
-        f"      -> Hardware Safety Guard Verdict   : "
-        f"{'🛑 BLOCKED — Exceeds This Laptop Free RAM (' + str(round(mem_stat.available_free_ram_gb, 2)) + ' GB)! Would Swap/Crash!' if single_node_would_exceed_cap else 'FITS'}"
+        f"      Analytical 16K-Token Single-Node (AdamW) : {std_adamw_single_fp['total_training_mb']:>8.1f} MB ({std_adamw_single_fp['total_training_mb']/1024.0:.2f} GB) "
+        f"[+ AdamW State={std_adamw_single_fp['optimizer_state_mb']:.0f}MB]"
     )
     print(
-        f"  [2] OjasX 2-Laptop Sharded Virtual Mesh: "
+        f"      -> Hardware Safety Guard Verdict         : "
+        f"{'🛑 BLOCKED — Exceeds This Laptop Free RAM (' + str(round(mem_stat.available_free_ram_gb, 2)) + ' GB)!' if single_node_would_exceed_cap else 'FITS'}"
+    )
+    print(
+        f"  [2] OjasX 2-Node Sharded Projection (SGD)    : "
         f"Laptop A = {laptop_a_fp['total_training_mb']:.1f} MB ({laptop_a_fp['total_training_mb']/1024.0:.2f} GB) | "
         f"Laptop B = {laptop_b_fp['total_training_mb']:.1f} MB ({laptop_b_fp['total_training_mb']/1024.0:.2f} GB)"
     )
     print(
-        f"      -> Laptop A (Apple M5 {coord_device.upper():<3})       : Layers {laptop_a_layers} "
+        f"      -> Laptop A (Apple M5 {coord_device.upper():<3})             : Layers {laptop_a_layers} "
         f"({laptop_a_params:,} params, 0MB .grad, 0MB pre-act)"
     )
     print(
-        f"      -> Laptop B (Intel i5 {worker_host}:{port}) : Layers {laptop_b_layers} "
+        f"      -> Laptop B (Worker {worker_host}:{port})     : Layers {laptop_b_layers} "
         f"({laptop_b_params:,} params, 0MB .grad, 0MB pre-act)"
     )
     print(
-        f"      -> Hardware Safety Guard Verdict   : "
-        f"{'✅ SAFE ON BOTH LAPTOPS (3.6x Lower Peak RAM on Laptop A — Zero Swap / Zero Crash!)' if sharded_fits_both_nodes else 'EXCEEDS'}"
+        f"      -> Hardware Safety Guard Verdict         : "
+        f"{'✅ FITS analytical free-RAM budget on both partitions' if sharded_fits_both_nodes else 'EXCEEDS'}"
     )
     print("-" * 96)
 
@@ -483,7 +713,7 @@ def run_coordinator(
 
         loss_val = float(loss_m.item())
         print(
-            f"  Step {step:02d}/{steps:02d} | 2-Laptop Sharded Loss: {loss_val:.6f} | "
+            f"  Step {step:02d}/{steps:02d} (512-tok microbatch) | Sharded Loss: {loss_val:.6f} | "
             f"Coord .grad RAM: 0.00 MB | Step Time: {dt_ms:.1f} ms"
         )
         step_records.append(
@@ -512,9 +742,18 @@ def run_coordinator(
     _release_memory()
 
     return {
+        "scope": (
+            "16,384-token footprints are analytical component estimates; live TCP execution runs 5 steps with a "
+            "512-token microbatch (4x128). Coordinator constructs initial model template in memory before partitioning."
+        ),
+        "topology": f"coordinator({coord_device}) -> worker({worker_host}:{port})",
         "total_parameters": total_params,
         "probed_free_ram_mb": effective_free_ram_mb,
-        "standard_pytorch_single_node_footprint_mb": std_single_fp,
+        "analytical_projection_batch_tokens": batch_tokens,
+        "executed_microbatch_tokens": exec_batch * exec_seq,
+        "coordinator_loads_initial_model_template": True,
+        "standard_pytorch_sgd_single_node_footprint_mb": std_sgd_single_fp,
+        "standard_pytorch_adamw_single_node_footprint_mb": std_adamw_single_fp,
         "single_node_blocked_by_safety_guard": single_node_would_exceed_cap,
         "laptop_a_sharded_footprint_mb": laptop_a_fp,
         "laptop_b_sharded_footprint_mb": laptop_b_fp,
@@ -557,7 +796,17 @@ def main() -> None:
             single_node_safe_cap_mb=args.safe_cap_mb,
         )
         report_path = Path(__file__).resolve().parents[1] / "reports" / "TWO_LAPTOP_PHYSICAL_MESH_REPORT.json"
-        report_path.write_text(json.dumps(res, indent=2) + "\n")
+        report_path.write_text(
+            json.dumps(
+                {
+                    "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                    "source_sha256": _source_sha256(),
+                    "stage2_sharded_mesh": res,
+                },
+                indent=2,
+            )
+            + "\n"
+        )
     else:
         coord_device = "mps" if (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()) else "cpu"
         stage1_res = run_stage1_single_laptop_tradeoff_proof(device=coord_device, dim=1024, num_layers=12)
@@ -590,7 +839,16 @@ def main() -> None:
 
         report_path = Path(__file__).resolve().parents[1] / "reports" / "TWO_LAPTOP_PHYSICAL_MESH_REPORT.json"
         report_path.write_text(
-            json.dumps({"stage1_single_laptop_tradeoff": stage1_res, "stage2_sharded_mesh": stage2_res}, indent=2) + "\n"
+            json.dumps(
+                {
+                    "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                    "source_sha256": _source_sha256(),
+                    "stage1_single_laptop_tradeoff": stage1_res,
+                    "stage2_sharded_mesh": stage2_res,
+                },
+                indent=2,
+            )
+            + "\n"
         )
 
 

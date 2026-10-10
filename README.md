@@ -124,11 +124,15 @@ pytest -q
 OJASX_DISABLE_NATIVE=1 pytest -q tests/test_review_regressions.py -k portable
 # Requires optional native TileLang library and benchmark dependencies:
 python tools/run_industrial_all_level_benchmark.py
+# Single-laptop memory tradeoff, chunked LM-head replay, narrow linear-chain contraction, and loopback mesh harness:
+python tools/run_two_laptop_physical_mesh.py --role local-proof
 # Additional project-maintained sample harnesses:
 python tools/run_official_benchmarks_suite.py
 python tools/run_holonomic_opinfo_and_backendbench.py
 ```
 
 The five-level script writes `reports/INDUSTRIAL_ALL_LEVEL_BENCHMARK_SCORE.json` with status, dimensions, topology, scope, timestamp and source hashes. Failed runs write a failed status rather than leaving a prior successful result presented as current.
+
+`tools/run_two_laptop_physical_mesh.py` writes `reports/TWO_LAPTOP_PHYSICAL_MESH_REPORT.json` with source hashes and four scoped measurements: (1) a 12-block MLP comparing fresh autograd-saved storage plus post-backward persistent `.grad` buffers under `HolonomicGradFreeOptimizer`, (2) first-order chunked cross-entropy replay (`holonomic_lm_head_loss`) trading backward recomputation for zero fresh saved logit storage, (3) narrow-output two-linear reassociation (`linear_chain`), and (4) an analytical 16,384-token capacity projection paired with a 5-step, 512-token loopback TCP execution.
 
 Formal specifications are in `lean/` and `rocq/`; runners and supporting documentation are in `tools/` and `docs/`. See `LICENSE` for AGPL-3.0 terms.
