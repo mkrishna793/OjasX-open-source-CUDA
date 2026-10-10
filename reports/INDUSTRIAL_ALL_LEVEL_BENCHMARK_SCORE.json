@@ -1,0 +1,47 @@
+{
+  "version": "0.3.0",
+  "silicon": {
+    "l1d_cache_bytes": 65536,
+    "l2_cache_bytes": 6291456,
+    "cache_line_bytes": 128,
+    "physical_cpu_cores": 10,
+    "has_apple_amx": true,
+    "has_mps_gpu": true,
+    "unified_memory": true,
+    "chip_class": "Apple_Silicon_Unified_GPU_AMX_ANE"
+  },
+  "level_1_cpp_tilelang_kernels": {
+    "opcheck_passed": true,
+    "z3_smt_zero_bank_conflicts": true,
+    "cross_backend_cpu_metal_bit_exact_mask": true,
+    "cpp_l1_rmsnorm_speedup_x": 1.498,
+    "pytorch_rmsnorm_us": 1307.63,
+    "ojasx_cpp_rmsnorm_us": 873.06
+  },
+  "level_2_pytorch_official_opinfo": {
+    "passed": 70,
+    "total": 70,
+    "pass_rate_pct": 100.0
+  },
+  "level_3_meta_backendbench_parquet": {
+    "total_parquet_rows_loaded": 19171,
+    "production_shapes_verified": 25,
+    "min_gradient_cosine_similarity": 1.0,
+    "avg_activation_mask_compression_x": 32.0
+  },
+  "level_4_industry_model_training": {
+    "llama3_loss_std": 8.417201,
+    "llama3_loss_ojasx": 8.417201,
+    "llama3_saved_tape_std_mb": 13.506,
+    "llama3_saved_tape_ojasx_mb": 3.629,
+    "llama3_tape_reduction_pct": 73.13,
+    "persistent_grad_mb": 0.0,
+    "lora_smart_router_saved_pct": 33.15
+  },
+  "level_5_multi_laptop_p2p_mesh": {
+    "pooled_virtual_gpu_gb": 26.0,
+    "tcp_wire_compression_x": 3.76,
+    "gradient_cosine_similarity": 0.999986
+  },
+  "residual_gpu_memory_mb": 82.427
+}
