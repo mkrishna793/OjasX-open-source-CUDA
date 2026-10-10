@@ -1,41 +1,20 @@
-# Python
 __pycache__/
 *.py[cod]
+*$py.class
 *.egg-info/
-dist/
-build/
-*.egg
-.eggs/
 .pytest_cache/
-
-# Virtual environments
+.tools/
 .venv/
 venv/
-env/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-
-# OS
+build/
+dist/
 .DS_Store
-Thumbs.db
-
-# OpenCL cache
-~/.torchcl/
-.cache/
-
-# Distribution
-*.whl
-*.tar.gz
-
-# Upstream PyTorch & Large Clones
-pytorch_upstream/
-
-# Local Repo Kernel & Scratch
-.repo-kernel/
-tests/debug_test4.py
-tests/test_fix_matmul.py
-*.exe
-*.log
+lean/.lake/
+rocq/*.vo
+rocq/*.vok
+rocq/*.vos
+rocq/*.glob
+rocq/.*.aux
+rocq/.Makefile.d
+rocq/Makefile
+rocq/Makefile.conf

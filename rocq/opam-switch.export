@@ -1,0 +1,34 @@
+opam-version: "2.0"
+compiler: [
+  "base-bigarray.base"
+  "base-threads.base"
+  "base-unix.base"
+  "ocaml.4.14.2"
+  "ocaml-base-compiler.4.14.2"
+  "ocaml-config.2"
+  "ocaml-options-vanilla.1"
+]
+roots: [
+  "ocaml-base-compiler.4.14.2"
+  "rocq-core.9.2.0"
+  "rocq-prover.meta.1"
+  "rocq-stdlib.9.2.0"
+]
+installed: [
+  "base-bigarray.base"
+  "base-threads.base"
+  "base-unix.base"
+  "conf-gmp.5"
+  "conf-pkg-config.5"
+  "dune.3.23.1"
+  "ocaml.4.14.2"
+  "ocaml-base-compiler.4.14.2"
+  "ocaml-config.2"
+  "ocaml-options-vanilla.1"
+  "ocamlfind.1.9.8"
+  "rocq-core.9.2.0"
+  "rocq-prover.meta.1"
+  "rocq-runtime.9.2.0"
+  "rocq-stdlib.9.2.0"
+  "zarith.1.14"
+]

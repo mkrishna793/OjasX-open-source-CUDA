@@ -1,37 +1,32 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ojasx"
-version = "1.0.0"
-description = "The Universal AI Compute Engine — Run PyTorch on ANY GPU. Breaking the CUDA monopoly with OpenCL."
+name = "ojasx-verified-core"
+version = "0.2.0"
+description = "Formally Certified Holonomic Cotangent Invariant Calculus (HCIC) Backend & Compiler for PyTorch 2.x"
 readme = "README.md"
-requires-python = ">=3.10"
-license = {text = "AGPL-3.0-or-later"}
-authors = [
-    {name = "TorchCL Contributors"},
-]
-keywords = ["pytorch", "opencl", "gpu", "deep-learning", "amd", "intel"]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
-    "Programming Language :: Python :: 3",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
-]
-dependencies = [
-    "torch>=2.1.0",
-    "pyopencl>=2024.1",
-    "numpy>=1.24.0",
-]
+requires-python = ">=3.9"
+dependencies = ["torch>=2.8,<2.9", "z3-solver>=4.13", "sympy>=1.13"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "pytest-benchmark"]
+test = ["pytest>=8"]
+
+[project.scripts]
+ojasx-verify = "ojasx2.cli:main"
+
+[project.entry-points."torch_dynamo_backends"]
+holonomic = "ojasx2.holonomic_math_compiler:holonomic_backend"
+holonomic_aot = "ojasx2.aot_holonomic_compiler:holonomic_aot_backend"
 
 [tool.setuptools.packages.find]
-include = ["torchcl*"]
+include = ["ojasx2*"]
 
 [tool.setuptools.package-data]
-torchcl = ["kernels/*.cl"]
+ojasx2 = ["codegen/*.yaml", "csrc/*.cpp", "csrc/*.dylib"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-ra"

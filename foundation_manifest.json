@@ -1,0 +1,480 @@
+{
+  "version": "2.4-dense-nonlinear-residual-foundation",
+  "status": "verified_reference_foundation_with_explicit_gaps",
+  "semantics": {
+    "formal_arithmetic": "Lean real inner-product/finite algebraic mathematics; Rocq canonical rational Qc contracts and exact algorithms",
+    "cost_arithmetic": "Natural-number scalar/block arithmetic models; not certified hardware latency or allocator peak",
+    "floating_execution": "Current bounded MPS FP32 research with CPU numerical fallback disabled; historical CPU reference evidence retained separately. No global floating-point/backend refinement proof."
+  },
+  "composition": {
+    "proof_module": "rocq/Contracts.v",
+    "supports": [
+      "composition",
+      "branch pullback accumulation",
+      "finite repetition",
+      "sufficient-residual substitution"
+    ],
+    "leaf_obligation": "Prove that the supplied push map is the derivative of the primal; an adjoint identity alone is insufficient.",
+    "real_proof_module": "lean/OjasXMath/AbstractEngine.lean",
+    "scope": "Conditional semantic generality for finite compositions whose leaves discharge actual derivative, residual, domain and effect obligations; no universal cheap representation."
+  },
+  "families": [
+    {
+      "name": "matrix multiplication",
+      "proofs": [
+        "Matrix.mm_first_order",
+        "Matrix.mm_input_adjoint",
+        "Matrix.mm_weight_adjoint"
+      ],
+      "optimization": "conditional chain reassociation; Strassen/Winograd candidates opt-in"
+    },
+    {
+      "name": "pointwise activation",
+      "proofs": [
+        "Structured.structured_adjoint"
+      ],
+      "analytic_coefficients": "ReLU, SiLU, exact GELU, sigmoid, tanh, square tested; no new general Rocq transcendental derivative proof",
+      "default": "native"
+    },
+    {
+      "name": "softmax",
+      "proofs": [
+        "Structured.softmax_as_rank_one",
+        "Structured.softmax_zero_sum"
+      ],
+      "leaf_obligation": "coefficients are the actual softmax output",
+      "default": "native"
+    },
+    {
+      "name": "normalization",
+      "proofs": [
+        "Structured.structured_adjoint",
+        "Foundation.structured_composition",
+        "Compact.rms_residual_sufficient",
+        "Compact.normalized_rms_rewrite",
+        "Compact.layer_residual_sufficient",
+        "Compact.epsilon_radial_correction",
+        "Compact.affine_all_gradients",
+        "Compact.compact_rms_residual_budget",
+        "Compact.compact_layer_residual_budget"
+      ],
+      "analytic_coefficients": "RMSNorm/LayerNorm normalized-value input pullbacks plus all shared gain/bias gradients tested, including tiny positive epsilon. Analytic coefficient construction remains empirically qualified, not a Rocq transcendental derivative proof.",
+      "default": "native unless a separately qualified existing core rewrite applies",
+      "residual_model": "n values plus one inverse scale per row; excludes parameters, graph retention, temporaries and allocator peak",
+      "domain": "FP32/FP64; nonempty coordinate axis; finite representable positive fixed scalar epsilon; shared affine parameters"
+    },
+    {
+      "name": "indexing convolution recurrent research composition",
+      "proofs": [
+        "Contracts.repeated_adjoint",
+        "Contracts.cotangent_accumulation"
+      ],
+      "status": "representative PyTorch derivative compatibility tests; no full extracted Rocq executor for these models"
+    },
+    {
+      "name": "gather and repeated-index scatter",
+      "proofs": [
+        "Indexed.gather_first_order",
+        "Indexed.gather_scatter_adjoint"
+      ],
+      "domain": "finite in-range index map, including repetitions and empty sums",
+      "status": "exact extracted reference checked; summing cotangents is required"
+    },
+    {
+      "name": "joint training objectives",
+      "proofs": [
+        "ObjectiveCompiler.objective_quadratic_gram_primal",
+        "ObjectiveCompiler.objective_stream_accumulate",
+        "ObjectiveCompiler.objective_partition"
+      ],
+      "optimization": "Conditional quadratic leading arithmetic reduction; broad first-order separable residual streaming; guarded fixed-zero example elimination"
+    }
+  ],
+  "matrix_candidates": {
+    "proof_module": "rocq/RankSeven.v",
+    "known_algorithms": [
+      "Strassen",
+      "Strassen-Winograd"
+    ],
+    "joint_counts": {
+      "conventional": {
+        "products": 24,
+        "additions": 12
+      },
+      "strassen": {
+        "products": 21,
+        "additions": 54
+      },
+      "winograd": {
+        "products": 21,
+        "additions": 45
+      }
+    },
+    "uniform_block_cost_conditions": {
+      "strassen": "M >= 14 A",
+      "winograd": "M >= 11 A"
+    },
+    "runtime_qualification": "CPU references slower on all eight measured cases; automatic dispatch disabled",
+    "scratch_budget": "guard checks supplied estimate; no allocator-derived scratch theorem"
+  },
+  "required_backend_contract": [
+    "original primal, every differentiable operand and demanded cotangent",
+    "actual derivative or explicit selected-backward convention",
+    "shape, domain, dtype, device and numerical guard validity",
+    "representation closure, encoding/decoding and all original parameter dependencies",
+    "residual sufficiency and separate higher-order behavior",
+    "primal, gradient, loss-cotangent and optimizer/state error contract",
+    "alias, mutation/version, random state and shared-use accumulation semantics",
+    "complete arithmetic, construction, gradient recovery, guards and recomputation costs",
+    "live residual, dense output, persistent state, transient workspace and peak-memory accounting",
+    "kernel proofs, matching source hashes, raw failures and scoped repeated GPU evidence",
+    "correct native or same-surrogate fallback and boundary behavior"
+  ],
+  "not_established": [
+    "global minimum memory",
+    "large gains across most whole models",
+    "arbitrary future primitive correctness",
+    "bitwise reassociation equivalence",
+    "transparent general portable GPU backend",
+    "one GPU replacing three or four for ordinary large-model training",
+    "long-term model quality/convergence of the polynomial approximation",
+    "uniform true-GELU/SiLU analytic remainder and IEEE/backend certificate",
+    "complete-model speed qualification for the latest spectral composed models"
+  ],
+  "verification_command": ".tools/conformance-venv/bin/python -B tools/refine_demand_foundation.py",
+  "report": "reports/spectral-formal-verification.json",
+  "broad_report": "reports/broad-foundation.json",
+  "refinement_report": "reports/foundation-edges.json",
+  "abstract_engine": {
+    "proof_module": "lean/OjasXMath/AbstractEngine.lean",
+    "discovery": "tools/discover_backprop.py",
+    "verification": "tools/verify_spectral_foundation.py (current entire-project formal-only audit)",
+    "scope": "Real complete inner-product spaces; primal derivative validity and sufficient residual required. Input space may contain all parameters. Nondifferentiable points need a separate selected-derivative contract.",
+    "historical_verification": "tools/verify_abstract_foundation.py"
+  },
+  "polynomial_candidates": {
+    "domain": "homogeneous degree-2/3 no-bias dense blocks, FP32/FP64 reference",
+    "all_operand_gradients": "exact Fraction oracle plus sampled PyTorch and higher-order tests",
+    "general_theorem": "homogeneous_feature_tensor for arbitrary finite dimensions and degree; symmetric grouping fully ring-certified for generated two-input/two-hidden instances",
+    "cost": "full scalar feature construction and all six GEMMs plus shared SGD update; positive shapes; logical retained residual and reference feature-size guards",
+    "automatic_dispatch": false,
+    "numeric_scope": "pointwise scalar roundoff certificates; no GPU GEMM refinement"
+  },
+  "nonlinear_gpu_research": {
+    "documentation": "GPU_NONLINEAR_DISCOVERY.md",
+    "formal_report": "reports/nonlinear-formal-verification.json",
+    "gpu_report": "reports/nonlinear-gpu-search.json",
+    "repeat_report": "reports/nonlinear-gpu-repeat.json",
+    "edge_report": "reports/nonlinear-gpu-edges.json",
+    "verification": "python -B tools/verify_nonlinear_foundation.py (formal only); GPU tools run separately with PYTORCH_ENABLE_MPS_FALLBACK=0",
+    "automatic_dispatch": false,
+    "native_activations_exact": false,
+    "domain": "Opt-in GELU/SiLU/SwiGLU quadratic gate surrogate; input widths 1,2,4; MPS FP32; gate radius <=0.05 and conservative magnitude/conditioning guards.",
+    "status": "accuracy_and_retained_memory_candidate; no reliable nonlinear speed win",
+    "scope": "All original operand gradients; higher surrogate derivatives; full plain-SGD cost and timing; no full-model convergence or total GPU peak guarantee."
+  },
+  "coordinate_compiler": {
+    "documentation": "MATHEMATICAL_COMPILER.md",
+    "formal_report": "reports/coordinate-formal-verification.json",
+    "qualification": "reports/coordinate-qualification.json",
+    "search": "tools/discover_coordinate_compiler.py",
+    "runtime": "ojasx2/coordinate_compiler.py",
+    "automatic_dispatch": false,
+    "added_foundation_axioms": [],
+    "supports": "General domain-preserving representation sequence contracts; experimentally qualified positive power/scale and triangular nonlinear Koopman families, including separate original stage weights.",
+    "scope": "Exact-real finite closure, numerical GPU qualification; no universal compact representation or all-model reduction claim."
+  },
+  "gradient_factor_refinement": {
+    "document": "ACTIVATION_BACKPROP_REFINEMENT.md",
+    "discovery": "reports/gradient-factor-discovery.json",
+    "formal_report": "reports/gradient-formal-verification.json",
+    "gpu_report": "reports/gradient-factor-gpu.json",
+    "admission_ledger": "reports/gradient-qualification.json",
+    "runner": "tools/refine_gradient_foundation.py",
+    "scope": "Bounded joint activation/all-original-parameter cotangent synthesis, arbitrary finite factor interaction, size-dependent guards, GPU-only mixed-graph tests; scoped linear/square projection rules",
+    "added_axioms": [],
+    "universal_or_most_model_reduction": false,
+    "automatic_graph_dispatch": false,
+    "ml_numerical_execution": "MPS only; CPU fallback disabled"
+  },
+  "invariant_radial_refinement": {
+    "document": "INVARIANT_FOUNDATION_REFINEMENT.md",
+    "discovery": "reports/invariant-discovery.json",
+    "formal_report": "reports/invariant-formal-verification.json",
+    "gpu_report": "reports/invariant-gpu.json",
+    "composition_gpu_report": "reports/invariant-composition-gpu.json",
+    "qualification": "reports/invariant-qualification.json",
+    "runner": "tools/refine_invariant_foundation.py",
+    "runtime": "ojasx2/invariant_radial_compiler.py",
+    "chamber_runtime": "ojasx2/chamber_compiler.py",
+    "scope": "Existing radial vector activations using squared-norm gates, bias and all original X/W/b/Q and trainable sigmoid gate gradients. Arbitrary finite exact-real contractions; FP32 MPS sampled qualification.",
+    "added_axioms": [],
+    "cpu_ml_execution": false,
+    "automatic_graph_dispatch": false,
+    "unchanged_dense_gelu_silu_replacement": false,
+    "raw_normalized_model_candidate_rejections": 3,
+    "chamber_speed_admitted": false,
+    "memory_scope": "Fresh autograd-retained activation storage, excludes original inputs/parameters, allocator peak and optimizer state",
+    "formal_IEEE_or_backend_refinement": false
+  },
+  "coordinate_spectral_refinement": {
+    "document": "SPECTRAL_COORDINATE_FOUNDATION.md",
+    "formal_report": "reports/spectral-formal-verification.json",
+    "discovery": "reports/spectral-discovery.json",
+    "gpu_report": "reports/spectral-gpu.json",
+    "qualification": "reports/spectral-qualification.json",
+    "runtime": "ojasx2/spectral_compiler.py",
+    "coefficients": "ojasx2/spectral_coefficients.py",
+    "runner": "tools/refine_spectral_foundation.py",
+    "added_axioms": [],
+    "cpu_ml_execution": false,
+    "scope": "Matching coordinate-sensitive polynomial forward/all-original-X,W,b,Q gradients; degree-8 Chebyshev derivative refinement of degree-12 Taylor reference. Bounded FP32 MPS research approximation.",
+    "primal_changed": true,
+    "automatic_graph_dispatch": false,
+    "input_width_grammar": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "maximum_features": 512,
+    "numerical_box_radius": 1,
+    "whole_model_and_optimizer_qualification_required": true,
+    "formal_polynomial_reference_error_bound": true,
+    "formal_activation_remainder_and_IEEE_certificate": false,
+    "most_model_reduction_established": false
+  },
+  "canonical_documents": {
+    "current_foundation": "OJASX_MATHEMATICAL_FOUNDATION.md",
+    "research_and_refinement_history": "OJASX_RESEARCH_AND_REFINEMENT_HISTORY.md",
+    "consolidated_on": "2026-10-08",
+    "change_scope": "Stable scaled normalization derivative/evaluation, scoped GPU joint prototype and explicit checked/native execution; raw numerical disagreements retained.",
+    "updated_through": "2026-10-09"
+  },
+  "workload_coverage": {
+    "ledger": "OJASX_MATHEMATICAL_FOUNDATION.md",
+    "scope": "Major present-day workload families and future extension obligations; not exhaustive all-operator or all-model verification.",
+    "semantic_support": "Conditional abstract derivative/adjoint composition with supplied primitive contracts.",
+    "current_exact_real_optimization_families": [
+      "dimension-favorable original-parameter linear contraction",
+      "square and certified-mask slope factor contractions",
+      "existing radial blocks through small Gram/projection cores",
+      "triangular finite Koopman recurrence",
+      "selected sufficient-residual and reversible/cached schedules",
+      "dense nonlinear sufficient-residual schedule without first-order matrix replay",
+      "existing dense rank-seven primal/transposed-circuit arithmetic"
+    ],
+    "current_approximation_family": "Matched coordinate polynomial GELU/SiLU projection with bounded domains and narrow input widths.",
+    "historical_cpu_compatibility_families": [
+      "linear chain",
+      "GELU MLP",
+      "SwiGLU",
+      "convolution",
+      "softmax attention",
+      "LayerNorm/RMSNorm",
+      "shared-weight recurrence",
+      "repeated-index embedding",
+      "fixed dropout residual",
+      "polynomial research gate",
+      "unrolled ODE"
+    ],
+    "not_qualified_for_broad_new_savings": [
+      "large arithmetic and speed reductions for ordinary wide GELU/SiLU/SwiGLU networks",
+      "general attention/Transformer training",
+      "general CNN or RNN training",
+      "arbitrary new primitives",
+      "dynamic/effectful graphs",
+      "sparse/ragged/quantized/complex/distributed workloads",
+      "general higher-order training"
+    ],
+    "all_workloads_verified": false,
+    "most_model_large_savings_established": false,
+    "automatic_general_graph_dispatch": false
+  },
+  "evidence_policy": {
+    "current_whole_project_formal_audit": "reports/spectral-formal-verification.json",
+    "latest_gpu_observations": "reports/dense-gpu.json",
+    "latest_source_matched_admission": "reports/dense-qualification.json",
+    "historical_bundles": "Preserve raw scope and original source hashes/counts; not current whole-project hash certifications.",
+    "proof_counts": "Statement declarations, including generated specializations; not independent mathematical inventions.",
+    "memory_scope": "Fresh retained activation storage unless a report explicitly records another metric; not total peak GPU RAM.",
+    "approximation": "Changes primal; matched surrogate derivative, domain and whole-program qualification required.",
+    "extraction": "Proved source algorithm under its assumptions; no blanket compiler/FFI/hardware bug-free guarantee."
+  },
+  "verification_workflow": {
+    "formal_and_existing_gpu_command": "python -B tools/refine_spectral_foundation.py --qualify-existing-gpu",
+    "fresh_gpu_command": "PYTORCH_ENABLE_MPS_FALLBACK=0 python -B tools/refine_spectral_foundation.py --gpu",
+    "current_numerical_device": "MPS GPU only; fail if unavailable",
+    "proof_and_symbolic_device": "Host permitted",
+    "background_automation_installed": false,
+    "legacy_cpu_test_runners": "Historical; outside current GPU-only numerical workflow."
+  },
+  "numerical_repairs": {
+    "runtime": "ojasx2/numerical_repairs.py",
+    "lean": "lean/OjasXMath/InvariantRadial.lean",
+    "rocq": "rocq/InvariantRadial.v",
+    "gpu_report": "reports/numerical-repairs-gpu.json",
+    "verification": "tools/verify_numerical_repairs.py",
+    "report": "reports/numerical-repairs-verification.json",
+    "added_lean_statements": 2,
+    "added_rocq_statements": 2,
+    "new_z3_checks": 3,
+    "stable_coefficient": "(eps/(scale^2*variance+eps))*rsqrt(scale^2*variance+eps)",
+    "remaining_raw_relative_normalization_failures": 2,
+    "sensitive_normalized_models_using_native": 3,
+    "callback_contract": "Pure deterministic scalar MPS loss with original operands; no mutation or unfixed RNG.",
+    "universal_or_all_edge_case_certificate": false,
+    "new_speed_gain_established": false
+  },
+  "objective_compiler": {
+    "runtime": "ojasx2/objective_compiler.py",
+    "lean": "lean/OjasXMath/ObjectiveCompiler.lean",
+    "rocq": "rocq/ObjectiveCompiler.v",
+    "refinement_command": "tools/refine_objective_foundation.py",
+    "gpu_report": "reports/objective-gpu.json",
+    "admission_report": "reports/objective-qualification.json",
+    "new_lean_theorems": 23,
+    "new_rocq_statements": 16,
+    "symbolic_checks_and_counterexamples": 24,
+    "shape_decisions": 27,
+    "rules": [
+      "quadratic objective Gram contraction with original input/weight/bias gradients",
+      "finite separable objective and pullback streaming",
+      "fixed zero-weight independent-example elimination under additional domain/usage conditions"
+    ],
+    "quadratic_arithmetic": "Unbiased both-gradient leading count: 6mkn -> 4mkn+4k^2(m+n); separate guards/pointwise/feature/optimizer costs; charge encoded bias dimension separately",
+    "memory_model": "persistent + chunk_size * per_example_residual, plus input/target/gradient/workspace accounting",
+    "gpu_families": [
+      "GELU MLP",
+      "SiLU MLP",
+      "shared residual",
+      "custom sine",
+      "SiLU convolution",
+      "causal attention"
+    ],
+    "numerical_policy": "Strict quadratic mode native; explicit algebraic opt-in; loss and requested-gradient cancellation rejection; target/higher-order native route. Guard heuristics are not IEEE proofs.",
+    "callback_contract": "Caller-declared independent examples, deterministic evaluation, no mutation; zero pruning additionally needs uniform parameter usage and finite per-example loss/gradient.",
+    "speed_policy": "New reference schedules failed repeated speed admission; retain raw failures, do not automatically enable as speed optimizations.",
+    "unresolved": [
+      "automatic arbitrary Python effect/separability proof",
+      "full floating-point implementation refinement",
+      "global arithmetic/peak-memory optimality",
+      "speed across ordinary dense models",
+      "complete transparent portable production compiler"
+    ],
+    "gpu_cases": 34,
+    "current_total_lean_theorems": 475,
+    "current_total_rocq_statements": 238
+  },
+  "loss_directed_compiler": {
+    "runtime": "ojasx2/loss_compiler.py",
+    "fx": "ojasx2/loss_fx.py",
+    "proofs": [
+      "lean/OjasXMath/LossCompiler.lean",
+      "rocq/LossCompiler.v"
+    ],
+    "qualification": "reports/loss-qualification.json",
+    "new_lean_theorems": 17,
+    "new_rocq_statements": 9,
+    "default_accuracy": "strict",
+    "candidate_domain": "opt-in finite FP32 first-order index-target sum/mean CE; native routes for unsupported cases",
+    "schedules": [
+      "selected loss rows",
+      "bounded replay of active head chunks"
+    ],
+    "all_active_replay_reduces_flops": false,
+    "whole_model_speed_claim": false,
+    "parameter_storage_eliminated": false,
+    "cpu_numerical_ml": false,
+    "stock_conformance_certification": false,
+    "test_tools": {
+      "TorchCTS": "0.4.1",
+      "BackendBench": "0.1.0",
+      "torch": "2.8.0"
+    },
+    "external_report": "reports/external-conformance-gpu.json",
+    "resource_target": "200B/32GB tracked as unachieved by explicit dense-state ledger"
+  },
+  "cotangent_refinement": {
+    "proofs": [
+      "lean/OjasXMath/CotangentQuotient.lean",
+      "rocq/CotangentQuotient.v"
+    ],
+    "runtime": "ojasx2/cotangent_quotient.py",
+    "runner": "tools/refine_cotangent_foundation.py",
+    "qualification": "reports/cotangent-qualification.json",
+    "gpu_report": "reports/cotangent-quotient-gpu.json",
+    "discovery": "reports/cotangent-quotient-discovery.json",
+    "added_axioms": [],
+    "principle": "Quotient by the kernel of all requested pullback observations; exact-real affine/nonlinear defect decomposition",
+    "all_original_gradients": true,
+    "representation_theorem_dimension_general": true,
+    "cheap_representation_condition": "Small value AND slope defect support, favorable shape, construction cost and numerical qualification",
+    "smooth_native_support": "Rounded values/unit slopes only; no uniform real or IEEE certificate",
+    "streaming_activations": [
+      "relu",
+      "leaky_relu",
+      "hardtanh",
+      "gelu",
+      "silu",
+      "tanh",
+      "sigmoid",
+      "square",
+      "identity",
+      "swiglu"
+    ],
+    "streaming_recomputes": true,
+    "streaming_arithmetic_reduction": false,
+    "native_hardtanh_boundaries": "Strict interval certificates exclude both endpoints; native VJP determines endpoint behavior",
+    "automatic_graph_dispatch": false,
+    "universal_speedup": false,
+    "most_model_speedup": false,
+    "gpu_numerical_execution": "MPS FP32, CPU fallback disabled; bounded tests and higher-order native recomputation",
+    "memory_scope": "Fresh saved activation storage, excluding original operands, dense gradients, optimizer state and transient peak"
+  },
+  "demand_refinement": {
+    "runtime": "ojasx2/demand_algebra.py",
+    "proofs": [
+      "lean/OjasXMath/DemandAlgebra.lean",
+      "rocq/DemandAlgebra.v"
+    ],
+    "runner": "tools/refine_demand_foundation.py",
+    "report": "reports/demand-qualification.json",
+    "scope": "Private deterministic rowwise blocks; actual exact-zero cotangent row/column support; original full forward and all requested gradients",
+    "dense_all_active_arithmetic_reduction": false,
+    "activation_approximation": false,
+    "higher_order": "Native recomputation",
+    "saved_memory": "Original operands retained; full forward and backward scratch remain",
+    "automatic_graph_dispatch": false,
+    "historical_novelty_claim": false
+  },
+  "dense_refinement": {
+    "runtime": "ojasx2/dense_joint.py",
+    "proofs": [
+      "lean/OjasXMath/DenseJoint.lean",
+      "rocq/DenseJoint.v"
+    ],
+    "runner": "tools/refine_dense_foundation.py",
+    "qualification": "reports/dense-qualification.json",
+    "discovery": "reports/dense-discovery.json",
+    "gpu_report": "reports/dense-gpu.json",
+    "new_lean_theorems": 20,
+    "new_rocq_statements": 8,
+    "added_axioms": [],
+    "dense_nonlinear_memory_support": true,
+    "fresh_saved_activation_reduction": 0.5,
+    "first_order_matrix_replay": false,
+    "dense_arithmetic_candidate": "Existing Winograd seven-product circuit; charged encodings and requested gradients",
+    "dense_arithmetic_speed_admitted": false,
+    "whole_model_speed_qualified": false,
+    "automatic_graph_dispatch": false,
+    "historical_novelty_claim": false,
+    "numerical_policy": "Strict native; explicit algebraic candidates; checked matrix mode charges references and rejects cancellation disagreements",
+    "formal_IEEE_refinement": false,
+    "cpu_ml_execution": false,
+    "memory_scope": "Fresh saved activations, excluding original operands, gradients, optimizer state and transient/allocator peak",
+    "raw_numerical_rejections": 6,
+    "repaired_checked_cases": 6,
+    "gpu_cases": 80
+  }
+}

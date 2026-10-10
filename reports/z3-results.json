@@ -1,0 +1,282 @@
+{
+  "solver_version": "5.1.0",
+  "proofs": [
+    {
+      "name": "mask_byte_roundtrip",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "All 256 byte masks, exact bit representation",
+      "counterexample": null
+    },
+    {
+      "name": "packed_bit_address",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "All 32-bit indices; address decomposition only",
+      "counterexample": null
+    },
+    {
+      "name": "xor_column_inverse",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "32-column XOR layout, known row",
+      "counterexample": null
+    },
+    {
+      "name": "padded_column_banks",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "32-bank model, one fixed-column load per distinct lane; not all GPU instructions",
+      "counterexample": null
+    },
+    {
+      "name": "bounded_flat_layout_injective",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "32x32 tile, bounded arithmetic without address overflow",
+      "counterexample": null
+    },
+    {
+      "name": "packed_residual_capacity",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Integer storage arithmetic: ceil(n/8) bytes hold n Boolean flags",
+      "counterexample": null
+    },
+    {
+      "name": "relu_pullback_selected_bits",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Threshold convention, including NaN inputs and signed-zero upstream; excludes NaN upstream payloads",
+      "counterexample": null
+    },
+    {
+      "name": "decoder_shared_cotangents",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Real additive decoder algebra, not floating addition reassociation",
+      "counterexample": null
+    },
+    {
+      "name": "streamed_a_output_slot_schedule",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Seven independent real gradient channels; schedule 6,3,4,5,1,7,2; no floating or alias safety claim",
+      "counterexample": null
+    },
+    {
+      "name": "streamed_b_output_slot_schedule",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Seven independent real gradient channels, temporary B11 consumed before overwrite",
+      "counterexample": null
+    },
+    {
+      "name": "tile_partition_covers_each_index",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Unbounded integer tile partition; dynamic tails; separate machine overflow guards still required",
+      "counterexample": null
+    },
+    {
+      "name": "single_channel_scratch_bound",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "One live channel buffer versus all channel buffers; conditional storage model, not allocator measurement",
+      "counterexample": null
+    },
+    {
+      "name": "joint_product_schedules_arity_2",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Rolling-cotangent and prefix/suffix schedules; all real factors and upstream; fixed arity; exact polynomial normalization; zeros allowed",
+      "counterexample": null
+    },
+    {
+      "name": "joint_product_schedules_arity_3",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Rolling-cotangent and prefix/suffix schedules; all real factors and upstream; fixed arity; exact polynomial normalization; zeros allowed",
+      "counterexample": null
+    },
+    {
+      "name": "joint_product_schedules_arity_4",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Rolling-cotangent and prefix/suffix schedules; all real factors and upstream; fixed arity; exact polynomial normalization; zeros allowed",
+      "counterexample": null
+    },
+    {
+      "name": "joint_product_schedules_arity_5",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Rolling-cotangent and prefix/suffix schedules; all real factors and upstream; fixed arity; exact polynomial normalization; zeros allowed",
+      "counterexample": null
+    },
+    {
+      "name": "joint_product_schedules_arity_6",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Rolling-cotangent and prefix/suffix schedules; all real factors and upstream; fixed arity; exact polynomial normalization; zeros allowed",
+      "counterexample": null
+    },
+    {
+      "name": "joint_product_schedules_arity_7",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Rolling-cotangent and prefix/suffix schedules; all real factors and upstream; fixed arity; exact polynomial normalization; zeros allowed",
+      "counterexample": null
+    },
+    {
+      "name": "joint_product_schedules_arity_8",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Rolling-cotangent and prefix/suffix schedules; all real factors and upstream; fixed arity; exact polynomial normalization; zeros allowed",
+      "counterexample": null
+    },
+    {
+      "name": "two_zero_factors_all_product_gradients_zero",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Four real factors, arbitrary positions of two or more zeros; no division",
+      "counterexample": null
+    },
+    {
+      "name": "joint_prefix_suffix_cost_saving",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Integer arity >=2; scalar multiplication count only, encoders/decoder and memory excluded",
+      "counterexample": null
+    },
+    {
+      "name": "sphere_projection_tangent",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Three-dimensional real unit sphere, Euclidean tangent projection; no rounded update claim",
+      "counterexample": null
+    },
+    {
+      "name": "backward_error_amplification",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Assumed local approximation errors and nonnegative Lipschitz bound; no instruction-level float certificate",
+      "counterexample": null
+    },
+    {
+      "name": "rolling_cotangent_cost_saving",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Rebuilt prefixes; scalar products; saving versus independent evaluation and overhead versus retained-prefix reverse mode",
+      "counterexample": null
+    },
+    {
+      "name": "linear_chain_joint_reassociation",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "2x2 real matrices: forward, input and both original weight cotangents; arbitrary entries, no float or activation crossing",
+      "counterexample": null
+    },
+    {
+      "name": "linear_chain_leading_more_than_half",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Leading full-training arithmetic only; narrow output p<=min(m,n)/4; scalar schedule, not timing",
+      "counterexample": null
+    },
+    {
+      "name": "roofline_conditional_time_bound",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Supplied compute and transfer capacity bounds; not a fitted hardware-performance claim",
+      "counterexample": null
+    },
+    {
+      "name": "common_activation_diagonal_joint_pullbacks",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Arbitrary real 2x2 shared diagonal; ReLU qualification additionally requires identical Boolean branch masks",
+      "counterexample": null
+    },
+    {
+      "name": "softmax_diagonal_rankone_pairing_and_null_sum",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Normalized 3-coordinate probabilities; derivative representation pairing/null-sum, not exponential primitive or IEEE proof",
+      "counterexample": null
+    },
+    {
+      "name": "separable_derivative_factor_expansion",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Two supplied derivative-mask factors and two cotangent factors; exact expansion, no rank truncation",
+      "counterexample": null
+    },
+    {
+      "name": "layernorm_centered_shift_null",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Three-coordinate centered LayerNorm Jacobian model; arbitrary r, so epsilon-dependent scaling remains explicit",
+      "counterexample": null
+    },
+    {
+      "name": "layernorm_full_structured_segment",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "2x2 input, hidden3/output2: all six VJPs, arbitrary affine normalization, supplied positive r; Jacobian primitive certified separately by symbolic differentiation/tests, not a Lean analytic certificate",
+      "counterexample": null
+    },
+    {
+      "name": "centered_weight_gram_layernorm_forward",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "2x2 input/hidden3/output2: exact row mean, variance and affine normalized forward with supplied r; floating conditioning guards are not certified",
+      "counterexample": null
+    }
+  ],
+  "all_proofs_passed": true,
+  "counterexamples": [
+    {
+      "name": "SAB_universal_FP32_exactness_refuted",
+      "status": "sat",
+      "refutation_verified": true,
+      "w": 1,
+      "transpose_partner": 100000000,
+      "reconstruction": "+0.0",
+      "scope": "IEEE binary32, round-to-nearest ties-to-even"
+    }
+  ],
+  "no_GPU_hardware_certification": true
+}

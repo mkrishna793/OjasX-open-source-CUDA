@@ -1,7 +1,0 @@
-# Requirements for building the C++ PrivateUse1 extension for OjasX
-torch>=2.0.0
-pybind11>=2.10.0
-ninja>=1.10.0
-setuptools>=60.0.0
-numpy>=1.20.0
-pyopencl>=2021.1

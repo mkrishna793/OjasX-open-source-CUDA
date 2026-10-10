@@ -1,0 +1,59 @@
+{
+  "version": "0.3.0",
+  "silicon_profile": {
+    "l1d_cache_bytes": 65536,
+    "l2_cache_bytes": 6291456,
+    "cache_line_bytes": 128,
+    "physical_cpu_cores": 10,
+    "has_apple_amx": true,
+    "has_mps_gpu": true,
+    "unified_memory": true,
+    "chip_class": "Apple_Silicon_Unified_GPU_AMX_ANE"
+  },
+  "z3_smt_verification": {
+    "z3_status": "unsat",
+    "zero_bank_conflicts_proven": true,
+    "cpp_swizzle_bijection_verified": true,
+    "num_banks": 32
+  },
+  "opcheck_passed": true,
+  "cpp_benchmarks": {
+    "l1_rmsnorm_speedup_vs_eager": 2.2992815155728956,
+    "amx_linear_relu2_speedup_vs_eager": 1.152286062834504,
+    "bit1_ballot_mask_compression_ratio": 32.0
+  },
+  "smart_workload_router_lora": {
+    "detected_profile": "LORA_FROZEN_BACKBONE",
+    "action_counts": {
+      "SKIP_BACKWARD_FROZEN_WEIGHTS": 3,
+      "OJASX_HOLONOMIC_LINEAR": 2,
+      "NATIVE_PYTORCH_FAST_BYPASS": 1,
+      "OJASX_HOLONOMIC_FUSED": 1
+    },
+    "saved_tape_reduction_pct": 66.58769973987366,
+    "max_input_grad_diff": 0.0
+  },
+  "multi_laptop_virtual_mesh": {
+    "pooled_memory_gb": 26.0,
+    "pooled_tflops": 20.7,
+    "node_assignments": {
+      "Laptop_A_Primary": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "Laptop_B_Friend": [
+        4,
+        5
+      ]
+    },
+    "uncompressed_fp32_bytes": 4194304,
+    "compressed_wire_bytes": 1114112,
+    "wire_compression_ratio": 3.764705882352941,
+    "bandwidth_saved_pct": 73.4375,
+    "loss_relative_error": 3.5966236862689734e-05,
+    "input_grad_cosine_similarity": 0.9999918937683105
+  },
+  "residual_gpu_memory_mb": 0.0
+}
