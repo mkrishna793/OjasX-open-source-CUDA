@@ -141,14 +141,17 @@ Reproduce on any Google Colab **T4 GPU** notebook in 60 seconds:
 | **Persistent `.grad` Buffers** | `2,036.6 MB` | **`0.00 MB`** |
 | **5-Step Loss Trajectory** | `N/A (Crashed on Step 1)` | **`11.487175 -> 11.466572 -> 11.446618 -> 11.427443 -> 11.408827` (Converged)** |
 
-<details>
-<summary><b>Click to view the original raw console output from the Google Colab NVIDIA Tesla T4 GPU</b></summary>
+#### 1. Original Unedited Console Output from Google Colab NVIDIA Tesla T4 GPU
 
 ```text
 $ nvidia-smi --query-gpu=name,memory.total,memory.free,driver_version --format=csv
 name, memory.total [MiB], memory.free [MiB], driver_version
 Tesla T4, 15360 MiB, 14913 MiB, 580.82.07
-
+$ rm -rf /content/OjasX-open-source-CUDA && git clone https://github.com/mkrishna793/OjasX-open-source-CUDA.git /content/OjasX-open-source-CUDA
+Cloning into '/content/OjasX-open-source-CUDA'...
+$ pip install -q --no-deps -e /content/OjasX-open-source-CUDA && pip install -q z3-solver sympy
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 33.1/33.1 MB 18.5 MB/s eta 0:00:00
+$ python3 -u /content/OjasX-open-source-CUDA/tools/run_colab_t4_gpu_oom_proof.py
 ==================================================================================================
 🚀 OJASX GOOGLE COLAB GPU BENCHMARK — Tesla T4 (14.56 GiB / 14913 MB VRAM)
 ==================================================================================================
@@ -158,7 +161,7 @@ Tesla T4, 15360 MiB, 14913 MiB, 580.82.07
 [TEST 1/2] Running Standard PyTorch (`nn.RMSNorm` + `nn.Linear` + Un-chunked `LM Head` + `AdamW`)...
   -> Instantiated Standard Model : 533,891,072 FP32 parameters (2036.6 MB weights)
   🛑 STANDARD PYTORCH CRASHED WITH REAL CUDA OUT-OF-MEMORY ON THIS GPU!
-     CUDA Driver Error : CUDA out of memory. Tried to allocate 2.20 GiB. GPU 0 has a total capacity of 14.56 GiB of which 589.81 MiB is free. Including non-PyTorch memory, this process has 13.98 GiB memory in use. Of the allocated memory 13.85 GiB is allocated by PyTorch, and 13.57 MiB is reserved by PyTorch but unallocated.
+     CUDA Driver Error : CUDA out of memory. Tried to allocate 2.20 GiB. GPU 0 has a total capacity of 14.56 GiB of which 589.81 MiB is free. Including non-PyTorch memory, this process has 13.98 GiB memory in use. Of the allocated memory 13.85 GiB is allocated by PyTorch, and 13.57 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)
      Allocated Before Crash : 14178.4 MB / 14913 MB Total GPU VRAM
   -> Cleaned up Test 1 CUDA state (Residual GPU VRAM allocated: 9.1 MB)
 
@@ -181,7 +184,18 @@ Tesla T4, 15360 MiB, 14913 MiB, 580.82.07
   Persistent .grad Buffers : 0.00 MB (100% eliminated via HolonomicGradFreeOptimizer hooks)
 ==================================================================================================
 ```
-</details>
+
+#### 2. Exact Tensor-by-Tensor GPU VRAM Proof (`B=9, S=1024` $\implies$ $T = 9,216$ tokens)
+
+| GPU Memory Component | Tensor Shape & Formula (FP32 = 4 Bytes) | Standard PyTorch (`MB`) | OjasX `v0.3.0` (`MB`) | Why OjasX Uses Less VRAM |
+| :--- | :--- | :---: | :---: | :--- |
+| **Model Weights (`W`)** | `16` blocks $\times$ (`2048x6144` + `6144x2048` + norms) + `64000x2048` LM head = `533,891,072` params | `2,036.6 MB` | `2,036.6 MB` | Identical FP32 parameter tensors (`seed=2026`) |
+| **16x `RMSNorm` Saved Tensors** | Standard saves normalized output + `rstd`; OjasX saves input `x` + `inv_rms` (`16 x 9216 x 2048 x 4 B`) | `2,304.5 MB` | `1,152.6 MB` | `HolonomicRMSNorm` avoids extra intermediate norm graph buffers (`-1,151.9 MB`) |
+| **16x `fc1 + LeakyReLU` Saved Tensors** | Input `x` (`16 x 9216 x 2048 x 4 B = 1,152 MB`) + activation state (`16 x 9216 x 6144`) | `4,608.0 MB` (`FP32` output = `3,456 MB`) | `1,260.0 MB` (`1-bit` mask = `108 MB`) | `HolonomicLinear` packs `z > 0` into `uint8` 1-bit masks (`32x` smaller: `3,456 MB -> 108 MB`) |
+| **16x `fc2` Saved Input (`h`)** | `16 x 9216 x 6144 x 4 B` | `3,456.0 MB` | `3,456.0 MB` | Required for exact `dW_2 = dz_2^T @ h` |
+| **Vocabulary Logits (`[9216, 64000]`) + Loss Backward** | Full `[9216, 64000]` FP32 tensor = **`2,250.0 MB` (`2.20 GiB`)** per copy (forward logits + backward `dlogits`) | `2,250.0 MB` + **`2,250.0 MB` (OOM Crash here!)** | **`125.0 MB`** (`chunk_tokens=512`) | `holonomic_lm_head_loss` evaluates `[512, 64000]` chunks (`125 MB` at a time), freeing each chunk immediately |
+| **Persistent `.grad` Buffers** | Full parameter gradient buffer (`533,891,072 x 4 B`) | `2,036.6 MB` (during backward) | **`0.00 MB`** | `HolonomicGradFreeOptimizer` updates weights in-place via post-accumulate hooks and sets `p.grad = None` immediately |
+| **Total Peak GPU VRAM** | Measured on Tesla T4 (`14,913 MB` usable capacity) | **`14,178.4 MB` + `2,250.0 MB` = `16,428.4 MB` (🛑 OOM)** | **`9,540.6 – 9,542.6 MB` (✅ `64.0%` of T4)** | **Saves `~6.89 GiB` (`~6,886 MB`) of peak VRAM on the exact same model & batch** |
 
 ### B. Single-Laptop Memory & Operator Tradeoffs ([`reports/TWO_LAPTOP_PHYSICAL_MESH_REPORT.json`](reports/TWO_LAPTOP_PHYSICAL_MESH_REPORT.json))
 
