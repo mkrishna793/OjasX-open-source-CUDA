@@ -1,18 +1,41 @@
 """Exact Boolean residual packing; native tensor byte accounting."""
 from dataclasses import dataclass, field
-from typing import Tuple, List, Dict, Any
+from typing import Tuple, List, Dict, Any, Optional
 import torch
+
+
+_PACK_WEIGHTS_CACHE: Dict[Any, torch.Tensor] = {}
+
+
+def _get_pack_weights(device: torch.device, ref: Optional[torch.Tensor] = None) -> torch.Tensor:
+    try:
+        from torch._subclasses.fake_tensor import FakeTensorMode, is_fake
+        from torch.utils._python_dispatch import _get_current_dispatch_mode
+
+        mode = _get_current_dispatch_mode()
+        if isinstance(mode, FakeTensorMode) or (ref is not None and is_fake(ref)):
+            return torch.tensor([1, 2, 4, 8, 16, 32, 64, 128], device=device, dtype=torch.uint8)
+    except Exception:
+        pass
+
+    if device not in _PACK_WEIGHTS_CACHE:
+        w = torch.tensor([1, 2, 4, 8, 16, 32, 64, 128], device=device, dtype=torch.uint8)
+        _PACK_WEIGHTS_CACHE[device] = w
+        _PACK_WEIGHTS_CACHE[str(device)] = w
+        if hasattr(device, "type") and getattr(device, "index", None) == 0:
+            _PACK_WEIGHTS_CACHE[torch.device(device.type)] = w
+    return _PACK_WEIGHTS_CACHE[device]
 
 
 def pack_mask(mask: torch.Tensor) -> torch.Tensor:
     flat = mask.reshape(-1).to(torch.uint8)
     flat = torch.nn.functional.pad(flat, (0, (-flat.numel()) % 8))
-    weights = torch.tensor([1, 2, 4, 8, 16, 32, 64, 128], device=flat.device, dtype=torch.uint8)
+    weights = _get_pack_weights(flat.device, flat)
     return (flat.reshape(-1, 8) * weights).sum(dim=1).to(torch.uint8)
 
 
 def unpack_mask(packed: torch.Tensor, shape: Tuple[int, ...]) -> torch.Tensor:
-    weights = torch.tensor([1, 2, 4, 8, 16, 32, 64, 128], device=packed.device, dtype=torch.uint8)
+    weights = _get_pack_weights(packed.device, packed)
     n = 1
     for dim in shape:
         n *= dim
