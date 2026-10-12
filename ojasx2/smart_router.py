@@ -3,8 +3,13 @@
 Automatically inspects any PyTorch `nn.Module` and decides per-layer:
   1. What NOT to execute / save (`SKIP_BACKWARD_FROZEN_WEIGHTS` for LoRA / frozen backbones)
   2. When to use C++17 1-Bit Ballot & L1 Kernels (`OJASX_CPP_BITPACKED_1BIT`, `OJASX_CPP_L1_RMSNORM`)
-  3. When to use Holonomic Math Engine (`OJASX_HOLONOMIC_FUSED`, `OJASX_SELECTIVE_VOCAB_HEAD`)
-  4. When to keep Native PyTorch Fast-Path (`NATIVE_PYTORCH_FAST_BYPASS` for tiny tensors)
+  3. When to use Universal Holonomic GLU Engine:
+     - All 10 variants: SwiGLU, GeGLU, ReGLU, ReLU2GLU, SigmoidGLU, BilinearGLU, QuickGeGLU, MishGLU, TanhGLU, LeakyReGLU
+     - Both layouts: Split-projection (`gate_proj` + `up_proj` + `down_proj`) and Chunked-projection (`fc_in` -> 2H chunk -> `fc_out` / `nn.GLU`)
+  4. When to rewrite normalization layers (`OJASX_HOLONOMIC_LAYERNORM`, `OJASX_HOLONOMIC_GROUPNORM`)
+  5. When to wrap frozen convolutions with zero activation tape (`SKIP_BACKWARD_FROZEN_CONV`)
+  6. When to replace activations with 1-bit masks (`OJASX_PACKED_RELU`, `OJASX_HOLONOMIC_ACTIVATION`)
+  7. When to adaptively optimize narrow / tabular MLPs
 """
 
 from __future__ import annotations
@@ -15,6 +20,22 @@ from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 
+from .holonomic_layers import (
+    FrozenConvZeroTape,
+    HolonomicActivationLens,
+    HolonomicFusedBilinearGLUMLP,
+    HolonomicFusedChunkedGLUMLP,
+    HolonomicFusedGLUMLP,
+    HolonomicFusedGeGLUMLP,
+    HolonomicFusedReGLUMLP,
+    HolonomicFusedReLU2GLUMLP,
+    HolonomicFusedSigmoidGLUMLP,
+    HolonomicFusedSwiGLUMLP,
+    HolonomicGLU,
+    HolonomicGroupNorm,
+    HolonomicLayerNorm,
+    PackedReLU,
+)
 from .holonomic_math_compiler import (
     HolonomicGeGLU,
     HolonomicLinear,
@@ -81,8 +102,6 @@ class SmartWorkloadReport:
 class _FrozenLinearZeroTapeFn(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x: torch.Tensor, weight: torch.Tensor, bias: Optional[torch.Tensor]) -> torch.Tensor:
-        # Never save activation `x` on the autograd tape because `weight` is frozen (requires_grad=False).
-        # Pass `weight` through `ctx.save_for_backward` so SavedTensorAudit accounts for all retained references.
         ctx.save_for_backward(weight)
         return torch.nn.functional.linear(x, weight, bias)
 
@@ -94,11 +113,7 @@ class _FrozenLinearZeroTapeFn(torch.autograd.Function):
 
 
 class FrozenLinearZeroTape(nn.Module):
-    """Zero-Tape Linear wrapper for frozen backbone layers (`weight.requires_grad=False`).
-
-    Never saves input `x` on the autograd tape because `dW` is not needed!
-    Only propagates `dX = grad_out @ W` when the upstream input itself requires grad.
-    """
+    """Zero-Tape Linear wrapper for frozen backbone layers (`weight.requires_grad=False`)."""
 
     def __init__(self, linear: nn.Linear) -> None:
         super().__init__()
@@ -110,9 +125,64 @@ class FrozenLinearZeroTape(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return _FrozenLinearZeroTapeFn.apply(x, self.weight, self.bias)
 
+    def extra_repr(self) -> str:
+        return f"in_features={self.in_features}, out_features={self.out_features}, bias={self.bias is not None} (FrozenZeroTape)"
+
+
+def _extract_glu_activation(module: nn.Module) -> Tuple[str, float]:
+    """Inspects module activation attributes and resolves to one of the 10 GLU variant strings."""
+    act_fn = (
+        getattr(module, "act_fn", None)
+        or getattr(module, "activation", None)
+        or getattr(module, "act", None)
+    )
+    neg_slope = 0.01
+
+    if act_fn is not None:
+        if isinstance(act_fn, str):
+            act_str = act_fn.lower()
+        else:
+            act_str = act_fn.__class__.__name__.lower()
+            neg_slope = float(getattr(act_fn, "negative_slope", 0.01))
+
+        if "silu" in act_str or "swish" in act_str:
+            return "swiglu", neg_slope
+        elif "gelu" in act_str:
+            approx = getattr(act_fn, "approximate", "none") if not isinstance(act_fn, str) else "none"
+            return ("geglu", neg_slope) if approx == "tanh" else ("gelu_exact", neg_slope)
+        elif "quickgelu" in act_str or "quickgeglu" in act_str:
+            return "quickgeglu", neg_slope
+        elif "relu2" in act_str or "squared" in act_str:
+            return "relu2glu", neg_slope
+        elif "leaky" in act_str:
+            return "leaky_reglu", neg_slope
+        elif "relu" in act_str:
+            return "reglu", neg_slope
+        elif "sigmoid" in act_str:
+            return "sigmoidglu", neg_slope
+        elif "bilinear" in act_str or "identity" in act_str:
+            return "bilinearglu", neg_slope
+        elif "mish" in act_str:
+            return "mishglu", neg_slope
+        elif "tanh" in act_str:
+            return "tanhglu", neg_slope
+
+    mod_name = module.__class__.__name__.lower()
+    if "geglu" in mod_name:
+        return "geglu", neg_slope
+    elif "reglu" in mod_name:
+        return "reglu", neg_slope
+    elif "mish" in mod_name:
+        return "mishglu", neg_slope
+    elif "tanh" in mod_name:
+        return "tanhglu", neg_slope
+
+    # Default for modern LLMs (LLaMA, Mistral, Qwen) is SwiGLU
+    return "swiglu", neg_slope
+
 
 class SmartWorkloadRouter:
-    """Inspects and selectively optimizes PyTorch models using hardware & mathematical cost rules."""
+    """Inspects and selectively optimizes PyTorch models across all 5 major workload families."""
 
     def __init__(
         self,
@@ -136,16 +206,32 @@ class SmartWorkloadRouter:
 
         has_conv = any(isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d)) for m in model.modules())
         has_llm_ops = any(
-            isinstance(m, (HolonomicSwiGLU, HolonomicGeGLU, HolonomicRMSNorm, HolonomicNativeRMSNorm))
+            isinstance(m, (HolonomicSwiGLU, HolonomicGeGLU, HolonomicRMSNorm, HolonomicNativeRMSNorm, HolonomicGLU, HolonomicFusedGLUMLP, HolonomicFusedChunkedGLUMLP))
+            or isinstance(m, nn.GLU)
             or "rms" in m.__class__.__name__.lower()
-            or "swiglu" in m.__class__.__name__.lower()
+            or "glu" in m.__class__.__name__.lower()
             or (isinstance(m, nn.Linear) and m.out_features >= self.large_vocab_threshold)
+            or any(
+                hasattr(m, g) and hasattr(m, u)
+                for g, u in [("gate_proj", "up_proj"), ("w1", "w3"), ("gate", "up"), ("in_proj", "out_proj")]
+            )
             for m in model.modules()
         )
         if has_llm_ops:
-            return "LLM_TRANSFORMER", trainable_params, frozen_params
+            return "MODERN_LLM_MLP", trainable_params, frozen_params
+
+        has_layernorm = any(isinstance(m, (nn.LayerNorm, nn.GroupNorm)) for m in model.modules())
+        if has_layernorm and not has_conv:
+            return "TRANSFORMER_VIT_LAYERNORM", trainable_params, frozen_params
+
         if has_conv:
-            return "VISION_CONV_MLP", trainable_params, frozen_params
+            return "VISION_CONV_UNET", trainable_params, frozen_params
+
+        # Detect tabular / narrow MLP: shallow depth, small linear dimensions (all features <= 512)
+        linear_layers = [m for m in model.modules() if isinstance(m, nn.Linear)]
+        if linear_layers and all(m.in_features <= 512 and m.out_features <= 512 for m in linear_layers):
+            return "TABULAR_CLASSICAL_ML", trainable_params, frozen_params
+
         return "GENERAL_DENSE_WORKLOAD", trainable_params, frozen_params
 
     def optimize_model(
@@ -163,11 +249,23 @@ class SmartWorkloadRouter:
             frozen_params=frozen_total,
         )
 
+        effective_tiny_threshold = 64 if profile_name == "TABULAR_CLASSICAL_ML" else self.tiny_param_threshold
+
+        # Check if root model itself is a split-projection or chunked GLU MLP
+        mlp_detected, mlp_lens = self._detect_and_fuse_llm_mlp(model, "root_mlp", batch_tokens, report)
+        if mlp_detected and mlp_lens is not None:
+            return mlp_lens, report
+
+        chunked_detected, chunked_lens = self._detect_and_fuse_chunked_mlp(model, "root_chunked_mlp", batch_tokens, report)
+        if chunked_detected and chunked_lens is not None:
+            return chunked_lens, report
+
         self._rewrite_children(
             model,
             prefix="",
             batch_tokens=batch_tokens,
             prefer_1bit_relu2_for_relu=prefer_1bit_relu2_for_relu,
+            effective_tiny_threshold=effective_tiny_threshold,
             report=report,
         )
         return model, report
@@ -178,22 +276,143 @@ class SmartWorkloadRouter:
         prefix: str,
         batch_tokens: int,
         prefer_1bit_relu2_for_relu: bool,
+        effective_tiny_threshold: int,
         report: SmartWorkloadReport,
     ) -> None:
         if isinstance(parent, nn.Sequential):
-            self._fuse_sequential_in_place(parent, prefix, batch_tokens, prefer_1bit_relu2_for_relu, report)
+            self._fuse_sequential_in_place(
+                parent, prefix, batch_tokens, prefer_1bit_relu2_for_relu, effective_tiny_threshold, report
+            )
+        else:
+            self._fuse_adjacent_linear_act(
+                parent, prefix, batch_tokens, prefer_1bit_relu2_for_relu, effective_tiny_threshold, report, is_sequential=False
+            )
 
         for name, child in list(parent.named_children()):
             full_name = f"{prefix}.{name}" if prefix else name
 
-            if isinstance(child, (HolonomicBitPackedLinear, HolonomicLinear, HolonomicNativeRMSNorm, FrozenLinearZeroTape)):
+            if isinstance(
+                child,
+                (
+                    HolonomicBitPackedLinear,
+                    HolonomicLinear,
+                    HolonomicNativeRMSNorm,
+                    HolonomicLayerNorm,
+                    HolonomicGroupNorm,
+                    FrozenLinearZeroTape,
+                    FrozenConvZeroTape,
+                    PackedReLU,
+                    HolonomicFusedGLUMLP,
+                    HolonomicFusedSwiGLUMLP,
+                    HolonomicFusedGeGLUMLP,
+                    HolonomicFusedChunkedGLUMLP,
+                    HolonomicGLU,
+                    HolonomicActivationLens,
+                ),
+            ):
                 continue
 
+            # 1. Universal GLU Engine: Layout A (Split-Projection: gate_proj + up_proj + down_proj)
+            mlp_detected, mlp_lens = self._detect_and_fuse_llm_mlp(child, full_name, batch_tokens, report)
+            if mlp_detected and mlp_lens is not None:
+                setattr(parent, name, mlp_lens)
+                continue
+
+            # 2. Universal GLU Engine: Layout B (Chunked-Projection: fc_in 2*H + fc_out)
+            chunked_detected, chunked_lens = self._detect_and_fuse_chunked_mlp(child, full_name, batch_tokens, report)
+            if chunked_detected and chunked_lens is not None:
+                setattr(parent, name, chunked_lens)
+                continue
+
+            # 3. Standalone nn.GLU replacement
+            if isinstance(child, nn.GLU):
+                rep = HolonomicGLU(dim=child.dim, act="sigmoid")
+                setattr(parent, name, rep)
+                report.decisions.append(
+                    SmartLayerDecision(
+                        module_name=full_name,
+                        original_type="nn.GLU",
+                        decision="OJASX_HOLONOMIC_GLU",
+                        replacement_type="HolonomicGLU(sigmoid)",
+                        trainable_params=0,
+                        frozen_params=0,
+                        tile_schedule="(glu_fused)",
+                        reason="Zero-tape Holonomic GLU activation kernel",
+                        estimated_saved_bytes_per_token=4.0,
+                    )
+                )
+                continue
+
+            # 4. Linear Layers
             if isinstance(child, nn.Linear):
-                replacement, decision = self._decide_linear(child, full_name, batch_tokens)
+                replacement, decision = self._decide_linear(
+                    child, full_name, batch_tokens, effective_tiny_threshold
+                )
                 if replacement is not child:
                     setattr(parent, name, replacement)
                 report.decisions.append(decision)
+
+            # 5. LayerNorm
+            elif isinstance(child, nn.LayerNorm):
+                rep = HolonomicLayerNorm(
+                    child.normalized_shape,
+                    eps=child.eps,
+                    elementwise_affine=child.elementwise_affine,
+                    bias=child.bias is not None,
+                    device=child.weight.device if child.weight is not None else None,
+                    dtype=child.weight.dtype if child.weight is not None else None,
+                )
+                if child.elementwise_affine:
+                    rep.weight = child.weight
+                    if child.bias is not None:
+                        rep.bias = child.bias
+                setattr(parent, name, rep)
+                dim = child.weight.numel() if child.weight is not None else 0
+                report.decisions.append(
+                    SmartLayerDecision(
+                        module_name=full_name,
+                        original_type="nn.LayerNorm",
+                        decision="OJASX_HOLONOMIC_LAYERNORM",
+                        replacement_type="HolonomicLayerNorm",
+                        trainable_params=dim if child.elementwise_affine and child.weight.requires_grad else 0,
+                        frozen_params=0 if (not child.elementwise_affine or child.weight.requires_grad) else dim,
+                        tile_schedule="(1,compact_stats,1)",
+                        reason="Compact statistics (mean, rstd) eliminating normalized intermediate tensors",
+                        estimated_saved_bytes_per_token=float(dim * 4),
+                    )
+                )
+
+            # 6. GroupNorm
+            elif isinstance(child, nn.GroupNorm):
+                rep = HolonomicGroupNorm(
+                    child.num_groups,
+                    child.num_channels,
+                    eps=child.eps,
+                    affine=child.affine,
+                    device=child.weight.device if child.weight is not None else None,
+                    dtype=child.weight.dtype if child.weight is not None else None,
+                )
+                if child.affine:
+                    rep.weight = child.weight
+                    if child.bias is not None:
+                        rep.bias = child.bias
+                setattr(parent, name, rep)
+                dim = child.weight.numel() if child.weight is not None else 0
+                report.decisions.append(
+                    SmartLayerDecision(
+                        module_name=full_name,
+                        original_type="nn.GroupNorm",
+                        decision="OJASX_HOLONOMIC_GROUPNORM",
+                        replacement_type="HolonomicGroupNorm",
+                        trainable_params=dim if child.affine and child.weight.requires_grad else 0,
+                        frozen_params=0 if (not child.affine or child.weight.requires_grad) else dim,
+                        tile_schedule="(1,group_stats,1)",
+                        reason="Group statistics (mean, rstd) eliminating normalized intermediate tensor",
+                        estimated_saved_bytes_per_token=float(dim * 4),
+                    )
+                )
+
+            # 7. RMSNorm
             elif child.__class__.__name__.lower() in ("rmsnorm", "holonomicrmsnorm") and hasattr(child, "weight"):
                 dim = int(child.weight.numel())
                 eps = float(getattr(child, "eps", 1e-6))
@@ -213,18 +432,232 @@ class SmartWorkloadRouter:
                         estimated_saved_bytes_per_token=float(dim * 4 - 4),
                     )
                 )
-            else:
-                self._rewrite_children(child, full_name, batch_tokens, prefer_1bit_relu2_for_relu, report)
 
-    def _fuse_sequential_in_place(
+            # 8. Convolutions (Frozen Conv Zero Tape)
+            elif isinstance(child, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+                is_frozen = not child.weight.requires_grad and (child.bias is None or not child.bias.requires_grad)
+                if is_frozen:
+                    rep = FrozenConvZeroTape(child)
+                    setattr(parent, name, rep)
+                    params = child.weight.numel() + (child.bias.numel() if child.bias is not None else 0)
+                    report.decisions.append(
+                        SmartLayerDecision(
+                            module_name=full_name,
+                            original_type=child.__class__.__name__,
+                            decision="SKIP_BACKWARD_FROZEN_CONV",
+                            replacement_type="FrozenConvZeroTape",
+                            trainable_params=0,
+                            frozen_params=params,
+                            tile_schedule="(conv_tiled)",
+                            reason="Frozen conv backbone: zero input activation tape retained during forward",
+                            estimated_saved_bytes_per_token=float(child.in_channels * 4),
+                        )
+                    )
+                else:
+                    self._rewrite_children(
+                        child, full_name, batch_tokens, prefer_1bit_relu2_for_relu, effective_tiny_threshold, report
+                    )
+
+            # 9. Standalone Activations
+            elif isinstance(child, nn.ReLU):
+                if not child.inplace:
+                    rep = PackedReLU()
+                    setattr(parent, name, rep)
+                    report.decisions.append(
+                        SmartLayerDecision(
+                            module_name=full_name,
+                            original_type="nn.ReLU",
+                            decision="OJASX_PACKED_RELU",
+                            replacement_type="PackedReLU",
+                            trainable_params=0,
+                            frozen_params=0,
+                            tile_schedule="(1-bit ballot)",
+                            reason="1-bit boolean sign mask retaining 1/32th of FP32 storage",
+                            estimated_saved_bytes_per_token=4.0 * (31.0 / 32.0),
+                        )
+                    )
+            elif isinstance(child, (nn.LeakyReLU, nn.GELU, nn.SiLU, nn.Mish, nn.ELU)):
+                act_name = child.__class__.__name__.lower()
+                neg_slope = getattr(child, "negative_slope", 0.01)
+                approx = getattr(child, "approximate", "none")
+                rep = HolonomicActivationLens(act_name, negative_slope=neg_slope, approximate=approx)
+                setattr(parent, name, rep)
+                report.decisions.append(
+                    SmartLayerDecision(
+                        module_name=full_name,
+                        original_type=child.__class__.__name__,
+                        decision="OJASX_HOLONOMIC_ACTIVATION",
+                        replacement_type="HolonomicActivationLens",
+                        trainable_params=0,
+                        frozen_params=0,
+                        tile_schedule="(autograd lens)",
+                        reason=f"Standalone {child.__class__.__name__} routed to holonomic activation lens",
+                        estimated_saved_bytes_per_token=4.0,
+                    )
+                )
+
+            else:
+                self._rewrite_children(
+                    child, full_name, batch_tokens, prefer_1bit_relu2_for_relu, effective_tiny_threshold, report
+                )
+
+    def _detect_and_fuse_llm_mlp(
         self,
-        seq: nn.Sequential,
+        module: nn.Module,
+        full_name: str,
+        batch_tokens: int,
+        report: SmartWorkloadReport,
+    ) -> Tuple[bool, Optional[nn.Module]]:
+        """Detects Split-Projection GLU MLP submodules and fuses them into Holonomic GLU lenses."""
+        gate_proj = getattr(module, "gate_proj", None) or getattr(module, "w1", None) or getattr(module, "gate", None)
+        up_proj = getattr(module, "up_proj", None) or getattr(module, "w3", None) or getattr(module, "up", None)
+        down_proj = getattr(module, "down_proj", None) or getattr(module, "w2", None) or getattr(module, "down", None)
+
+        if not (isinstance(gate_proj, nn.Linear) and isinstance(up_proj, nn.Linear) and isinstance(down_proj, nn.Linear)):
+            return False, None
+
+        act_name, neg_slope = _extract_glu_activation(module)
+        total_p = sum(p.numel() for p in module.parameters())
+        trainable_p = sum(p.numel() for p in module.parameters() if p.requires_grad)
+
+        if act_name == "swiglu":
+            lens = HolonomicFusedSwiGLUMLP(gate_proj, up_proj, down_proj)
+            rep_type = "HolonomicFusedSwiGLUMLP"
+        elif act_name == "geglu":
+            lens = HolonomicFusedGeGLUMLP(gate_proj, up_proj, down_proj, approximate="tanh")
+            rep_type = "HolonomicFusedGeGLUMLP"
+        elif act_name in ("geglu_exact", "gelu_exact"):
+            lens = HolonomicFusedGeGLUMLP(gate_proj, up_proj, down_proj, approximate="none")
+            rep_type = "HolonomicFusedGeGLUMLP(exact)"
+        elif act_name == "reglu":
+            lens = HolonomicFusedReGLUMLP(gate_proj, up_proj, down_proj)
+            rep_type = "HolonomicFusedReGLUMLP"
+        elif act_name == "relu2glu":
+            lens = HolonomicFusedReLU2GLUMLP(gate_proj, up_proj, down_proj)
+            rep_type = "HolonomicFusedReLU2GLUMLP"
+        elif act_name == "sigmoidglu":
+            lens = HolonomicFusedSigmoidGLUMLP(gate_proj, up_proj, down_proj)
+            rep_type = "HolonomicFusedSigmoidGLUMLP"
+        elif act_name == "bilinearglu":
+            lens = HolonomicFusedBilinearGLUMLP(gate_proj, up_proj, down_proj)
+            rep_type = "HolonomicFusedBilinearGLUMLP"
+        else:
+            lens = HolonomicFusedGLUMLP(gate_proj, up_proj, down_proj, act=act_name, negative_slope=neg_slope)
+            rep_type = f"HolonomicFusedGLUMLP({act_name})"
+
+        decision_label = f"OJASX_HOLONOMIC_{act_name.upper()}_MLP"
+
+        report.decisions.append(
+            SmartLayerDecision(
+                module_name=full_name,
+                original_type=module.__class__.__name__,
+                decision=decision_label,
+                replacement_type=rep_type,
+                trainable_params=trainable_p,
+                frozen_params=total_p - trainable_p,
+                tile_schedule="(fused split glu)",
+                reason=f"Universal GLU Engine ({act_name}) rewritten to fused zero-tape lens",
+                estimated_saved_bytes_per_token=float(gate_proj.out_features * 4 * 2),
+            )
+        )
+        return True, lens
+
+    def _detect_and_fuse_chunked_mlp(
+        self,
+        module: nn.Module,
+        full_name: str,
+        batch_tokens: int,
+        report: SmartWorkloadReport,
+    ) -> Tuple[bool, Optional[nn.Module]]:
+        """Detects Chunked-Projection GLU MLP submodules (e.g. fc_in -> 2*H chunk -> act(g)*u -> fc_out)."""
+        in_proj = (
+            getattr(module, "in_proj", None)
+            or getattr(module, "gate_up_proj", None)
+            or getattr(module, "fc_in", None)
+            or getattr(module, "fc1", None)
+            or getattr(module, "w12", None)
+        )
+        out_proj = (
+            getattr(module, "out_proj", None)
+            or getattr(module, "down_proj", None)
+            or getattr(module, "fc_out", None)
+            or getattr(module, "fc2", None)
+            or getattr(module, "w3", None)
+        )
+
+        if not isinstance(in_proj, nn.Linear):
+            return False, None
+
+        # Chunked GLU requires out_features of in_proj to be 2 * hidden
+        if out_proj is not None and isinstance(out_proj, nn.Linear):
+            if in_proj.out_features != 2 * out_proj.in_features:
+                return False, None
+        else:
+            if in_proj.out_features % 2 != 0:
+                return False, None
+
+        act_name, neg_slope = _extract_glu_activation(module)
+        total_p = sum(p.numel() for p in module.parameters())
+        trainable_p = sum(p.numel() for p in module.parameters() if p.requires_grad)
+
+        lens = HolonomicFusedChunkedGLUMLP(
+            in_proj, out_proj=out_proj, act=act_name, negative_slope=neg_slope, dim=-1
+        )
+        decision_label = f"OJASX_HOLONOMIC_CHUNKED_{act_name.upper()}_MLP"
+
+        report.decisions.append(
+            SmartLayerDecision(
+                module_name=full_name,
+                original_type=module.__class__.__name__,
+                decision=decision_label,
+                replacement_type=f"HolonomicFusedChunkedGLUMLP({act_name})",
+                trainable_params=trainable_p,
+                frozen_params=total_p - trainable_p,
+                tile_schedule="(fused chunked glu)",
+                reason=f"Universal Chunked GLU ({act_name}) rewritten to fused zero-tape lens",
+                estimated_saved_bytes_per_token=float(in_proj.out_features * 4),
+            )
+        )
+        return True, lens
+
+    def _is_safe_to_fuse_linear_activation(
+        self, parent: nn.Module, name_a: str, name_b: str
+    ) -> bool:
+        """Verifies that activation name_b in non-sequential parent is dedicated to name_a and not reused."""
+        try:
+            import inspect, ast, textwrap
+            forward_fn = getattr(parent.__class__, "forward", None)
+            if forward_fn is None:
+                return False
+            src = textwrap.dedent(inspect.getsource(forward_fn))
+            tree = ast.parse(src)
+
+            # Count occurrences of self.<name_b>
+            b_refs = 0
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self":
+                    if node.attr == name_b:
+                        b_refs += 1
+
+            # If self.<name_b> is referenced only once, it is safe to replace with Identity
+            if b_refs == 1:
+                return True
+
+            return False
+        except Exception:
+            return False
+
+    def _fuse_adjacent_linear_act(
+        self,
+        parent: nn.Module,
         prefix: str,
         batch_tokens: int,
         prefer_1bit_relu2_for_relu: bool,
+        effective_tiny_threshold: int,
         report: SmartWorkloadReport,
+        is_sequential: bool = False,
     ) -> None:
-        children = list(seq.named_children())
+        children = list(parent.named_children())
         i = 0
         while i < len(children) - 1:
             name_a, mod_a = children[i]
@@ -232,6 +665,11 @@ class SmartWorkloadRouter:
             full_name = f"{prefix}.{name_a}" if prefix else name_a
 
             if isinstance(mod_a, nn.Linear) and isinstance(mod_b, (nn.GELU, nn.SiLU, nn.ReLU, nn.LeakyReLU)):
+                # In non-sequential modules, verify that mod_b is safe to fuse and replace with Identity
+                if not is_sequential and not self._is_safe_to_fuse_linear_activation(parent, name_a, name_b):
+                    i += 1
+                    continue
+
                 params = mod_a.in_features * mod_a.out_features
                 w_grad = mod_a.weight.requires_grad
                 sched = self.planner.plan_gemm_tile(
@@ -240,7 +678,7 @@ class SmartWorkloadRouter:
                 )
                 tile_str = f"({sched.tile_m},{sched.tile_n},{sched.tile_k})"
 
-                if params >= self.tiny_param_threshold and w_grad:
+                if params >= effective_tiny_threshold and w_grad:
                     if isinstance(mod_b, nn.ReLU) and prefer_1bit_relu2_for_relu:
                         rep = HolonomicBitPackedLinear(
                             mod_a.in_features, mod_a.out_features,
@@ -250,8 +688,8 @@ class SmartWorkloadRouter:
                         rep.weight = mod_a.weight
                         if mod_a.bias is not None:
                             rep.bias = mod_a.bias
-                        setattr(seq, name_a, rep)
-                        setattr(seq, name_b, nn.Identity())
+                        setattr(parent, name_a, rep)
+                        setattr(parent, name_b, nn.Identity())
                         report.decisions.append(
                             SmartLayerDecision(
                                 module_name=full_name,
@@ -292,8 +730,8 @@ class SmartWorkloadRouter:
                     rep.weight = mod_a.weight
                     if mod_a.bias is not None:
                         rep.bias = mod_a.bias
-                    setattr(seq, name_a, rep)
-                    setattr(seq, name_b, nn.Identity())
+                    setattr(parent, name_a, rep)
+                    setattr(parent, name_b, nn.Identity())
                     report.decisions.append(
                         SmartLayerDecision(
                             module_name=full_name,
@@ -311,11 +749,25 @@ class SmartWorkloadRouter:
                     continue
             i += 1
 
+    def _fuse_sequential_in_place(
+        self,
+        seq: nn.Sequential,
+        prefix: str,
+        batch_tokens: int,
+        prefer_1bit_relu2_for_relu: bool,
+        effective_tiny_threshold: int,
+        report: SmartWorkloadReport,
+    ) -> None:
+        self._fuse_adjacent_linear_act(
+            seq, prefix, batch_tokens, prefer_1bit_relu2_for_relu, effective_tiny_threshold, report, is_sequential=True
+        )
+
     def _decide_linear(
         self,
         linear: nn.Linear,
         full_name: str,
         batch_tokens: int,
+        effective_tiny_threshold: int,
     ) -> Tuple[nn.Module, SmartLayerDecision]:
         params = linear.in_features * linear.out_features
         if linear.bias is not None:
@@ -328,7 +780,7 @@ class SmartWorkloadRouter:
         )
         tile_str = f"({sched.tile_m},{sched.tile_n},{sched.tile_k})"
 
-        # Rule 1: What NOT to execute / save — Frozen Backbone Layer!
+        # Rule 1: Frozen Backbone Layer
         if not w_grad:
             rep = FrozenLinearZeroTape(linear)
             return rep, SmartLayerDecision(
@@ -343,8 +795,8 @@ class SmartWorkloadRouter:
                 estimated_saved_bytes_per_token=float(linear.in_features * 4),
             )
 
-        # Rule 2: Tiny Tensor Fast-Bypass — Never add wrapper overhead to tiny layers!
-        if (linear.in_features * linear.out_features) < self.tiny_param_threshold:
+        # Rule 2: Tiny Tensor Fast-Bypass (evaluated against adaptive effective_tiny_threshold)
+        if (linear.in_features * linear.out_features) < effective_tiny_threshold:
             return linear, SmartLayerDecision(
                 module_name=full_name,
                 original_type="nn.Linear (Tiny)",
@@ -353,7 +805,7 @@ class SmartWorkloadRouter:
                 trainable_params=params,
                 frozen_params=0,
                 tile_schedule=tile_str,
-                reason=f"Matrix size ({linear.in_features}x{linear.out_features}) < {self.tiny_param_threshold}: keep native C++ fast-path",
+                reason=f"Matrix size ({linear.in_features}x{linear.out_features}) < {effective_tiny_threshold}: keep native C++ fast-path",
                 estimated_saved_bytes_per_token=0.0,
             )
 
@@ -381,3 +833,28 @@ class SmartWorkloadRouter:
             estimated_saved_bytes_per_token=float(linear.out_features * 2),
         )
 
+
+def optimize_model(
+    model: nn.Module,
+    batch_tokens: int = 512,
+    prefer_1bit_relu2_for_relu: bool = False,
+    tiny_param_threshold: int = 1024,
+    large_vocab_threshold: int = 8192,
+    **router_kwargs,
+) -> Tuple[nn.Module, SmartWorkloadReport]:
+    """Top-level 3-line quickstart model optimizer.
+
+    Usage:
+        import ojasx2
+        model, report = ojasx2.optimize_model(model)
+    """
+    router = SmartWorkloadRouter(
+        tiny_param_threshold=tiny_param_threshold,
+        large_vocab_threshold=large_vocab_threshold,
+        **router_kwargs,
+    )
+    return router.optimize_model(
+        model,
+        batch_tokens=batch_tokens,
+        prefer_1bit_relu2_for_relu=prefer_1bit_relu2_for_relu,
+    )
