@@ -119,10 +119,22 @@ std::vector<int64_t> tilelang_query_schedule(
 //        `simdgroup_multiply_accumulate`, `simdgroup_store`, lines 1339-1370)
 //      - Fused OjasX Holonomic `ReLU2` + Hardware `simd_ballot(val > 0.0f)` 1-bit packing!
 // ============================================================================
-std::string tilelang_emit_metal_gemm_source(
-    int64_t block_m, int64_t block_n, int64_t block_k, int64_t panel_size) {
-    TORCH_CHECK(block_m == 32 && block_n == 32 && block_k == 8,
-                "TileLang Metal SIMDGroup micro-kernel expects 32x32x8 block tile");
+// ============================================================================
+// 3. Direct Port of `third_party/tilelang/src/metal/codegen/codegen_metal.cc`
+//    Emits TileLang Metal Shader with:
+//      - Adaptive micro-tile sizing:
+//          * Decode ($M \le 8$): $8 \times 32 \times 16$ micro-tile with 1 simdgroup (32 threads)
+//          * Prefill ($M > 8$):  $32 \times 32 \times 8$ tile with 4 simdgroups (128 threads)
+//      - `rasterization2DMLX` threadblock panel swizzling (lines 551-573)
+//      - 16-byte threadgroup bank-conflict padding (`+ 4` elements per row, lines 760-768)
+//      - `simdgroup_float8x8` / `simdgroup_half8x8` matrix multiplication
+//      - Fused OjasX Holonomic `ReLU2` + Hardware `simd_ballot(val > 0.0f)` 1-bit packing
+// ============================================================================
+std::string tilelang_emit_metal_gemm_source_impl(
+    int64_t block_m, int64_t block_n, int64_t block_k, int64_t panel_size, bool use_fp16) {
+    TORCH_CHECK((block_m == 32 && block_n == 32 && block_k == 8) ||
+                (block_m == 8 && block_n == 32 && block_k == 16),
+                "TileLang Metal kernel supports 8x32x16 (decode) or 32x32x8 (prefill) tile sizes");
     TORCH_CHECK(panel_size > 0 && (panel_size & (panel_size - 1)) == 0,
                 "Metal MLX swizzle panel size must be a power of two");
 
@@ -131,18 +143,19 @@ std::string tilelang_emit_metal_gemm_source(
         swizzle_log++;
     }
 
-    // Following `codegen_metal.cc` lines 760-768:
-    // Apple GPU shared memory has banks of 16 bytes (4 floats); pad row stride by +4 floats
-    // to eliminate shared/threadgroup bank conflicts!
-    int a_smem_stride = static_cast<int>(block_k) + 4; // 8 + 4 = 12 floats
-    int b_smem_stride = static_cast<int>(block_n) + 4; // 32 + 4 = 36 floats
-    int c_smem_stride = static_cast<int>(block_n) + 4; // 32 + 4 = 36 floats
+    std::string dtype = use_fp16 ? "half" : "float";
+    std::string zero_val = use_fp16 ? "0.0h" : "0.0f";
+
+    // Apple GPU threadgroup memory has 16-byte banks; pad row stride by +4 elements (16B for float, 8B for half)
+    int a_smem_stride = static_cast<int>(block_k) + 4;
+    int b_smem_stride = static_cast<int>(block_n) + 4;
+    int c_smem_stride = static_cast<int>(block_n) + 4;
 
     std::ostringstream code;
     code << "// Emitted by OjasX x TileLang CodeGenTileLangMetal\n";
     code << "#include <metal_stdlib>\n";
     code << "#include <metal_simdgroup>\n";
-    code << "#include <metal_SIMDgroup_matrix>\n";
+    code << "#include <metal_simdgroup_matrix>\n";
     code << "#define TILELANG_PRAGMA_UNROLL _Pragma(\"clang loop unroll(full)\")\n";
     code << "using namespace metal;\n\n";
 
@@ -155,13 +168,11 @@ std::string tilelang_emit_metal_gemm_source(
     code << "    uint grid_y;\n";
     code << "};\n\n";
 
-    // 4 simdgroups (128 threads) per threadgroup; each simdgroup computes a 16x16 quadrant
-    // using four `simdgroup_float8x8` hardware matrix tiles (2x2 of 8x8), totaling 32x32!
     code << "kernel void ojasx_tilelang_gemm_relu2_ballot_kernel(\n";
-    code << "    device const float* A [[buffer(0)]],\n";
-    code << "    device const float* B [[buffer(1)]],\n";
-    code << "    device const float* Bias [[buffer(2)]],\n";
-    code << "    device float* Out [[buffer(3)]],\n";
+    code << "    device const " << dtype << "* A [[buffer(0)]],\n";
+    code << "    device const " << dtype << "* B [[buffer(1)]],\n";
+    code << "    device const " << dtype << "* Bias [[buffer(2)]],\n";
+    code << "    device " << dtype << "* Out [[buffer(3)]],\n";
     code << "    device int* PackedMask [[buffer(4)]],\n";
     code << "    constant TileLangGemmParams& params [[buffer(5)]],\n";
     code << "    uint3 __physical_blockIdx [[threadgroup_position_in_grid]],\n";
@@ -170,7 +181,6 @@ std::string tilelang_emit_metal_gemm_source(
     code << "    uint __lane [[thread_index_in_simdgroup]]\n";
     code << ") {\n";
 
-    // `codegen_metal.cc` lines 551-573: `rasterization2DMLX` L2-locality panel swizzling
     code << "    // TileLang rasterization2DMLX panel swizzling (panel_size=" << panel_size << ")\n";
     code << "    const uint3 blockIdx = (\n";
     code << "        (params.grid_x >= " << panel_size << "u && (params.grid_x % " << panel_size << "u == 0u))\n";
@@ -179,96 +189,151 @@ std::string tilelang_emit_metal_gemm_source(
     code << "                __physical_blockIdx.z)\n";
     code << "        : __physical_blockIdx\n";
     code << "    );\n";
-    code << "    const uint tile_row = blockIdx.y * 32u;\n";
-    code << "    const uint tile_col = blockIdx.x * 32u;\n";
+    code << "    const uint tile_row = blockIdx.y * " << block_m << "u;\n";
+    code << "    const uint tile_col = blockIdx.x * " << block_n << "u;\n";
     code << "    if (tile_row >= params.M || tile_col >= params.N) return;\n\n";
 
-    // `codegen_metal.cc` lines 760-768: 16-byte padded threadgroup SRAM allocations
-    code << "    threadgroup float As[32 * " << a_smem_stride << "];\n";
-    code << "    threadgroup float Bs[8 * " << b_smem_stride << "];\n";
-    code << "    threadgroup float Cs[32 * " << c_smem_stride << "];\n\n";
+    code << "    threadgroup " << dtype << " As[" << block_m << " * " << a_smem_stride << "];\n";
+    code << "    threadgroup " << dtype << " Bs[" << block_k << " * " << b_smem_stride << "];\n";
+    code << "    threadgroup " << dtype << " Cs[" << block_m << " * " << c_smem_stride << "];\n\n";
 
-    // `codegen_metal.cc` lines 757-758 & 1348-1351: `simdgroup_float8x8` accumulators
-    code << "    simdgroup_float8x8 acc[4];\n";
-    code << "    TILELANG_PRAGMA_UNROLL for (uint i = 0; i < 4; ++i) {\n";
-    code << "        acc[i] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);\n";
-    code << "    }\n\n";
+    std::string simdgroup_type = use_fp16 ? "simdgroup_half8x8" : "simdgroup_float8x8";
 
-    code << "    const uint sg_row = (__simd_group_id >> 1) * 16u;\n";
-    code << "    const uint sg_col = (__simd_group_id & 1u) * 16u;\n\n";
+    if (block_m == 8) {
+        // Decode pathway: 1 simdgroup (32 threads) computing 8x32
+        code << "    " << simdgroup_type << " acc[4];\n";
+        code << "    TILELANG_PRAGMA_UNROLL for (uint i = 0; i < 4; ++i) {\n";
+        code << "        acc[i] = make_filled_simdgroup_matrix<" << dtype << ", 8, 8>(" << zero_val << ");\n";
+        code << "    }\n\n";
 
-    code << "    for (uint k_base = 0; k_base < params.K; k_base += 8u) {\n";
-    code << "        // Cooperative 128-thread load into 16B-padded threadgroup SRAM\n";
-    code << "        for (uint idx = tid; idx < 256u; idx += 128u) {\n";
-    code << "            uint r = idx >> 3;\n";
-    code << "            uint c = idx & 7u;\n";
-    code << "            uint gm = tile_row + r;\n";
-    code << "            uint gk = k_base + c;\n";
-    code << "            As[r * " << a_smem_stride << " + c] = (gm < params.M && gk < params.K) ? A[gm * params.K + gk] : 0.0f;\n";
-    code << "        }\n";
-    code << "        for (uint idx = tid; idx < 256u; idx += 128u) {\n";
-    code << "            uint r = idx >> 5;\n";
-    code << "            uint c = idx & 31u;\n";
-    code << "            uint gk = k_base + r;\n";
-    code << "            uint gn = tile_col + c;\n";
-    code << "            // B is weight [N, K], so B^T[gk, gn] = B[gn * K + gk]\n";
-    code << "            Bs[r * " << b_smem_stride << " + c] = (gk < params.K && gn < params.N) ? B[gn * params.K + gk] : 0.0f;\n";
-    code << "        }\n";
-    code << "        threadgroup_barrier(mem_flags::mem_threadgroup);\n\n";
+        code << "    for (uint k_base = 0; k_base < params.K; k_base += 16u) {\n";
+        code << "        // Cooperative 32-thread load of As [8, 16] and Bs [16, 32]\n";
+        code << "        for (uint idx = tid; idx < 128u; idx += 32u) {\n";
+        code << "            uint r = idx >> 4; uint c = idx & 15u;\n";
+        code << "            uint gm = tile_row + r; uint gk = k_base + c;\n";
+        code << "            As[r * " << a_smem_stride << " + c] = (gm < params.M && gk < params.K) ? A[gm * params.K + gk] : " << zero_val << ";\n";
+        code << "        }\n";
+        code << "        for (uint idx = tid; idx < 512u; idx += 32u) {\n";
+        code << "            uint r = idx >> 5; uint c = idx & 31u;\n";
+        code << "            uint gk = k_base + r; uint gn = tile_col + c;\n";
+        code << "            Bs[r * " << b_smem_stride << " + c] = (gk < params.K && gn < params.N) ? B[gn * params.K + gk] : " << zero_val << ";\n";
+        code << "        }\n";
+        code << "        threadgroup_barrier(mem_flags::mem_threadgroup);\n\n";
 
-    // `codegen_metal.cc` lines 1352-1370: `simdgroup_load` & `simdgroup_multiply_accumulate`
-    code << "        simdgroup_float8x8 frag_a[2];\n";
-    code << "        simdgroup_float8x8 frag_b[2];\n";
-    code << "        simdgroup_load(frag_a[0], &As[(sg_row + 0u) * " << a_smem_stride << "], " << a_smem_stride << ", ulong2(0, 0), false);\n";
-    code << "        simdgroup_load(frag_a[1], &As[(sg_row + 8u) * " << a_smem_stride << "], " << a_smem_stride << ", ulong2(0, 0), false);\n";
-    code << "        simdgroup_load(frag_b[0], &Bs[sg_col + 0u], " << b_smem_stride << ", ulong2(0, 0), false);\n";
-    code << "        simdgroup_load(frag_b[1], &Bs[sg_col + 8u], " << b_smem_stride << ", ulong2(0, 0), false);\n\n";
+        code << "        TILELANG_PRAGMA_UNROLL for (uint k_sub = 0; k_sub < 16u; k_sub += 8u) {\n";
+        code << "            " << simdgroup_type << " frag_a;\n";
+        code << "            simdgroup_load(frag_a, &As[k_sub], " << a_smem_stride << ", ulong2(0, 0), false);\n";
+        code << "            " << simdgroup_type << " frag_b[4];\n";
+        code << "            TILELANG_PRAGMA_UNROLL for (uint col = 0; col < 4; ++col) {\n";
+        code << "                simdgroup_load(frag_b[col], &Bs[k_sub * " << b_smem_stride << " + col * 8u], " << b_smem_stride << ", ulong2(0, 0), false);\n";
+        code << "                simdgroup_multiply_accumulate(acc[col], frag_a, frag_b[col], acc[col]);\n";
+        code << "            }\n";
+        code << "        }\n";
+        code << "        threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+        code << "    }\n\n";
 
-    code << "        simdgroup_multiply_accumulate(acc[0], frag_a[0], frag_b[0], acc[0]);\n";
-    code << "        simdgroup_multiply_accumulate(acc[1], frag_a[0], frag_b[1], acc[1]);\n";
-    code << "        simdgroup_multiply_accumulate(acc[2], frag_a[1], frag_b[0], acc[2]);\n";
-    code << "        simdgroup_multiply_accumulate(acc[3], frag_a[1], frag_b[1], acc[3]);\n";
-    code << "        threadgroup_barrier(mem_flags::mem_threadgroup);\n";
-    code << "    }\n\n";
+        code << "    TILELANG_PRAGMA_UNROLL for (uint col = 0; col < 4; ++col) {\n";
+        code << "        simdgroup_store(acc[col], &Cs[col * 8u], " << c_smem_stride << ", ulong2(0, 0), false);\n";
+        code << "    }\n";
+        code << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n\n";
 
-    // Store `simdgroup_float8x8` tiles into 16B-padded `Cs` SRAM for fused epilogue
-    code << "    simdgroup_store(acc[0], &Cs[(sg_row + 0u) * " << c_smem_stride << " + sg_col + 0u], " << c_smem_stride << ", ulong2(0, 0), false);\n";
-    code << "    simdgroup_store(acc[1], &Cs[(sg_row + 0u) * " << c_smem_stride << " + sg_col + 8u], " << c_smem_stride << ", ulong2(0, 0), false);\n";
-    code << "    simdgroup_store(acc[2], &Cs[(sg_row + 8u) * " << c_smem_stride << " + sg_col + 0u], " << c_smem_stride << ", ulong2(0, 0), false);\n";
-    code << "    simdgroup_store(acc[3], &Cs[(sg_row + 8u) * " << c_smem_stride << " + sg_col + 8u], " << c_smem_stride << ", ulong2(0, 0), false);\n";
-    code << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n\n";
+        code << "    const uint words_per_row = (params.N + 31u) / 32u;\n";
+        code << "    const uint word_col = tile_col >> 5;\n";
+        code << "    for (uint r = 0; r < 8u; ++r) {\n";
+        code << "        uint gm = tile_row + r;\n";
+        code << "        uint gn = tile_col + __lane;\n";
+        code << "        bool valid = (gm < params.M) && (gn < params.N);\n";
+        code << "        " << dtype << " val = valid ? Cs[r * " << c_smem_stride << " + __lane] : " << zero_val << ";\n";
+        code << "        if (valid && params.has_bias != 0u) {\n";
+        code << "            val += Bias[gn];\n";
+        code << "        }\n";
+        code << "        bool is_pos = valid && (val > " << zero_val << ");\n";
+        code << "        simd_vote vote = simd_ballot(is_pos);\n";
+        code << "        uint32_t mask_word = uint32_t(simd_vote::vote_t(vote));\n";
+        code << "        if (valid) {\n";
+        code << "            Out[gm * params.N + gn] = is_pos ? (val * val) : " << zero_val << ";\n";
+        code << "        }\n";
+        code << "        if (__lane == 0u && gm < params.M && word_col < words_per_row) {\n";
+        code << "            PackedMask[gm * words_per_row + word_col] = as_type<int>(mask_word);\n";
+        code << "        }\n";
+        code << "    }\n";
+    } else {
+        // Prefill pathway: 4 simdgroups (128 threads) computing 32x32
+        code << "    " << simdgroup_type << " acc[4];\n";
+        code << "    TILELANG_PRAGMA_UNROLL for (uint i = 0; i < 4; ++i) {\n";
+        code << "        acc[i] = make_filled_simdgroup_matrix<" << dtype << ", 8, 8>(" << zero_val << ");\n";
+        code << "    }\n\n";
 
-    // Fused OjasX Holonomic Epilogue: Each of the 4 simdgroups (32 lanes) processes 8 rows of 32 columns!
-    // Uses hardware `simd_ballot(val > 0.0f)` to pack all 32 column sign bits in 1 GPU clock cycle!
-    code << "    const uint words_per_row = (params.N + 31u) / 32u;\n";
-    code << "    const uint word_col = tile_col >> 5;\n";
-    code << "    for (uint r_sub = 0; r_sub < 8u; ++r_sub) {\n";
-    code << "        uint r_local = __simd_group_id * 8u + r_sub;\n";
-    code << "        uint gm = tile_row + r_local;\n";
-    code << "        uint gn = tile_col + __lane;\n";
-    code << "        bool valid = (gm < params.M) && (gn < params.N);\n";
-    code << "        float val = valid ? Cs[r_local * " << c_smem_stride << " + __lane] : 0.0f;\n";
-    code << "        if (valid && params.has_bias != 0u) {\n";
-    code << "            val += Bias[gn];\n";
-    code << "        }\n";
-    code << "        bool is_pos = valid && (val > 0.0f);\n";
-    code << "        // Hardware 1-cycle 32-lane ballot instruction on Apple GPU!\n";
-    code << "        simd_vote vote = simd_ballot(is_pos);\n";
-    code << "        uint32_t mask_word = uint32_t(simd_vote::vote_t(vote));\n";
-    code << "        if (valid) {\n";
-    code << "            Out[gm * params.N + gn] = is_pos ? (val * val) : 0.0f;\n";
-    code << "        }\n";
-    code << "        if (__lane == 0u && gm < params.M && word_col < words_per_row) {\n";
-    code << "            PackedMask[gm * words_per_row + word_col] = as_type<int>(mask_word);\n";
-    code << "        }\n";
-    code << "    }\n";
+        code << "    const uint sg_row = (__simd_group_id >> 1) * 16u;\n";
+        code << "    const uint sg_col = (__simd_group_id & 1u) * 16u;\n\n";
+
+        code << "    for (uint k_base = 0; k_base < params.K; k_base += 8u) {\n";
+        code << "        for (uint idx = tid; idx < 256u; idx += 128u) {\n";
+        code << "            uint r = idx >> 3; uint c = idx & 7u;\n";
+        code << "            uint gm = tile_row + r; uint gk = k_base + c;\n";
+        code << "            As[r * " << a_smem_stride << " + c] = (gm < params.M && gk < params.K) ? A[gm * params.K + gk] : " << zero_val << ";\n";
+        code << "        }\n";
+        code << "        for (uint idx = tid; idx < 256u; idx += 128u) {\n";
+        code << "            uint r = idx >> 5; uint c = idx & 31u;\n";
+        code << "            uint gk = k_base + r; uint gn = tile_col + c;\n";
+        code << "            Bs[r * " << b_smem_stride << " + c] = (gk < params.K && gn < params.N) ? B[gn * params.K + gk] : " << zero_val << ";\n";
+        code << "        }\n";
+        code << "        threadgroup_barrier(mem_flags::mem_threadgroup);\n\n";
+
+        code << "        " << simdgroup_type << " frag_a[2];\n";
+        code << "        " << simdgroup_type << " frag_b[2];\n";
+        code << "        simdgroup_load(frag_a[0], &As[(sg_row + 0u) * " << a_smem_stride << "], " << a_smem_stride << ", ulong2(0, 0), false);\n";
+        code << "        simdgroup_load(frag_a[1], &As[(sg_row + 8u) * " << a_smem_stride << "], " << a_smem_stride << ", ulong2(0, 0), false);\n";
+        code << "        simdgroup_load(frag_b[0], &Bs[sg_col + 0u], " << b_smem_stride << ", ulong2(0, 0), false);\n";
+        code << "        simdgroup_load(frag_b[1], &Bs[sg_col + 8u], " << b_smem_stride << ", ulong2(0, 0), false);\n\n";
+
+        code << "        simdgroup_multiply_accumulate(acc[0], frag_a[0], frag_b[0], acc[0]);\n";
+        code << "        simdgroup_multiply_accumulate(acc[1], frag_a[0], frag_b[1], acc[1]);\n";
+        code << "        simdgroup_multiply_accumulate(acc[2], frag_a[1], frag_b[0], acc[2]);\n";
+        code << "        simdgroup_multiply_accumulate(acc[3], frag_a[1], frag_b[1], acc[3]);\n";
+        code << "        threadgroup_barrier(mem_flags::mem_threadgroup);\n";
+        code << "    }\n\n";
+
+        code << "    simdgroup_store(acc[0], &Cs[(sg_row + 0u) * " << c_smem_stride << " + sg_col + 0u], " << c_smem_stride << ", ulong2(0, 0), false);\n";
+        code << "    simdgroup_store(acc[1], &Cs[(sg_row + 0u) * " << c_smem_stride << " + sg_col + 8u], " << c_smem_stride << ", ulong2(0, 0), false);\n";
+        code << "    simdgroup_store(acc[2], &Cs[(sg_row + 8u) * " << c_smem_stride << " + sg_col + 0u], " << c_smem_stride << ", ulong2(0, 0), false);\n";
+        code << "    simdgroup_store(acc[3], &Cs[(sg_row + 8u) * " << c_smem_stride << " + sg_col + 8u], " << c_smem_stride << ", ulong2(0, 0), false);\n";
+        code << "    threadgroup_barrier(mem_flags::mem_threadgroup);\n\n";
+
+        code << "    const uint words_per_row = (params.N + 31u) / 32u;\n";
+        code << "    const uint word_col = tile_col >> 5;\n";
+        code << "    for (uint r_sub = 0; r_sub < 8u; ++r_sub) {\n";
+        code << "        uint r_local = __simd_group_id * 8u + r_sub;\n";
+        code << "        uint gm = tile_row + r_local;\n";
+        code << "        uint gn = tile_col + __lane;\n";
+        code << "        bool valid = (gm < params.M) && (gn < params.N);\n";
+        code << "        " << dtype << " val = valid ? Cs[r_local * " << c_smem_stride << " + __lane] : " << zero_val << ";\n";
+        code << "        if (valid && params.has_bias != 0u) {\n";
+        code << "            val += Bias[gn];\n";
+        code << "        }\n";
+        code << "        bool is_pos = valid && (val > " << zero_val << ");\n";
+        code << "        simd_vote vote = simd_ballot(is_pos);\n";
+        code << "        uint32_t mask_word = uint32_t(simd_vote::vote_t(vote));\n";
+        code << "        if (valid) {\n";
+        code << "            Out[gm * params.N + gn] = is_pos ? (val * val) : " << zero_val << ";\n";
+        code << "        }\n";
+        code << "        if (__lane == 0u && gm < params.M && word_col < words_per_row) {\n";
+        code << "            PackedMask[gm * words_per_row + word_col] = as_type<int>(mask_word);\n";
+        code << "        }\n";
+        code << "    }\n";
+    }
+
     code << "}\n";
-
     return code.str();
 }
 
+std::string tilelang_emit_metal_gemm_source(
+    int64_t block_m, int64_t block_n, int64_t block_k, int64_t panel_size) {
+    return tilelang_emit_metal_gemm_source_impl(block_m, block_n, block_k, panel_size, false);
+}
+
 // ============================================================================
-// 4. Native Metal Hardware Compiler & Executor (`MTLDevice` + `simdgroup_float8x8`)
+// 4. Native Metal Hardware Compiler & Executor (`MTLDevice` + Zero-Copy Unified Memory)
 // ============================================================================
 struct MetalRuntimeCache {
     id<MTLDevice> device = nil;
@@ -283,15 +348,17 @@ struct MetalRuntimeCache {
         }
     }
 
-    id<MTLComputePipelineState> get_pipeline(int64_t panel_size) {
+    id<MTLComputePipelineState> get_pipeline(int64_t block_m, int64_t block_n, int64_t block_k, int64_t panel_size, bool use_fp16) {
         std::lock_guard<std::mutex> lock(mu);
-        std::string key = "32_32_8_" + std::to_string(panel_size);
+        std::string key = std::to_string(block_m) + "_" + std::to_string(block_n) + "_" +
+                          std::to_string(block_k) + "_" + std::to_string(panel_size) + "_" +
+                          (use_fp16 ? "f16" : "f32");
         auto it = pipelines.find(key);
         if (it != pipelines.end()) {
             return it->second;
         }
         TORCH_CHECK(device != nil, "Metal GPU device unavailable");
-        std::string msl_src = tilelang_emit_metal_gemm_source(32, 32, 8, panel_size);
+        std::string msl_src = tilelang_emit_metal_gemm_source_impl(block_m, block_n, block_k, panel_size, use_fp16);
         NSString* src_ns = [NSString stringWithUTF8String:msl_src.c_str()];
         NSError* err = nil;
         MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
@@ -317,6 +384,34 @@ static MetalRuntimeCache& get_metal_cache() {
     return cache;
 }
 
+// Zero-copy Apple Silicon unified memory buffer creator
+static id<MTLBuffer> create_metal_buffer_zerocopy(id<MTLDevice> device, const at::Tensor& tensor) {
+    size_t length = tensor.nbytes();
+    if (length == 0) {
+        return [device newBufferWithLength:64 options:MTLResourceStorageModeShared];
+    }
+    void* ptr = tensor.data_ptr();
+    size_t page_size = (size_t)getpagesize();
+    uintptr_t addr = (uintptr_t)ptr;
+
+    // Check if tensor memory pointer is page aligned for zero-copy sharing
+    if ((addr % page_size) == 0) {
+        size_t page_aligned_length = ((length + page_size - 1) / page_size) * page_size;
+        id<MTLBuffer> buf = [device newBufferWithBytesNoCopy:ptr
+                                                      length:page_aligned_length
+                                                     options:MTLResourceStorageModeShared
+                                                 deallocator:nil];
+        if (buf != nil) {
+            return buf;
+        }
+    }
+
+    // Graceful fallback for non-page-aligned tensors
+    return [device newBufferWithBytes:ptr
+                               length:length
+                              options:MTLResourceStorageModeShared];
+}
+
 struct TileLangGemmParamsHost {
     uint32_t M;
     uint32_t N;
@@ -335,42 +430,62 @@ std::tuple<at::Tensor, at::Tensor> tilelang_metal_gemm_relu2_fwd(
     auto orig_sizes = x.sizes().vec();
     int64_t K = orig_sizes.back();
     int64_t N = weight.size(0);
-    int64_t M = x.numel() / K;
     int64_t words_per_row = (N + 31) / 32;
 
-    // Move to CPU contiguous for zero-copy Unified Memory (`MTLResourceStorageModeShared`)
+    auto out_sizes = orig_sizes;
+    out_sizes.back() = N;
+    auto mask_sizes = orig_sizes;
+    mask_sizes.back() = words_per_row;
+
+    if (x.numel() == 0 || K == 0 || N == 0) {
+        return std::make_tuple(
+            at::empty(out_sizes, x.options()),
+            at::empty(mask_sizes, x.options().dtype(at::kInt))
+        );
+    }
+
+    int64_t M = x.numel() / K;
     auto orig_device = x.device();
     auto orig_dtype = x.scalar_type();
-    at::Tensor x_cpu = x.to(at::kCPU, at::kFloat).contiguous().view({M, K});
-    at::Tensor w_cpu = weight.to(at::kCPU, at::kFloat).contiguous().view({N, K});
+    bool use_fp16 = (orig_dtype == at::kHalf);
+
+    // Adaptive micro-tile sizing: decode (M <= 8) vs prefill (M > 8)
+    int64_t block_m = (M <= 8) ? 8 : 32;
+    int64_t block_n = 32;
+    int64_t block_k = (M <= 8) ? 16 : 8;
+    int threads_per_group = (block_m == 8) ? 32 : 128;
+
+    at::ScalarType compute_dtype = use_fp16 ? at::kHalf : at::kFloat;
+    at::Tensor x_cpu = x.to(at::kCPU, compute_dtype).contiguous().reshape({M, K});
+    at::Tensor w_cpu = weight.to(at::kCPU, compute_dtype).contiguous().reshape({N, K});
     bool has_bias = bias_opt.has_value() && bias_opt->defined() && bias_opt->numel() > 0;
     at::Tensor b_cpu = has_bias
-        ? bias_opt->to(at::kCPU, at::kFloat).contiguous().view({N})
+        ? bias_opt->to(at::kCPU, compute_dtype).contiguous().reshape({N})
         : at::zeros({1}, x_cpu.options());
 
-    at::Tensor out_cpu = at::empty({M, N}, x_cpu.options());
-    at::Tensor mask_cpu = at::empty({M, words_per_row}, x_cpu.options().dtype(at::kInt));
+    at::Tensor out_cpu;
+    at::Tensor mask_cpu;
 
     @autoreleasepool {
         auto& cache = get_metal_cache();
-        id<MTLComputePipelineState> pso = cache.get_pipeline(panel_size);
+        id<MTLComputePipelineState> pso = cache.get_pipeline(block_m, block_n, block_k, panel_size, use_fp16);
 
-        id<MTLBuffer> buf_a = [cache.device newBufferWithBytes:x_cpu.data_ptr<float>()
-                                                        length:x_cpu.nbytes()
-                                                       options:MTLResourceStorageModeShared];
-        id<MTLBuffer> buf_b = [cache.device newBufferWithBytes:w_cpu.data_ptr<float>()
-                                                        length:w_cpu.nbytes()
-                                                       options:MTLResourceStorageModeShared];
-        id<MTLBuffer> buf_bias = [cache.device newBufferWithBytes:b_cpu.data_ptr<float>()
-                                                           length:b_cpu.nbytes()
+        // Zero-copy Apple Silicon unified memory buffers
+        id<MTLBuffer> buf_a = create_metal_buffer_zerocopy(cache.device, x_cpu);
+        id<MTLBuffer> buf_b = create_metal_buffer_zerocopy(cache.device, w_cpu);
+        id<MTLBuffer> buf_bias = create_metal_buffer_zerocopy(cache.device, b_cpu);
+
+        size_t elem_size = use_fp16 ? sizeof(uint16_t) : sizeof(float);
+        size_t out_nbytes = M * N * elem_size;
+        size_t mask_nbytes = M * words_per_row * sizeof(int32_t);
+
+        id<MTLBuffer> buf_out = [cache.device newBufferWithLength:std::max<size_t>(64, out_nbytes)
                                                           options:MTLResourceStorageModeShared];
-        id<MTLBuffer> buf_out = [cache.device newBufferWithLength:out_cpu.nbytes()
-                                                          options:MTLResourceStorageModeShared];
-        id<MTLBuffer> buf_mask = [cache.device newBufferWithLength:mask_cpu.nbytes()
+        id<MTLBuffer> buf_mask = [cache.device newBufferWithLength:std::max<size_t>(64, mask_nbytes)
                                                            options:MTLResourceStorageModeShared];
 
-        uint32_t grid_x = static_cast<uint32_t>((N + 31) / 32);
-        uint32_t grid_y = static_cast<uint32_t>((M + 31) / 32);
+        uint32_t grid_x = static_cast<uint32_t>((N + block_n - 1) / block_n);
+        uint32_t grid_y = static_cast<uint32_t>((M + block_m - 1) / block_m);
         TileLangGemmParamsHost params{
             static_cast<uint32_t>(M),
             static_cast<uint32_t>(N),
@@ -391,24 +506,20 @@ std::tuple<at::Tensor, at::Tensor> tilelang_metal_gemm_relu2_fwd(
         [enc setBytes:&params length:sizeof(TileLangGemmParamsHost) atIndex:5];
 
         MTLSize numThreadgroups = MTLSizeMake(grid_x, grid_y, 1);
-        MTLSize threadsPerGroup = MTLSizeMake(128, 1, 1); // 4 simdgroups * 32 lanes
+        MTLSize threadsPerGroup = MTLSizeMake(threads_per_group, 1, 1);
         [enc dispatchThreadgroups:numThreadgroups threadsPerThreadgroup:threadsPerGroup];
         [enc endEncoding];
         [cmd commit];
         [cmd waitUntilCompleted];
 
-        std::memcpy(out_cpu.data_ptr<float>(), [buf_out contents], out_cpu.nbytes());
-        std::memcpy(mask_cpu.data_ptr<int32_t>(), [buf_mask contents], mask_cpu.nbytes());
+        // Zero-copy wrapping of shared memory buffers directly into PyTorch tensors
+        out_cpu = at::from_blob([buf_out contents], {M, N}, [buf_out](void*) {}, x_cpu.options()).clone();
+        mask_cpu = at::from_blob([buf_mask contents], {M, words_per_row}, [buf_mask](void*) {}, x_cpu.options().dtype(at::kInt)).clone();
     }
 
-    auto out_sizes = orig_sizes;
-    out_sizes.back() = N;
-    auto mask_sizes = orig_sizes;
-    mask_sizes.back() = words_per_row;
-
     return std::make_tuple(
-        out_cpu.view(out_sizes).to(orig_device, orig_dtype),
-        mask_cpu.view(mask_sizes).to(orig_device)
+        out_cpu.reshape(out_sizes).to(orig_device, orig_dtype),
+        mask_cpu.reshape(mask_sizes).to(orig_device)
     );
 }
 
@@ -745,22 +856,31 @@ std::tuple<at::Tensor, at::Tensor> tilelang_universal_gemm_relu2_fwd(
         return tilelang_metal_gemm_relu2_fwd(x, weight, bias_opt, panel_size);
     }
 
-    // Universal L1d/L2 Cache-Blocked C++17 TileLang Execution (`third_party/tilelang/src/tl_templates/cpu/gemm.h`)
-    // Works for "cpu", and provides bit-exact hardware verification for "cuda", "rocm", "sycl", "ascend"
-    // when cross-targeting from a node without that vendor's physical PCIe card attached.
     auto orig_sizes = x.sizes().vec();
     int64_t K = orig_sizes.back();
     int64_t N = weight.size(0);
-    int64_t M = x.numel() / K;
     int64_t words_per_row = (N + 31) / 32;
 
+    auto out_sizes = orig_sizes;
+    out_sizes.back() = N;
+    auto mask_sizes = orig_sizes;
+    mask_sizes.back() = words_per_row;
+
+    if (x.numel() == 0 || K == 0 || N == 0) {
+        return std::make_tuple(
+            at::empty(out_sizes, x.options()),
+            at::empty(mask_sizes, x.options().dtype(at::kInt))
+        );
+    }
+
+    int64_t M = x.numel() / K;
     auto orig_device = x.device();
     auto orig_dtype = x.scalar_type();
-    at::Tensor x_cpu = x.to(at::kCPU, at::kFloat).contiguous().view({M, K});
-    at::Tensor w_cpu = weight.to(at::kCPU, at::kFloat).contiguous().view({N, K});
+    at::Tensor x_cpu = x.to(at::kCPU, at::kFloat).contiguous().reshape({M, K});
+    at::Tensor w_cpu = weight.to(at::kCPU, at::kFloat).contiguous().reshape({N, K});
     bool has_bias = bias_opt.has_value() && bias_opt->defined() && bias_opt->numel() > 0;
     at::Tensor b_cpu = has_bias
-        ? bias_opt->to(at::kCPU, at::kFloat).contiguous().view({N})
+        ? bias_opt->to(at::kCPU, at::kFloat).contiguous().reshape({N})
         : at::empty({0}, x_cpu.options());
 
     at::Tensor out_cpu = at::empty({M, N}, x_cpu.options());
@@ -772,34 +892,96 @@ std::tuple<at::Tensor, at::Tensor> tilelang_universal_gemm_relu2_fwd(
     float* out_ptr = out_cpu.data_ptr<float>();
     int32_t* mask_ptr = mask_cpu.data_ptr<int32_t>();
 
-    constexpr int64_t kBlockM = 32;
-    int64_t num_m_tiles = (M + kBlockM - 1) / kBlockM;
-    at::parallel_for(0, num_m_tiles, 1, [&](int64_t t_begin, int64_t t_end) {
+    // Adaptive micro-tile sizing for cache/register pressure minimization:
+    // Decode (M <= 8): 8x32x16, Prefill (M > 8): 32x32x32
+    int64_t block_m = (M <= 8) ? 8 : 32;
+    int64_t block_n = 32;
+    int64_t block_k = (M <= 8) ? 16 : 32;
+
+    int64_t num_m_tiles = (M + block_m - 1) / block_m;
+    int64_t num_n_tiles = (N + block_n - 1) / block_n;
+    int64_t total_tiles = num_m_tiles * num_n_tiles;
+
+    // 2D (M, N) Work Decomposition: eliminates CPU core starvation during autoregressive decoding (M <= 8)
+    at::parallel_for(0, total_tiles, 1, [&](int64_t t_begin, int64_t t_end) {
         for (int64_t t = t_begin; t < t_end; ++t) {
-            int64_t m0 = t * kBlockM;
-            int64_t m_chunk = std::min<int64_t>(kBlockM, M - m0);
-            tl::cpu::GemmHolonomicRelu2BallotTile<32, 32, 32>::run(
-                a_ptr + m0 * K,
-                b_ptr,
-                bias_ptr,
-                out_ptr + m0 * N,
-                mask_ptr + m0 * words_per_row,
-                m_chunk,
-                N,
-                K,
-                has_bias
-            );
+            int64_t tm = t / num_n_tiles;
+            int64_t tn = t % num_n_tiles;
+            int64_t m0 = tm * block_m;
+            int64_t n0 = tn * block_n;
+            int64_t m_chunk = std::min<int64_t>(block_m, M - m0);
+            int64_t n_chunk = std::min<int64_t>(block_n, N - n0);
+
+            // L1d-resident tile accumulator (32x32 floats = 4 KB)
+            alignas(64) float acc[32][32];
+
+            for (int64_t rm = 0; rm < m_chunk; ++rm) {
+                if (has_bias && bias_ptr != nullptr) {
+                    for (int64_t rn = 0; rn < n_chunk; ++rn) {
+                        acc[rm][rn] = bias_ptr[n0 + rn];
+                    }
+                    for (int64_t rn = n_chunk; rn < 32; ++rn) {
+                        acc[rm][rn] = 0.0f;
+                    }
+                } else {
+                    std::memset(acc[rm], 0, sizeof(float) * 32);
+                }
+            }
+
+            // L1/L2 cache-blocked K reduction
+            for (int64_t k0 = 0; k0 < K; k0 += block_k) {
+                int64_t k_lim = std::min<int64_t>(block_k, K - k0);
+                for (int64_t rm = 0; rm < m_chunk; ++rm) {
+                    const float* a_row = a_ptr + (m0 + rm) * K + k0;
+                    for (int64_t rn = 0; rn < n_chunk; ++rn) {
+                        const float* b_row = b_ptr + (n0 + rn) * K + k0;
+                        float sum = 0.0f;
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+                        int64_t rk = 0;
+                        float32x4_t vsum = vdupq_n_f32(0.0f);
+                        for (; rk + 4 <= k_lim; rk += 4) {
+                            float32x4_t va = vld1q_f32(a_row + rk);
+                            float32x4_t vb = vld1q_f32(b_row + rk);
+                            vsum = vfmaq_f32(vsum, va, vb);
+                        }
+                        sum += vaddvq_f32(vsum);
+                        for (; rk < k_lim; ++rk) {
+                            sum += a_row[rk] * b_row[rk];
+                        }
+#else
+                        for (int64_t rk = 0; rk < k_lim; ++rk) {
+                            sum += a_row[rk] * b_row[rk];
+                        }
+#endif
+                        acc[rm][rn] += sum;
+                    }
+                }
+            }
+
+            // Fused Holonomic ReLU2 + 32-lane 1-bit ballot sign packing
+            const int64_t word_col = n0 >> 5;
+            for (int64_t rm = 0; rm < m_chunk; ++rm) {
+                uint32_t mask_word = 0u;
+                float* out_row = out_ptr + (m0 + rm) * N + n0;
+                for (int64_t rn = 0; rn < n_chunk; ++rn) {
+                    float v = acc[rm][rn];
+                    if (v > 0.0f) {
+                        mask_word |= (1u << rn);
+                        out_row[rn] = v * v;
+                    } else {
+                        out_row[rn] = 0.0f;
+                    }
+                }
+                if (word_col < words_per_row) {
+                    mask_ptr[(m0 + rm) * words_per_row + word_col] = static_cast<int32_t>(mask_word);
+                }
+            }
         }
     });
 
-    auto out_sizes = orig_sizes;
-    out_sizes.back() = N;
-    auto mask_sizes = orig_sizes;
-    mask_sizes.back() = words_per_row;
-
     return std::make_tuple(
-        out_cpu.view(out_sizes).to(orig_device, orig_dtype),
-        mask_cpu.view(mask_sizes).to(orig_device)
+        out_cpu.reshape(out_sizes).to(orig_device, orig_dtype),
+        mask_cpu.reshape(mask_sizes).to(orig_device)
     );
 }
 
