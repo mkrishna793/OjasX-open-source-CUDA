@@ -1,8 +1,19 @@
-# OjasX v0.3.0 — Making AI Training Affordable Through Mathematics, Custom Autograd, and Native Hardware Kernels
+# OjasX v0.4.0 — Generalized Subgraph Mathematical Compiler & Zero-Tape Execution Engine
 
-> **What OjasX is:** OjasX is an open-source PyTorch memory-optimization research backend. It combines formal mathematical specifications (`Lean 4` and `Rocq`), custom autograd operators, graph rewrites, tested CPU/Apple Metal native kernels, and experimental TCP model partitioning.
+> **What OjasX is:** OjasX is an open-source PyTorch memory-optimization mathematical compiler and execution engine. It combines formal mathematical specifications (`Lean 4` and `Rocq`), custom autograd operators, graph rewrites (`torch.fx.Transformer`, `torch.export`), native C++/Apple Metal hardware kernels, and MLIR-style progressive dialects.
 >
-> **Why it exists:** This project started with a bold question: *Can we break the hardware lock-in around CUDA?* As we built and tested the system, that question grew into a clearer and more practical mission: **use mathematics and systems engineering to make expensive AI training cheaper, so developers, students, and researchers can train and test larger models on everyday laptops.**
+> **Why it exists:** This project started with a bold question: *Can we break the hardware lock-in around CUDA?* In v0.4.0, that question expands into a generalized compiler: **use mathematics and hardware-aware subgraph metaprogramming to make AI training affordable across all major workload families on consumer laptops and cloud GPUs.**
+
+```python
+import torch
+import ojasx2
+
+# 3-Line Quickstart: Automatically optimize ANY PyTorch model across 5 workload families!
+model = MyModel()
+model, report = ojasx2.optimize_model(model)
+loss = model(inputs).sum()
+loss.backward()  # Uses OjasX fused block cotangents & zero-tape adjoint lenses!
+```
 
 ---
 
@@ -387,13 +398,13 @@ OjasX-open-source-CUDA/
 
 ## 9. Roadmap: What We Will Build Next
 
-OjasX v0.3.0 is a solid foundation, and we are actively working on the next set of breakthroughs:
+OjasX v0.4.0 establishes a generalized compiler foundation across 5 workload families, and we are actively engineering the next major frontiers:
 
-- [ ] **Online Tiled Attention ($O(T)$ Memory on Metal & CPU):** Combine OjasX's holonomic residual rules with FlashAttention-style online softmax tiling so long-context attention never materializes the $[B, H, T, T]$ score matrix.
+- [ ] **Holonomic Dagger Attention (Online In-Register Adjoint Softmax):** Fuse $Q, K, V$ and attention probabilities directly into an in-register adjoint lens (FlashAttention-style online tiling), eliminating intermediate $[B, H, S, S]$ score matrices to bring whole-model activation memory reduction from 27% to **70%+**.
+- [ ] **Fused Linear Cross-Entropy Loss:** Eliminate vocabulary logits tensors ($[B, S, V]$ with $V=32,000$) by streaming cross-entropy loss directly from final hidden states without materializing full-vocabulary logits in VRAM.
+- [ ] **Hardware Bit-Density Cheating (Lattice Vector Quantization & Balanced Ternary Packing):** Squeeze sub-2-bit activation representations via geometric sphere packings ($E_8$ lattice) and carry-free modular arithmetic (Residue Number Systems).
 - [ ] **Zero-Template Streaming Checkpoint Loading for TCP Mesh:** Allow the coordinator and workers to stream only their assigned layer shards directly from disk (`safetensors`), so a 2-laptop mesh never needs to instantiate the full model template on the coordinator first.
-- [ ] **Broader Layer Coverage (`Conv2d`, `Conv3d`, State-Space Models):** Extend holonomic residual compression and contraction planning to convolutional backbones, Diffusion UNets, and Mamba/SSM blocks.
 - [ ] **Native Kernel Launchers for Linux CUDA / ROCm / SYCL:** Upgrade the generated CUDA, ROCm, and SYCL source templates in `tile_hal.py` into full runtime-compiled execution backends alongside Apple Metal and CPU.
-- [ ] **Automated Mixed-Precision (`BF16` / `FP16`) Grad-Free Hooks:** Add dynamic loss scaling and master-weight accumulation options to `HolonomicGradFreeOptimizer`.
 
 ---
 
