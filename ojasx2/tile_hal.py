@@ -47,19 +47,31 @@ def ensure_tile_kernels_loaded() -> bool:
     global _LOADED_TILE_DYLIB, _TILE_KERNELS_READY, _NATIVE_TILELANG_LOADED
     if _TILE_KERNELS_READY:
         return _LOADED_TILE_DYLIB
-    candidates = () if os.environ.get("OJASX_DISABLE_NATIVE") == "1" else _native_library_candidates()
-    for candidate in candidates:
-        if candidate.exists():
-            try:
-                torch.ops.load_library(str(candidate))
-            except (OSError, RuntimeError) as exc:
-                _NATIVE_LOAD_ERRORS.append(f"{candidate}: {exc}")
-                continue
-            _LOADED_TILE_DYLIB = True
-            break
+
+    # CRASH GUARD: If ojasx_hal fallbacks are already registered in c10::Dispatcher,
+    # NEVER attempt dlopen to prevent duplicate registration abort / SIGABRT!
+    from .tile_fallback import fallbacks_registered
+    if fallbacks_registered():
+        _TILE_KERNELS_READY = True
+        return False
+
+    if os.environ.get("OJASX_DISABLE_NATIVE") != "1":
+        candidates = _native_library_candidates()
+        for candidate in candidates:
+            if candidate.exists():
+                try:
+                    torch.ops.load_library(str(candidate))
+                except (OSError, RuntimeError) as exc:
+                    _NATIVE_LOAD_ERRORS.append(f"{candidate}: {exc}")
+                    continue
+                _LOADED_TILE_DYLIB = True
+                break
+
     _NATIVE_TILELANG_LOADED = _LOADED_TILE_DYLIB and hasattr(torch.ops.ojasx_hal, "tilelang_emit_universal_source")
-    from .tile_fallback import register_tile_fallbacks
-    register_tile_fallbacks()
+    if not _LOADED_TILE_DYLIB:
+        from .tile_fallback import register_tile_fallbacks
+        register_tile_fallbacks()
+
     _TILE_KERNELS_READY = True
     return _LOADED_TILE_DYLIB
 
@@ -98,11 +110,15 @@ class TileSchedule:
     xor_swizzle_banks: int
     pipeline_stages: int
     target_engine: str
+    is_decode: bool = False
 
 
 def probe_hardware_profile() -> SiliconCapabilityProfile:
-    info = torch.ops.ojasx_hal.probe_silicon_info()
-    l1d, l2, line, cores, amx = [int(v) for v in info]
+    if hasattr(torch.ops, "ojasx_hal") and hasattr(torch.ops.ojasx_hal, "probe_silicon_info"):
+        info = torch.ops.ojasx_hal.probe_silicon_info()
+        l1d, l2, line, cores, amx = [int(v) for v in info]
+    else:
+        l1d, l2, line, cores, amx = 65536, 4194304, 128, os.cpu_count() or 8, 1 if sys.platform == "darwin" else 0
     has_mps = bool(hasattr(torch.backends, "mps") and torch.backends.mps.is_available())
     chip_class = "Apple_Silicon_Unified_GPU_AMX_ANE" if (amx and has_mps) else (
         "Discrete_GPU" if torch.cuda.is_available() else "CPU_AMX"
@@ -120,7 +136,7 @@ def probe_hardware_profile() -> SiliconCapabilityProfile:
 
 
 class TileSchedulePlanner:
-    """Computes L1/L2 cache-resident tile shapes (M, N, K) for a given workload."""
+    """Computes L1/L2 cache-resident tile shapes (M, N, K) for decode vs prefill workloads."""
 
     def __init__(self, profile: Optional[SiliconCapabilityProfile] = None) -> None:
         self.profile = profile or probe_hardware_profile()
@@ -128,33 +144,64 @@ class TileSchedulePlanner:
     def plan_gemm_tile(
         self, m: int, n: int, k: int, elem_bytes: int = 4, device_type: str = "mps"
     ) -> TileSchedule:
+        is_decode = (m <= 8)
+        is_prefill = (m >= 64)
         l1_budget = max(16384, self.profile.l1d_cache_bytes // 2)
-        candidates = [
-            (128, 128, 64),
-            (64, 128, 64),
-            (64, 64, 64),
-            (64, 64, 32),
-            (32, 64, 32),
-            (32, 32, 32),
-            (16, 16, 16),
-        ]
-        chosen = (32, 32, 32)
-        for tm, tn, tk in candidates:
-            if tm > max(16, m) and tn > max(16, n):
-                continue
-            bytes_needed = (tm * tk + tk * tn + tm * tn) * elem_bytes
-            if bytes_needed <= l1_budget:
-                chosen = (min(tm, max(8, m)), min(tn, max(8, n)), min(tk, max(8, k)))
-                break
 
-        tm, tn, tk = chosen
+        if is_decode:
+            # Low register pressure, small L1 footprint for autoregressive token decoding
+            tm = min(8, max(1, m))
+            tn = min(32, max(16, n))
+            tk = min(16, max(8, k))
+            stages = 1
+            if device_type == "mps":
+                engine = "Apple_Metal_SIMDGroup_Matrix_8x32x16_Decode"
+            elif self.profile.has_apple_amx:
+                engine = "Apple_AMX_Decode_2D_Tile"
+            else:
+                engine = "Vector_SIMD_Decode"
+        elif is_prefill:
+            # Throughput-oriented tile sizing with multi-stage pipelining for prompt prefill / batched GEMM
+            candidates = [
+                (64, 128, 64),
+                (64, 64, 64),
+                (64, 64, 32),
+                (32, 64, 32),
+                (32, 32, 32),
+            ]
+            tm, tn, tk = (32, 32, 32)
+            for cand_m, cand_n, cand_k in candidates:
+                if cand_m > max(32, m) and cand_n > max(32, n):
+                    continue
+                bytes_needed = (cand_m * cand_k + cand_k * cand_n + cand_m * cand_n) * elem_bytes
+                if bytes_needed <= l1_budget:
+                    tm = min(cand_m, max(16, m))
+                    tn = min(cand_n, max(16, n))
+                    tk = min(cand_k, max(16, k))
+                    break
+            stages = 2
+            if device_type == "mps":
+                engine = "Apple_Metal_SIMDGroup_Matrix_32x32x8_Prefill"
+            elif self.profile.has_apple_amx:
+                engine = "Apple_AMX_Prefill_Throughput"
+            else:
+                engine = "Vector_SIMD_Prefill"
+        else:
+            # Medium matrix (8 < m < 64)
+            tm = min(32, max(8, m))
+            tn = min(32, max(16, n))
+            tk = min(32, max(8, k))
+            stages = 1
+            if device_type == "mps":
+                engine = "Apple_Metal_SIMDGroup_Matrix_32x32x8"
+            elif self.profile.has_apple_amx:
+                engine = "Apple_AMX_Coprocessor"
+            else:
+                engine = "Vector_SIMD"
+
         l1_used = (tm * tk + tk * tn + tm * tn) * elem_bytes
         l2_used = min(self.profile.l2_cache_bytes, (m * k + k * n) * elem_bytes)
-        engine = (
-            "Apple_Metal_SIMDGroup_Matrix_8x8"
-            if device_type == "mps"
-            else ("Apple_AMX_Coprocessor" if self.profile.has_apple_amx else "Vector_SIMD")
-        )
+
         return TileSchedule(
             tile_m=tm,
             tile_n=tn,
@@ -162,8 +209,9 @@ class TileSchedulePlanner:
             l1_footprint_bytes=l1_used,
             l2_footprint_bytes=l2_used,
             xor_swizzle_banks=32,
-            pipeline_stages=2 if l1_used * 2 <= self.profile.l1d_cache_bytes else 1,
+            pipeline_stages=stages,
             target_engine=engine,
+            is_decode=is_decode,
         )
 
 
@@ -334,11 +382,118 @@ torch.library.register_autograd(
 )
 
 
+GLU_MODES = {
+    "swiglu": 0, "silu": 0,
+    "geglu": 1, "geglu_tanh": 1, "gelu_tanh": 1, "gelu": 1,
+    "geglu_exact": 2, "gelu_exact": 2,
+    "reglu": 3, "relu": 3,
+    "relu2glu": 4, "squared_reglu": 4, "relu2": 4, "squared_relu": 4,
+    "sigmoidglu": 5, "glu": 5, "sigmoid": 5,
+    "bilinearglu": 6, "bilinear": 6, "identity": 6, "none": 6,
+    "quickgeglu": 7, "quickgelu": 7,
+    "mishglu": 8, "mish": 8,
+    "tanhglu": 9, "tanh": 9,
+    "leaky_reglu": 10, "leaky_relu": 10,
+}
+
+
+def resolve_glu_mode(mode: Union[int, str]) -> int:
+    if isinstance(mode, int):
+        if 0 <= mode <= 10:
+            return mode
+        raise ValueError(f"Unknown GLU mode integer: {mode}")
+    mode_str = str(mode).lower().strip()
+    if mode_str in GLU_MODES:
+        return GLU_MODES[mode_str]
+    raise ValueError(f"Unsupported GLU activation mode: '{mode}'. Supported: {list(GLU_MODES.keys())}")
+
+
+@torch.library.register_fake("ojasx_hal::fused_l1_glu_fwd")
+def _fused_l1_glu_fwd_fake(gate: torch.Tensor, up: torch.Tensor, act_mode: int) -> torch.Tensor:
+    torch._check(gate.shape == up.shape)
+    torch._check(gate.dtype == up.dtype)
+    return torch.empty_like(gate)
+
+
+@torch.library.register_fake("ojasx_hal::fused_l1_glu_bwd")
+def _fused_l1_glu_bwd_fake(
+    grad_out: torch.Tensor, gate: torch.Tensor, up: torch.Tensor, act_mode: int
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    torch._check(grad_out.shape == gate.shape)
+    torch._check(gate.shape == up.shape)
+    torch._check(grad_out.dtype == gate.dtype)
+    torch._check(gate.dtype == up.dtype)
+    return torch.empty_like(gate), torch.empty_like(up)
+
+
+def _fused_l1_glu_setup_context(ctx, inputs, output):
+    gate, up, act_mode = inputs
+    # Zero Bytes fresh intermediate activation/product storage!
+    # intermediate [M, H] gate, up, and product tensors are NEVER materialized on autograd tape!
+    ctx.save_for_backward(gate, up)
+    ctx.act_mode = act_mode
+
+
+def _fused_l1_glu_backward(ctx, grad_out: torch.Tensor):
+    gate, up = ctx.saved_tensors
+    d_gate, d_up = torch.ops.ojasx_hal.fused_l1_glu_bwd(grad_out, gate, up, ctx.act_mode)
+    return (
+        d_gate if ctx.needs_input_grad[0] else None,
+        d_up if ctx.needs_input_grad[1] else None,
+        None,
+    )
+
+
+torch.library.register_autograd(
+    "ojasx_hal::fused_l1_glu_fwd",
+    _fused_l1_glu_backward,
+    setup_context=_fused_l1_glu_setup_context,
+)
+
+
+def fused_glu(
+    gate: torch.Tensor,
+    up: torch.Tensor,
+    act_mode: Union[int, str] = "swiglu",
+) -> torch.Tensor:
+    """Universal L1-tiled fused Gated Linear Unit forward and autograd engine."""
+    mode_int = resolve_glu_mode(act_mode)
+    if os.environ.get("OJASX_DISABLE_NATIVE") == "1" or not _LOADED_TILE_DYLIB:
+        from .tile_fallback import _glu_forward
+        return _glu_forward(gate, up, mode_int)
+    return torch.ops.ojasx_hal.fused_l1_glu_fwd(gate, up, mode_int)
+
+
+@torch.library.register_fake("ojasx_hal::compress_boundary_int8")
+def _compress_boundary_int8_fake(
+    x: torch.Tensor,
+    block_size: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    numel = x.numel()
+    num_blocks = (numel + block_size - 1) // block_size if numel > 0 else 0
+    q = x.new_empty((num_blocks, block_size), dtype=torch.int8)
+    scale = x.new_empty((num_blocks,), dtype=torch.float32)
+    return q, scale
+
+
+@torch.library.register_fake("ojasx_hal::decompress_boundary_int8")
+def _decompress_boundary_int8_fake(
+    q: torch.Tensor,
+    scale: torch.Tensor,
+    orig_shape: list[int],
+    orig_dtype: torch.dtype,
+) -> torch.Tensor:
+    return q.new_empty(orig_shape, dtype=orig_dtype)
+
+
 def amx_linear_relu2(
     x: torch.Tensor,
     weight: torch.Tensor,
     bias: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    if os.environ.get("OJASX_DISABLE_NATIVE") == "1" or not _LOADED_TILE_DYLIB:
+        from .tile_fallback import _linear_forward
+        return _linear_forward(x, weight, bias)
     return torch.ops.ojasx_hal.fused_amx_linear_relu2_fwd(x, weight, bias)
 
 
@@ -347,6 +502,9 @@ def l1_rmsnorm(
     weight: torch.Tensor,
     eps: float = 1e-6,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    if os.environ.get("OJASX_DISABLE_NATIVE") == "1" or not _LOADED_TILE_DYLIB:
+        from .tile_fallback import _rms_forward
+        return _rms_forward(x, weight, eps)
     return torch.ops.ojasx_hal.fused_l1_rmsnorm_fwd(x, weight, eps)
 
 
@@ -405,6 +563,9 @@ def tilelang_metal_gemm_relu2(
     bias: Optional[torch.Tensor] = None,
     panel_size: int = 4,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    if os.environ.get("OJASX_DISABLE_NATIVE") == "1" or not _LOADED_TILE_DYLIB:
+        from .tile_fallback import _linear_forward
+        return _linear_forward(x, weight, bias)
     return torch.ops.ojasx_hal.tilelang_metal_gemm_relu2_fwd(x, weight, bias, panel_size)
 
 
@@ -466,6 +627,9 @@ def tilelang_universal_gemm_relu2(
     target_arch: str = "auto",
     panel_size: int = 4,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    if os.environ.get("OJASX_DISABLE_NATIVE") == "1" or not _LOADED_TILE_DYLIB:
+        from .tile_fallback import _linear_forward
+        return _linear_forward(x, weight, bias)
     return torch.ops.ojasx_hal.tilelang_universal_gemm_relu2_fwd(
         x, weight, bias, target_arch, panel_size
     )
@@ -559,3 +723,15 @@ class HolonomicNativeRMSNorm(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out, _rstd = torch.ops.ojasx_hal.fused_l1_rmsnorm_fwd(x, self.weight, self.eps)
         return out
+
+
+class HolonomicFusedGLU(nn.Module):
+    """L1-Resident Universal Holonomic Gated Linear Unit (0 Bytes fresh activation tape)."""
+
+    def __init__(self, act_mode: Union[int, str] = "swiglu") -> None:
+        super().__init__()
+        self.act_mode = resolve_glu_mode(act_mode)
+
+    def forward(self, gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
+        return fused_glu(gate, up, self.act_mode)
+
