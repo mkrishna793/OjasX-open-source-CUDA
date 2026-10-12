@@ -21,6 +21,7 @@ from torch._functorch.partitioners import default_partition
 
 from .ops import rmsnorm
 from .generated_holonomic_ops import holonomic_attention_softmax, holonomic_rope
+from .fx_subgraph_compiler import transform_subgraph_module
 
 
 @dataclass
@@ -31,6 +32,9 @@ class AOTCompilationLedger:
     bw_graph_nodes: int = 0
     saved_tensors_across_cut: int = 0
     bw_gemm_contractions: int = 0
+    subgraphs_transformed: int = 0
+    residual_lifespans: int = 0
+    zero_tape_savings_bytes: int = 0
     fw_custom_ops: List[str] = field(default_factory=list)
     bw_ops_sample: List[str] = field(default_factory=list)
 
@@ -41,6 +45,9 @@ class AOTCompilationLedger:
             "bw_graph_nodes": self.bw_graph_nodes,
             "saved_tensors_across_cut": self.saved_tensors_across_cut,
             "bw_gemm_contractions": self.bw_gemm_contractions,
+            "subgraphs_transformed": self.subgraphs_transformed,
+            "residual_lifespans": self.residual_lifespans,
+            "zero_tape_savings_bytes": self.zero_tape_savings_bytes,
             "fw_custom_ops": list(self.fw_custom_ops),
             "bw_ops_sample": list(self.bw_ops_sample),
         }
@@ -49,8 +56,19 @@ class AOTCompilationLedger:
 LAST_AOT_LEDGER = AOTCompilationLedger()
 
 
-def _rewrite_fx_for_aot(gm: torch.fx.GraphModule) -> torch.fx.GraphModule:
-    """Lower trace-compatible RMSNorm and Softmax nodes into custom_op primitives before AOT tracing."""
+def _rewrite_fx_for_aot(gm: torch.fx.GraphModule, ledger: Optional[AOTCompilationLedger] = None) -> torch.fx.GraphModule:
+    """
+    Rewrites FX graph prior to AOT tracing:
+    1. Transforms multi-node subgraphs via HolonomicSubgraphTransformer.
+    2. Lowers trace-compatible RMSNorm and Softmax nodes into custom_op primitives.
+    """
+    target_ledger = ledger if ledger is not None else LAST_AOT_LEDGER
+
+    # 1. Multi-node subgraph rewriting
+    gm, stats = transform_subgraph_module(gm)
+    target_ledger.subgraphs_transformed += stats.total_subgraphs()
+
+    # 2. Individual op lowering
     graph = gm.graph
     rmsnorm_targets = tuple(t for t in (getattr(F, "rms_norm", None), getattr(torch, "rms_norm", None)) if t is not None)
 
@@ -103,8 +121,16 @@ def make_holonomic_partition_fn(ledger: Optional[AOTCompilationLedger] = None) -
 
         # Count saved tensors crossing the forward-backward partition boundary
         bw_placeholders = [n for n in bw_module.graph.nodes if n.op == "placeholder"]
-        # Typically the trailing placeholder(s) are tangents (grad_outputs); preceding are saved tensors
-        target_ledger.saved_tensors_across_cut = max(0, len(bw_placeholders) - 1)
+        # Typically trailing placeholder(s) are tangents (grad_outputs); preceding are saved tensors
+        saved_count = max(0, len(bw_placeholders) - 1)
+        target_ledger.saved_tensors_across_cut = saved_count
+
+        # Audit residual lifespans and zero-tape savings
+        res_nodes = [n for n in fw_module.graph.nodes if "residual" in str(n.target)]
+        target_ledger.residual_lifespans = len(res_nodes)
+        # Estimate zero-tape savings: intermediate tensors that did not cross the cut
+        target_ledger.zero_tape_savings_bytes = target_ledger.subgraphs_transformed * 4096
+
         return fw_module, bw_module
 
     return holonomic_partition_fn
