@@ -65,6 +65,22 @@ from .smart_router import (
     SmartWorkloadReport,
     SmartWorkloadRouter,
     FrozenLinearZeroTape,
+    optimize_model,
+)
+from .holonomic_layers import (
+    HolonomicLayerNorm,
+    HolonomicGroupNorm,
+    FrozenConvZeroTape,
+    HolonomicActivationLens,
+    HolonomicFusedGLUMLP,
+    HolonomicFusedSwiGLUMLP,
+    HolonomicFusedGeGLUMLP,
+    HolonomicFusedReGLUMLP,
+    HolonomicFusedReLU2GLUMLP,
+    HolonomicFusedSigmoidGLUMLP,
+    HolonomicFusedBilinearGLUMLP,
+    HolonomicFusedChunkedGLUMLP,
+    HolonomicGLU,
 )
 from .mesh_hal import (
     MeshNodeSpec,
@@ -75,4 +91,4 @@ from .mesh_hal import (
     plan_mesh_partitions,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
