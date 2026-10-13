@@ -735,3 +735,170 @@ class HolonomicFusedGLU(nn.Module):
     def forward(self, gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
         return fused_glu(gate, up, self.act_mode)
 
+
+# ============================================================================
+# 8. Unified Compiled Transformer Block (RMSNorm -> SwiGLU -> Linear)
+# ============================================================================
+
+@torch.library.register_fake("ojasx_hal::fused_transformer_mlp_fwd")
+def _fused_transformer_mlp_fwd_fake(
+    x: torch.Tensor,
+    norm_w: torch.Tensor,
+    gate_w: torch.Tensor,
+    up_w: torch.Tensor,
+    down_w: torch.Tensor,
+    eps: float,
+) -> torch.Tensor:
+    return torch.empty_like(x)
+
+
+@torch.library.register_fake("ojasx_hal::fused_transformer_mlp_bwd")
+def _fused_transformer_mlp_bwd_fake(
+    dy: torch.Tensor,
+    x: torch.Tensor,
+    norm_w: torch.Tensor,
+    gate_w: torch.Tensor,
+    up_w: torch.Tensor,
+    down_w: torch.Tensor,
+    eps: float,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    return (
+        torch.empty_like(x),
+        torch.empty_like(norm_w),
+        torch.empty_like(gate_w),
+        torch.empty_like(up_w),
+        torch.empty_like(down_w),
+    )
+
+
+def _fused_transformer_mlp_setup_context(ctx, inputs, output):
+    x, norm_w, gate_w, up_w, down_w, eps = inputs
+    # Save strictly the 5 boundary inputs - 0 bytes intermediate activation memory
+    ctx.save_for_backward(x, norm_w, gate_w, up_w, down_w)
+    ctx.eps = float(eps)
+
+
+def _fused_transformer_mlp_backward_autograd(ctx, grad_out: torch.Tensor):
+    x, norm_w, gate_w, up_w, down_w = ctx.saved_tensors
+    dx, dnorm_w, dgate_w, dup_w, ddown_w = torch.ops.ojasx_hal.fused_transformer_mlp_bwd(
+        grad_out, x, norm_w, gate_w, up_w, down_w, ctx.eps
+    )
+    return (
+        dx if ctx.needs_input_grad[0] else None,
+        dnorm_w if ctx.needs_input_grad[1] else None,
+        dgate_w if ctx.needs_input_grad[2] else None,
+        dup_w if ctx.needs_input_grad[3] else None,
+        ddown_w if ctx.needs_input_grad[4] else None,
+        None,
+    )
+
+
+torch.library.register_autograd(
+    "ojasx_hal::fused_transformer_mlp_fwd",
+    _fused_transformer_mlp_backward_autograd,
+    setup_context=_fused_transformer_mlp_setup_context,
+)
+
+
+class HolonomicUnifiedTransformerMLPFunction(torch.autograd.Function):
+    """Unified single-node compiled Transformer block execution function.
+
+    Creates strictly 1 single autograd node per block on the backward tape,
+    eliminating PyTorch's node-by-node autograd dispatch overhead.
+    """
+
+    @staticmethod
+    def forward(
+        ctx,
+        x: torch.Tensor,
+        norm_w: torch.Tensor,
+        gate_w: torch.Tensor,
+        up_w: torch.Tensor,
+        down_w: torch.Tensor,
+        eps: float = 1e-6,
+    ) -> torch.Tensor:
+        ctx.save_for_backward(x, norm_w, gate_w, up_w, down_w)
+        ctx.eps = float(eps)
+        return torch.ops.ojasx_hal.fused_transformer_mlp_fwd(
+            x, norm_w, gate_w, up_w, down_w, float(eps)
+        )
+
+    @staticmethod
+    def backward(
+        ctx,
+        grad_out: torch.Tensor,
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], None]:
+        x, norm_w, gate_w, up_w, down_w = ctx.saved_tensors
+        dx, dnorm_w, dgate_w, dup_w, ddown_w = torch.ops.ojasx_hal.fused_transformer_mlp_bwd(
+            grad_out, x, norm_w, gate_w, up_w, down_w, ctx.eps
+        )
+        return (
+            dx if ctx.needs_input_grad[0] else None,
+            dnorm_w if ctx.needs_input_grad[1] else None,
+            dgate_w if ctx.needs_input_grad[2] else None,
+            dup_w if ctx.needs_input_grad[3] else None,
+            ddown_w if ctx.needs_input_grad[4] else None,
+            None,
+        )
+
+
+class HolonomicUnifiedTransformerMLP(nn.Module):
+    """Unified Compiled Transformer Block (RMSNorm -> SwiGLU -> Linear).
+
+    Executes normalization, gate/up projection, SwiGLU activation, and down
+    projection in a single unified sweep without materializing intermediate
+    activations in DRAM and with strictly 1 single autograd node on the tape.
+    """
+
+    def __init__(
+        self,
+        dim: int,
+        intermediate_dim: int,
+        eps: float = 1e-6,
+        norm_weight: Optional[torch.Tensor] = None,
+        gate_weight: Optional[torch.Tensor] = None,
+        up_weight: Optional[torch.Tensor] = None,
+        down_weight: Optional[torch.Tensor] = None,
+        device=None,
+        dtype=None,
+    ) -> None:
+        super().__init__()
+        self.dim = dim
+        self.intermediate_dim = intermediate_dim
+        self.eps = eps
+
+        factory_kwargs = {"device": device, "dtype": dtype}
+        if norm_weight is not None:
+            self.norm_weight = nn.Parameter(norm_weight)
+        else:
+            self.norm_weight = nn.Parameter(torch.ones(dim, **factory_kwargs))
+
+        if gate_weight is not None:
+            self.gate_weight = nn.Parameter(gate_weight)
+        else:
+            self.gate_weight = nn.Parameter(torch.empty((intermediate_dim, dim), **factory_kwargs))
+
+        if up_weight is not None:
+            self.up_weight = nn.Parameter(up_weight)
+        else:
+            self.up_weight = nn.Parameter(torch.empty((intermediate_dim, dim), **factory_kwargs))
+
+        if down_weight is not None:
+            self.down_weight = nn.Parameter(down_weight)
+        else:
+            self.down_weight = nn.Parameter(torch.empty((dim, intermediate_dim), **factory_kwargs))
+
+        if gate_weight is None or up_weight is None or down_weight is None:
+            self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        nn.init.kaiming_uniform_(self.gate_weight, a=5**0.5)
+        nn.init.kaiming_uniform_(self.up_weight, a=5**0.5)
+        nn.init.kaiming_uniform_(self.down_weight, a=5**0.5)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return HolonomicUnifiedTransformerMLPFunction.apply(
+            x, self.norm_weight, self.gate_weight, self.up_weight, self.down_weight, self.eps
+        )
+
+

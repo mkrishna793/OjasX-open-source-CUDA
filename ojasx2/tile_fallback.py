@@ -198,6 +198,118 @@ def _glu_backward(
     return d_gate.to(gate.dtype), d_up.to(up.dtype)
 
 
+def _transformer_mlp_forward(
+    x: torch.Tensor,
+    norm_w: torch.Tensor,
+    gate_w: torch.Tensor,
+    up_w: torch.Tensor,
+    down_w: torch.Tensor,
+    eps: float,
+) -> torch.Tensor:
+    orig_shape = x.shape
+    d = norm_w.shape[0]
+    if x.numel() == 0 or d == 0:
+        return torch.empty_like(x)
+
+    x_2d = x.contiguous().reshape(-1, d)
+    compute_dtype = torch.float32 if x.dtype in (torch.float16, torch.bfloat16) else x.dtype
+    x_c = x_2d.to(compute_dtype)
+    nw_c = norm_w.to(compute_dtype)
+
+    # In-register RMSNorm
+    var = x_c.pow(2).mean(dim=-1, keepdim=True)
+    rstd = torch.rsqrt(var + eps)
+    x_norm = (x_c * rstd) * nw_c
+
+    # Projections + SwiGLU in single forward pass
+    gw_c = gate_w.to(compute_dtype)
+    uw_c = up_w.to(compute_dtype)
+    dw_c = down_w.to(compute_dtype)
+
+    g = F.linear(x_norm, gw_c)
+    u = F.linear(x_norm, uw_c)
+    h = F.silu(g) * u
+    y = F.linear(h, dw_c)
+
+    return y.to(x.dtype).reshape(orig_shape)
+
+
+def _transformer_mlp_backward(
+    dy: torch.Tensor,
+    x: torch.Tensor,
+    norm_w: torch.Tensor,
+    gate_w: torch.Tensor,
+    up_w: torch.Tensor,
+    down_w: torch.Tensor,
+    eps: float,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    orig_shape = x.shape
+    d = norm_w.shape[0]
+    if x.numel() == 0 or d == 0:
+        return (
+            torch.zeros_like(x),
+            torch.zeros_like(norm_w),
+            torch.zeros_like(gate_w),
+            torch.zeros_like(up_w),
+            torch.zeros_like(down_w),
+        )
+
+    m = x.numel() // d
+    x_2d = x.contiguous().reshape(m, d)
+    dy_2d = dy.contiguous().reshape(m, d)
+
+    compute_dtype = torch.float32 if x.dtype in (torch.float16, torch.bfloat16) else x.dtype
+    x_c = x_2d.to(compute_dtype)
+    dy_c = dy_2d.to(compute_dtype)
+    nw_c = norm_w.to(compute_dtype)
+    gw_c = gate_w.to(compute_dtype)
+    uw_c = up_w.to(compute_dtype)
+    dw_c = down_w.to(compute_dtype)
+
+    # Reconstruct RMSNorm
+    var = x_c.pow(2).mean(dim=-1, keepdim=True)
+    rstd = torch.rsqrt(var + eps)
+    x_scaled = x_c * rstd
+    x_norm = x_scaled * nw_c
+
+    # Reconstruct gate, up, h
+    g = F.linear(x_norm, gw_c)
+    u = F.linear(x_norm, uw_c)
+    sig_g = torch.sigmoid(g)
+    silu_g = g * sig_g
+    h = silu_g * u
+
+    # 1. Down projection gradients
+    # y = h @ dw.t() => dy @ dw
+    dh = dy_c.matmul(dw_c)
+    ddown_w = dy_c.t().matmul(h)
+
+    # 2. SwiGLU adjoint
+    du = dh * silu_g
+    dsilu_g = dh * u
+    dg = dsilu_g * sig_g * (1.0 + g * (1.0 - sig_g))
+
+    # 3. Dual-projection cotangent pullback & weight gradients
+    # Block-Matrix Cotangent Fusion: [dg, du]
+    d_xnorm = dg.matmul(gw_c) + du.matmul(uw_c)
+    dgate_w = dg.t().matmul(x_norm)
+    dup_w = du.t().matmul(x_norm)
+
+    # 4. RMSNorm adjoint
+    dnorm_w = (d_xnorm * x_scaled).sum(dim=0)
+    d_xscaled = d_xnorm * nw_c
+    mean_term = (d_xscaled * x_scaled).mean(dim=-1, keepdim=True)
+    dx = rstd * (d_xscaled - x_scaled * mean_term)
+
+    return (
+        dx.to(x.dtype).reshape(orig_shape),
+        dnorm_w.to(norm_w.dtype),
+        dgate_w.to(gate_w.dtype),
+        dup_w.to(up_w.dtype),
+        ddown_w.to(down_w.dtype),
+    )
+
+
 def _unavailable_codegen(*args):
     raise RuntimeError("Native TileLang source generation requires a compatible native tile library; the PyTorch fallback implements numerical operators only")
 
@@ -217,6 +329,8 @@ def register_tile_fallbacks():
         "fused_l1_rmsnorm_bwd": ("fused_l1_rmsnorm_bwd(Tensor grad_out, Tensor x, Tensor weight, Tensor rstd) -> (Tensor, Tensor)", _rms_backward),
         "fused_l1_glu_fwd": ("fused_l1_glu_fwd(Tensor gate, Tensor up, int act_mode) -> Tensor", _glu_forward),
         "fused_l1_glu_bwd": ("fused_l1_glu_bwd(Tensor grad_out, Tensor gate, Tensor up, int act_mode) -> (Tensor, Tensor)", _glu_backward),
+        "fused_transformer_mlp_fwd": ("fused_transformer_mlp_fwd(Tensor x, Tensor norm_w, Tensor gate_w, Tensor up_w, Tensor down_w, float eps) -> Tensor", _transformer_mlp_forward),
+        "fused_transformer_mlp_bwd": ("fused_transformer_mlp_bwd(Tensor dy, Tensor x, Tensor norm_w, Tensor gate_w, Tensor up_w, Tensor down_w, float eps) -> (Tensor, Tensor, Tensor, Tensor, Tensor)", _transformer_mlp_backward),
         "compress_boundary_int8": ("compress_boundary_int8(Tensor x, int block_size) -> (Tensor, Tensor)", _compress),
         "decompress_boundary_int8": ("decompress_boundary_int8(Tensor q, Tensor scale, int[] orig_shape, ScalarType orig_dtype) -> Tensor", _decompress),
         "tilelang_metal_gemm_relu2_fwd": ("tilelang_metal_gemm_relu2_fwd(Tensor x, Tensor weight, Tensor? bias, int panel_size=4) -> (Tensor, Tensor)", lambda x, weight, bias, panel_size=4: _linear_forward(x, weight, bias)),
