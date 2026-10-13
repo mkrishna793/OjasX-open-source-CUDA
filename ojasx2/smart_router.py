@@ -45,10 +45,34 @@ from .holonomic_math_compiler import (
 from .tile_hal import (
     HolonomicBitPackedLinear,
     HolonomicNativeRMSNorm,
+    HolonomicUnifiedTransformerMLP,
+    HolonomicUnifiedTransformerMLPFunction,
     SiliconCapabilityProfile,
     TileSchedulePlanner,
     probe_hardware_profile,
 )
+from .dagger_attention import HolonomicDaggerAttention
+from .fused_cross_entropy import HolonomicFusedLinearCrossEntropy
+
+
+class HolonomicFusedLinearCrossEntropyHead(HolonomicFusedLinearCrossEntropy):
+    """Smart router drop-in replacement for LM head.
+
+    Supports both:
+    1. Unsupervised / inference call: `logits = head(h)` (returns standard linear projection)
+    2. Supervised training call: `loss = head(h, targets)` (returns fused streaming cross-entropy with 0 DRAM logits)
+    """
+
+    def forward(
+        self,
+        h: torch.Tensor,
+        targets: Optional[torch.Tensor] = None,
+        return_lse: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        if targets is None:
+            import torch.nn.functional as F
+            return F.linear(h, self.weight, self.bias)
+        return super().forward(h, targets, return_lse=return_lse)
 
 
 @dataclass
@@ -188,9 +212,11 @@ class SmartWorkloadRouter:
         self,
         tiny_param_threshold: int = 1024,
         large_vocab_threshold: int = 8192,
+        prefer_unified_mlp: bool = False,
     ) -> None:
         self.tiny_param_threshold = tiny_param_threshold
         self.large_vocab_threshold = large_vocab_threshold
+        self.prefer_unified_mlp = prefer_unified_mlp
         self.silicon = probe_hardware_profile()
         self.planner = TileSchedulePlanner(self.silicon)
 
@@ -206,14 +232,35 @@ class SmartWorkloadRouter:
 
         has_conv = any(isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d)) for m in model.modules())
         has_llm_ops = any(
-            isinstance(m, (HolonomicSwiGLU, HolonomicGeGLU, HolonomicRMSNorm, HolonomicNativeRMSNorm, HolonomicGLU, HolonomicFusedGLUMLP, HolonomicFusedChunkedGLUMLP))
+            isinstance(
+                m,
+                (
+                    HolonomicSwiGLU,
+                    HolonomicGeGLU,
+                    HolonomicRMSNorm,
+                    HolonomicNativeRMSNorm,
+                    HolonomicGLU,
+                    HolonomicFusedGLUMLP,
+                    HolonomicFusedChunkedGLUMLP,
+                    HolonomicDaggerAttention,
+                    HolonomicFusedLinearCrossEntropy,
+                    HolonomicUnifiedTransformerMLP,
+                ),
+            )
             or isinstance(m, nn.GLU)
             or "rms" in m.__class__.__name__.lower()
             or "glu" in m.__class__.__name__.lower()
+            or "attention" in m.__class__.__name__.lower()
             or (isinstance(m, nn.Linear) and m.out_features >= self.large_vocab_threshold)
             or any(
                 hasattr(m, g) and hasattr(m, u)
-                for g, u in [("gate_proj", "up_proj"), ("w1", "w3"), ("gate", "up"), ("in_proj", "out_proj")]
+                for g, u in [
+                    ("gate_proj", "up_proj"),
+                    ("w1", "w3"),
+                    ("gate", "up"),
+                    ("in_proj", "out_proj"),
+                    ("q_proj", "k_proj"),
+                ]
             )
             for m in model.modules()
         )
@@ -239,7 +286,11 @@ class SmartWorkloadRouter:
         model: nn.Module,
         batch_tokens: int = 512,
         prefer_1bit_relu2_for_relu: bool = False,
+        prefer_unified_mlp: Optional[bool] = None,
     ) -> Tuple[nn.Module, SmartWorkloadReport]:
+        if prefer_unified_mlp is not None:
+            self.prefer_unified_mlp = prefer_unified_mlp
+
         profile_name, trainable_total, frozen_total = self.detect_workload_profile(model)
         report = SmartWorkloadReport(
             workload_profile=profile_name,
@@ -251,7 +302,20 @@ class SmartWorkloadRouter:
 
         effective_tiny_threshold = 64 if profile_name == "TABULAR_CLASSICAL_ML" else self.tiny_param_threshold
 
-        # Check if root model itself is a split-projection or chunked GLU MLP
+        # Check if root model itself is attention, lm_head, unified mlp, or split/chunked GLU MLP
+        attn_detected, attn_lens = self._detect_and_fuse_attention(model, "root_attn", batch_tokens, report)
+        if attn_detected and attn_lens is not None:
+            return attn_lens, report
+
+        if isinstance(model, nn.Linear) and (getattr(model, "out_features", 0) >= self.large_vocab_threshold):
+            lm_detected, lm_lens = self._detect_and_fuse_lm_head(model, "root_lm_head", batch_tokens, report)
+            if lm_detected and lm_lens is not None:
+                return lm_lens, report
+
+        unified_detected, unified_lens = self._detect_and_fuse_unified_mlp(model, "root_unified_mlp", batch_tokens, report)
+        if unified_detected and unified_lens is not None:
+            return unified_lens, report
+
         mlp_detected, mlp_lens = self._detect_and_fuse_llm_mlp(model, "root_mlp", batch_tokens, report)
         if mlp_detected and mlp_lens is not None:
             return mlp_lens, report
@@ -308,8 +372,34 @@ class SmartWorkloadRouter:
                     HolonomicFusedChunkedGLUMLP,
                     HolonomicGLU,
                     HolonomicActivationLens,
+                    HolonomicDaggerAttention,
+                    HolonomicFusedLinearCrossEntropy,
+                    HolonomicFusedLinearCrossEntropyHead,
+                    HolonomicUnifiedTransformerMLP,
                 ),
             ):
+                continue
+
+            # 0a. Modern Transformer Attention
+            attn_detected, attn_lens = self._detect_and_fuse_attention(child, full_name, batch_tokens, report)
+            if attn_detected and attn_lens is not None:
+                setattr(parent, name, attn_lens)
+                continue
+
+            # 0b. Model Output LM Head
+            if isinstance(child, nn.Linear) and (
+                name in ("lm_head", "embed_out", "output_layer", "head")
+                or child.out_features >= self.large_vocab_threshold
+            ):
+                lm_detected, lm_lens = self._detect_and_fuse_lm_head(child, full_name, batch_tokens, report)
+                if lm_detected and lm_lens is not None:
+                    setattr(parent, name, lm_lens)
+                    continue
+
+            # 0c. Unified Transformer Block (Norm + SwiGLU + Linear)
+            unified_detected, unified_lens = self._detect_and_fuse_unified_mlp(child, full_name, batch_tokens, report)
+            if unified_detected and unified_lens is not None:
+                setattr(parent, name, unified_lens)
                 continue
 
             # 1. Universal GLU Engine: Layout A (Split-Projection: gate_proj + up_proj + down_proj)
@@ -620,6 +710,231 @@ class SmartWorkloadRouter:
         )
         return True, lens
 
+    def _detect_and_fuse_attention(
+        self,
+        module: nn.Module,
+        full_name: str,
+        batch_tokens: int,
+        report: SmartWorkloadReport,
+    ) -> Tuple[bool, Optional[nn.Module]]:
+        """Detects Transformer attention layers and rewrites them into Holonomic Dagger Attention."""
+        if isinstance(module, HolonomicDaggerAttention):
+            return False, None
+
+        if isinstance(module, nn.MultiheadAttention):
+            total_p = sum(p.numel() for p in module.parameters())
+            trainable_p = sum(p.numel() for p in module.parameters() if p.requires_grad)
+            rep = HolonomicDaggerAttention(
+                embed_dim=module.embed_dim,
+                num_heads=module.num_heads,
+                bias=module.in_proj_bias is not None,
+                batch_first=module.batch_first,
+            )
+            if module.in_proj_weight is not None:
+                d = module.embed_dim
+                rep.q_proj.weight.data.copy_(module.in_proj_weight[:d])
+                rep.k_proj.weight.data.copy_(module.in_proj_weight[d : 2 * d])
+                rep.v_proj.weight.data.copy_(module.in_proj_weight[2 * d : 3 * d])
+                if module.in_proj_bias is not None:
+                    rep.q_proj.bias.data.copy_(module.in_proj_bias[:d])
+                    rep.k_proj.bias.data.copy_(module.in_proj_bias[d : 2 * d])
+                    rep.v_proj.bias.data.copy_(module.in_proj_bias[2 * d : 3 * d])
+            if module.out_proj is not None and hasattr(module.out_proj, "weight"):
+                rep.o_proj.weight.data.copy_(module.out_proj.weight)
+                if module.out_proj.bias is not None and rep.o_proj.bias is not None:
+                    rep.o_proj.bias.data.copy_(module.out_proj.bias)
+
+            report.decisions.append(
+                SmartLayerDecision(
+                    module_name=full_name,
+                    original_type="nn.MultiheadAttention",
+                    decision="HOLONOMIC_DAGGER_ATTENTION",
+                    replacement_type="HolonomicDaggerAttention",
+                    trainable_params=trainable_p,
+                    frozen_params=total_p - trainable_p,
+                    tile_schedule="(online_softmax_tiles)",
+                    reason="In-register adjoint online softmax tiling (0 bytes DRAM attention scores)",
+                    estimated_saved_bytes_per_token=float(module.num_heads * batch_tokens * 4),
+                )
+            )
+            return True, rep
+
+        # Modern LLM Attention (LlamaAttention, Qwen2Attention, GemmaAttention, or modules with q_proj, k_proj, v_proj)
+        q_proj = getattr(module, "q_proj", getattr(module, "q", None))
+        k_proj = getattr(module, "k_proj", getattr(module, "k", None))
+        v_proj = getattr(module, "v_proj", getattr(module, "v", None))
+        o_proj = getattr(module, "o_proj", getattr(module, "out_proj", getattr(module, "c_proj", None)))
+
+        is_attn_class = "attention" in module.__class__.__name__.lower()
+        if (
+            q_proj is not None
+            and k_proj is not None
+            and v_proj is not None
+            and isinstance(q_proj, nn.Linear)
+            and isinstance(k_proj, nn.Linear)
+            and isinstance(v_proj, nn.Linear)
+        ):
+            total_p = sum(p.numel() for p in module.parameters())
+            trainable_p = sum(p.numel() for p in module.parameters() if p.requires_grad)
+
+            num_heads = getattr(
+                module,
+                "num_heads",
+                getattr(module, "n_heads", getattr(module, "num_attention_heads", 8)),
+            )
+            num_kv_heads = getattr(
+                module,
+                "num_key_value_heads",
+                getattr(module, "n_kv_heads", getattr(module, "num_kv_heads", num_heads)),
+            )
+            head_dim = getattr(module, "head_dim", None)
+            if head_dim is None and num_heads:
+                head_dim = q_proj.out_features // num_heads
+
+            rep = HolonomicDaggerAttention(
+                q_proj=q_proj,
+                k_proj=k_proj,
+                v_proj=v_proj,
+                o_proj=o_proj,
+                num_heads=num_heads,
+                num_kv_heads=num_kv_heads,
+                head_dim=head_dim,
+                is_causal=getattr(module, "is_causal", True),
+            )
+            report.decisions.append(
+                SmartLayerDecision(
+                    module_name=full_name,
+                    original_type=module.__class__.__name__,
+                    decision="HOLONOMIC_DAGGER_ATTENTION",
+                    replacement_type="HolonomicDaggerAttention",
+                    trainable_params=trainable_p,
+                    frozen_params=total_p - trainable_p,
+                    tile_schedule="(online_softmax_tiles)",
+                    reason="In-register adjoint online softmax tiling (0 bytes DRAM attention scores)",
+                    estimated_saved_bytes_per_token=float(num_heads * batch_tokens * 4),
+                )
+            )
+            return True, rep
+
+        return False, None
+
+    def _detect_and_fuse_lm_head(
+        self,
+        module: nn.Linear,
+        full_name: str,
+        batch_tokens: int,
+        report: SmartWorkloadReport,
+    ) -> Tuple[bool, Optional[nn.Module]]:
+        """Detects LM head output projection and rewrites to Holonomic Fused Linear Cross-Entropy."""
+        total_p = module.weight.numel() + (module.bias.numel() if module.bias is not None else 0)
+        trainable_p = sum(p.numel() for p in module.parameters() if p.requires_grad)
+
+        rep = HolonomicFusedLinearCrossEntropyHead(
+            in_features=module.in_features,
+            vocab_size=module.out_features,
+            bias=module.bias is not None,
+            device=module.weight.device,
+            dtype=module.weight.dtype,
+        )
+        rep.weight = module.weight
+        if module.bias is not None:
+            rep.bias = module.bias
+
+        report.decisions.append(
+            SmartLayerDecision(
+                module_name=full_name,
+                original_type=f"nn.Linear({module.in_features}->{module.out_features})",
+                decision="FUSED_LINEAR_CROSS_ENTROPY",
+                replacement_type="HolonomicFusedLinearCrossEntropyHead",
+                trainable_params=trainable_p,
+                frozen_params=total_p - trainable_p,
+                tile_schedule=f"(streaming 128x4096, V={module.out_features})",
+                reason="Dual-pass streaming token-vocab accumulation (0 bytes DRAM logits tensor)",
+                estimated_saved_bytes_per_token=float(module.out_features * 4 * 2),
+            )
+        )
+        return True, rep
+
+    def _detect_and_fuse_unified_mlp(
+        self,
+        module: nn.Module,
+        full_name: str,
+        batch_tokens: int,
+        report: SmartWorkloadReport,
+    ) -> Tuple[bool, Optional[nn.Module]]:
+        """Detects combined Transformer block (Norm + Gate/Up/Down Proj) and fuses into HolonomicUnifiedTransformerMLP."""
+        if isinstance(module, HolonomicUnifiedTransformerMLP):
+            return False, None
+
+        gate_proj = (
+            getattr(module, "gate_proj", None)
+            or getattr(module, "w1", None)
+            or getattr(module, "gate", None)
+        )
+        up_proj = (
+            getattr(module, "up_proj", None)
+            or getattr(module, "w3", None)
+            or getattr(module, "up", None)
+        )
+        down_proj = (
+            getattr(module, "down_proj", None)
+            or getattr(module, "w2", None)
+            or getattr(module, "down", None)
+        )
+
+        if not (
+            isinstance(gate_proj, nn.Linear)
+            and isinstance(up_proj, nn.Linear)
+            and isinstance(down_proj, nn.Linear)
+        ):
+            return False, None
+
+        norm = (
+            getattr(module, "norm", None)
+            or getattr(module, "rms_norm", None)
+            or getattr(module, "input_norm", None)
+            or getattr(module, "post_attention_layernorm", None)
+            or getattr(module, "ffn_norm", None)
+        )
+
+        if norm is None and not getattr(self, "prefer_unified_mlp", False):
+            return False, None
+
+        dim = gate_proj.in_features
+        intermediate_dim = gate_proj.out_features
+        eps = float(getattr(norm, "eps", 1e-6)) if norm is not None else 1e-6
+        norm_w = norm.weight if (norm is not None and hasattr(norm, "weight")) else None
+
+        rep = HolonomicUnifiedTransformerMLP(
+            dim=dim,
+            intermediate_dim=intermediate_dim,
+            eps=eps,
+            norm_weight=norm_w,
+            gate_weight=gate_proj.weight,
+            up_weight=up_proj.weight,
+            down_weight=down_proj.weight,
+            device=gate_proj.weight.device,
+            dtype=gate_proj.weight.dtype,
+        )
+
+        total_p = sum(p.numel() for p in module.parameters())
+        trainable_p = sum(p.numel() for p in module.parameters() if p.requires_grad)
+
+        report.decisions.append(
+            SmartLayerDecision(
+                module_name=full_name,
+                original_type=module.__class__.__name__,
+                decision="OJASX_UNIFIED_TRANSFORMER_MLP",
+                replacement_type="HolonomicUnifiedTransformerMLP",
+                trainable_params=trainable_p,
+                frozen_params=total_p - trainable_p,
+                tile_schedule=f"({dim},{intermediate_dim})",
+                reason="Single compiled block sweep bypassing autograd dispatch overhead (1 node on tape)",
+                estimated_saved_bytes_per_token=float(intermediate_dim * 4 * 4),
+            )
+        )
+        return True, rep
+
     def _is_safe_to_fuse_linear_activation(
         self, parent: nn.Module, name_a: str, name_b: str
     ) -> bool:
@@ -838,6 +1153,7 @@ def optimize_model(
     model: nn.Module,
     batch_tokens: int = 512,
     prefer_1bit_relu2_for_relu: bool = False,
+    prefer_unified_mlp: bool = False,
     tiny_param_threshold: int = 1024,
     large_vocab_threshold: int = 8192,
     **router_kwargs,
@@ -851,10 +1167,13 @@ def optimize_model(
     router = SmartWorkloadRouter(
         tiny_param_threshold=tiny_param_threshold,
         large_vocab_threshold=large_vocab_threshold,
+        prefer_unified_mlp=prefer_unified_mlp,
         **router_kwargs,
     )
     return router.optimize_model(
         model,
         batch_tokens=batch_tokens,
         prefer_1bit_relu2_for_relu=prefer_1bit_relu2_for_relu,
+        prefer_unified_mlp=prefer_unified_mlp,
     )
+
