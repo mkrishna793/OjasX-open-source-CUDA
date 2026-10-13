@@ -41,7 +41,7 @@ When you run `model, report = ojasx2.optimize_model(model)`, OjasX automatically
 
 ---
 
-## 1. The Human Story: Why Does Training AI Crash Your Laptop?
+## 1. Why Does Training AI Crash Your Laptop?
 
 If you have ever tried training or fine-tuning an AI model on your laptop (like a Windows PC, Linux machine, or MacBook with an 8 GB or 16 GB GPU), you have probably seen this dreaded error:
 
