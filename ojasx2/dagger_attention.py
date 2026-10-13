@@ -263,3 +263,242 @@ def dagger_attention(
     """
     return _dagger_attention_forward_tiled(q, k, v, is_causal=is_causal, sm_scale=sm_scale)
 
+
+@torch.library.register_fake("ojasx_holonomic::dagger_attention")
+def dagger_attention_fake(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    is_causal: bool = False,
+    sm_scale: Optional[float] = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """FakeTensor / Meta kernel for symbolic tracing and torch.compile."""
+    out = torch.empty_like(q)
+    lse = torch.empty((q.shape[0], q.shape[1], q.shape[2]), dtype=torch.float32, device=q.device)
+    return out, lse
+
+
+def _dagger_attention_setup(
+    ctx: torch.autograd.function.FunctionCtx,
+    inputs: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, bool, Optional[float]],
+    output: Tuple[torch.Tensor, torch.Tensor],
+) -> None:
+    """Saves ONLY O and L to backward tape (plus Q, K, V references).
+
+    Strictly zero bytes DRAM allocation for [B, H, S, S] attention score matrices.
+    """
+    q, k, v, is_causal, sm_scale = inputs
+    out, lse = output
+    ctx.is_causal = is_causal
+    ctx.sm_scale = sm_scale
+    ctx.save_for_backward(q, k, v, out, lse)
+
+
+def _dagger_attention_backward(
+    ctx: torch.autograd.function.FunctionCtx,
+    dout: torch.Tensor,
+    dlse: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, None, None]:
+    """Reconstructs attention probabilities tile-by-tile in registers using L."""
+    q, k, v, out, lse = ctx.saved_tensors
+    dq, dk, dv = _dagger_attention_backward_tiled(
+        q, k, v, out, lse, dout, dlse=dlse, is_causal=ctx.is_causal, sm_scale=ctx.sm_scale
+    )
+    return dq, dk, dv, None, None
+
+
+dagger_attention.register_autograd(_dagger_attention_backward, setup_context=_dagger_attention_setup)
+
+
+# =============================================================================
+# 3. Explicit torch.autograd.Function Implementation
+# =============================================================================
+
+class _HolonomicDaggerAttentionFunction(torch.autograd.Function):
+    """Explicit autograd Function for Holonomic Dagger Attention.
+
+    Retains strictly 0 bytes DRAM allocation for intermediate [B, H, S, S]
+    attention scores on the backward tape.
+    """
+
+    @staticmethod
+    def forward(
+        ctx,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        is_causal: bool = False,
+        sm_scale: Optional[float] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        out, lse = _dagger_attention_forward_tiled(
+            q, k, v, is_causal=is_causal, sm_scale=sm_scale
+        )
+        ctx.is_causal = is_causal
+        ctx.sm_scale = sm_scale
+        # Save ONLY O and L (plus Q, K, V references)
+        ctx.save_for_backward(q, k, v, out, lse)
+        return out, lse
+
+    @staticmethod
+    def backward(ctx, dout: torch.Tensor, dlse: Optional[torch.Tensor] = None):
+        q, k, v, out, lse = ctx.saved_tensors
+        dq, dk, dv = _dagger_attention_backward_tiled(
+            q, k, v, out, lse, dout, dlse=dlse, is_causal=ctx.is_causal, sm_scale=ctx.sm_scale
+        )
+        return dq, dk, dv, None, None
+
+
+def holonomic_dagger_attention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    is_causal: bool = False,
+    sm_scale: Optional[float] = None,
+) -> torch.Tensor:
+    """Functional entrypoint for Holonomic Dagger Attention.
+
+    Returns the attention output tensor [B, H, S_q, d].
+    """
+    return torch.ops.ojasx_holonomic.dagger_attention(
+        q, k, v, is_causal=is_causal, sm_scale=sm_scale
+    )[0]
+
+
+def holonomic_dagger_attention_with_lse(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    is_causal: bool = False,
+    sm_scale: Optional[float] = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Functional entrypoint returning both attention output and row-wise LogSumExp."""
+    return torch.ops.ojasx_holonomic.dagger_attention(
+        q, k, v, is_causal=is_causal, sm_scale=sm_scale
+    )
+
+
+# =============================================================================
+# 4. HolonomicDaggerAttention nn.Module Wrapper
+# =============================================================================
+
+class HolonomicDaggerAttention(nn.Module):
+    """Drop-in compatible Multi-Head Attention module powered by Holonomic Dagger Attention.
+
+    Supports both:
+    1. Standalone construction compatible with nn.MultiheadAttention:
+       `HolonomicDaggerAttention(embed_dim=256, num_heads=8, is_causal=True)`
+    2. Rewritten / wrapped LLM attention projection submodules:
+       `HolonomicDaggerAttention(q_proj=..., k_proj=..., v_proj=..., o_proj=..., num_heads=8)`
+    """
+
+    def __init__(
+        self,
+        embed_dim: Optional[int] = None,
+        num_heads: int = 8,
+        q_proj: Optional[nn.Module] = None,
+        k_proj: Optional[nn.Module] = None,
+        v_proj: Optional[nn.Module] = None,
+        o_proj: Optional[nn.Module] = None,
+        num_kv_heads: Optional[int] = None,
+        head_dim: Optional[int] = None,
+        dropout: float = 0.0,
+        bias: bool = True,
+        is_causal: bool = False,
+        batch_first: bool = True,
+    ) -> None:
+        super().__init__()
+        self.num_heads = num_heads
+        self.num_kv_heads = num_kv_heads if num_kv_heads is not None else num_heads
+        self.is_causal = is_causal
+        self.batch_first = batch_first
+        self.dropout = dropout
+
+        if q_proj is not None and k_proj is not None and v_proj is not None:
+            self.q_proj = q_proj
+            self.k_proj = k_proj
+            self.v_proj = v_proj
+            self.o_proj = o_proj if o_proj is not None else nn.Identity()
+            if head_dim is None:
+                out_feat = getattr(q_proj, "out_features", None)
+                if out_feat is not None:
+                    self.head_dim = out_feat // num_heads
+                else:
+                    self.head_dim = 64
+            else:
+                self.head_dim = head_dim
+            self.embed_dim = self.num_heads * self.head_dim
+        else:
+            if embed_dim is None:
+                embed_dim = 256
+            self.embed_dim = embed_dim
+            self.head_dim = head_dim if head_dim is not None else (embed_dim // num_heads)
+            self.q_proj = nn.Linear(embed_dim, self.num_heads * self.head_dim, bias=bias)
+            self.k_proj = nn.Linear(embed_dim, self.num_kv_heads * self.head_dim, bias=bias)
+            self.v_proj = nn.Linear(embed_dim, self.num_kv_heads * self.head_dim, bias=bias)
+            self.o_proj = nn.Linear(self.num_heads * self.head_dim, embed_dim, bias=bias)
+
+    def forward(
+        self,
+        query: torch.Tensor,
+        key: Optional[torch.Tensor] = None,
+        value: Optional[torch.Tensor] = None,
+        is_causal: Optional[bool] = None,
+        need_weights: Optional[bool] = None,
+        rotary_cos: Optional[torch.Tensor] = None,
+        rotary_sin: Optional[torch.Tensor] = None,
+    ):
+        """Forward pass for multi-head attention.
+
+        Supports query input of shape [B, S, D] (or [S, B, D] if batch_first=False),
+        or direct [B, H, S, d] tensor projection.
+        """
+        causal = is_causal if is_causal is not None else self.is_causal
+
+        # Case 1: Already projected 4D inputs [B, H, S, d]
+        if query.ndim == 4 and key is not None and value is not None and key.ndim == 4:
+            out = holonomic_dagger_attention(query, key, value, is_causal=causal)
+            if need_weights is True or need_weights is False:
+                return out, None
+            return out
+
+        # Case 2: Standard 3D inputs [B, S, D]
+        if not self.batch_first and query.ndim == 3:
+            # [S, B, D] -> [B, S, D]
+            query = query.transpose(0, 1)
+            if key is not None:
+                key = key.transpose(0, 1)
+            if value is not None:
+                value = value.transpose(0, 1)
+
+        k_in = key if key is not None else query
+        v_in = value if value is not None else query
+
+        B, Sq, _ = query.shape
+        _, Skv, _ = k_in.shape
+
+        q_proj = self.q_proj(query).view(B, Sq, self.num_heads, self.head_dim).transpose(1, 2)
+        k_proj = self.k_proj(k_in).view(B, Skv, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        v_proj = self.v_proj(v_in).view(B, Skv, self.num_kv_heads, self.head_dim).transpose(1, 2)
+
+        # Apply RoPE if provided
+        if rotary_cos is not None and rotary_sin is not None:
+            # Simple standard RoPE application
+            d_half = self.head_dim // 2
+            q1, q2 = q_proj[..., :d_half], q_proj[..., d_half : 2 * d_half]
+            k1, k2 = k_proj[..., :d_half], k_proj[..., d_half : 2 * d_half]
+            q_rot = torch.cat([-q2, q1], dim=-1)
+            k_rot = torch.cat([-k2, k1], dim=-1)
+            q_proj = q_proj * rotary_cos + q_rot * rotary_sin
+            k_proj = k_proj * rotary_cos + k_rot * rotary_sin
+
+        attn_out = holonomic_dagger_attention(q_proj, k_proj, v_proj, is_causal=causal)
+        # [B, H, Sq, d] -> [B, Sq, H * d]
+        attn_out = attn_out.transpose(1, 2).contiguous().view(B, Sq, self.num_heads * self.head_dim)
+        output = self.o_proj(attn_out)
+
+        if not self.batch_first:
+            output = output.transpose(0, 1)
+
+        if need_weights is True or need_weights is False:
+            return output, None
+        return output
