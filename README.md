@@ -1,4 +1,4 @@
-# OjasX v0.5.1 — The Open-Source Math & Hardware Compiler for Training Models on Everyday Hardware
+# OjasX v0.5.1 — The Open-Source CUDA A new Compiler for Training Models on Everyday Hardware
 
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.4%2B-ee4c2c.svg?logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
