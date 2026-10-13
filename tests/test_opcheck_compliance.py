@@ -25,6 +25,9 @@ import ojasx2.streamed
 import ojasx2.generated_holonomic_ops
 import ojasx2.tile_hal
 import ojasx2.fx_subgraph_compiler
+import ojasx2.dagger_attention
+import ojasx2.fused_cross_entropy
+
 
 
 DEVICES = ["cpu"]
@@ -80,6 +83,18 @@ def _holonomic_cases(device: str):
     scores = torch.randn(2, 4, 8, 8, device=device, requires_grad=True)
     cases.append(("attention_softmax_lse", torch.ops.ojasx_holonomic.attention_softmax_lse, (scores,), {}, True))
 
+    # 3. dagger_attention: [B, H, S, D]
+    q = torch.randn(2, 4, 16, 32, device=device, requires_grad=True)
+    k = torch.randn(2, 4, 16, 32, device=device, requires_grad=True)
+    v = torch.randn(2, 4, 16, 32, device=device, requires_grad=True)
+    cases.append(("dagger_attention", torch.ops.ojasx_holonomic.dagger_attention, (q, k, v), {"is_causal": False, "sm_scale": None}, True))
+
+    # 4. fused_linear_cross_entropy: h: [B, D], w: [V, D], targets: [B]
+    h = torch.randn(4, 16, device=device, requires_grad=True)
+    w = torch.randn(32, 16, device=device, requires_grad=True)
+    targets = torch.randint(0, 32, (4,), device=device, dtype=torch.long)
+    cases.append(("fused_linear_cross_entropy", torch.ops.ojasx_holonomic.fused_linear_cross_entropy, (h, w, targets), {"bias": None, "ignore_index": -100, "label_smoothing": 0.0, "reduction": "mean"}, True))
+
     return cases
 
 
@@ -124,6 +139,18 @@ def _hal_cases(device: str):
 
     # 9. tilelang_universal_gemm_relu2_fwd
     cases.append(("tilelang_universal_gemm_relu2_fwd", torch.ops.ojasx_hal.tilelang_universal_gemm_relu2_fwd, (x_gemm, w_gemm, None), {}, True))
+
+    # 10. fused_transformer_mlp_fwd
+    x_mlp = torch.randn(4, 16, device=device, requires_grad=True)
+    norm_w = torch.randn(16, device=device, requires_grad=True)
+    gate_w = torch.randn(32, 16, device=device, requires_grad=True)
+    up_w = torch.randn(32, 16, device=device, requires_grad=True)
+    down_w = torch.randn(16, 32, device=device, requires_grad=True)
+    cases.append(("fused_transformer_mlp_fwd", torch.ops.ojasx_hal.fused_transformer_mlp_fwd, (x_mlp, norm_w, gate_w, up_w, down_w, 1e-6), {}, True))
+
+    # 11. fused_transformer_mlp_bwd
+    dy = torch.randn(4, 16, device=device)
+    cases.append(("fused_transformer_mlp_bwd", torch.ops.ojasx_hal.fused_transformer_mlp_bwd, (dy, x_mlp.detach(), norm_w.detach(), gate_w.detach(), up_w.detach(), down_w.detach(), 1e-6), {}, False))
 
     return cases
 
@@ -234,7 +261,7 @@ def test_opcheck_ojasx_hal(device: str):
     """Verifies all ojasx_hal custom operators pass official torch.library.opcheck."""
     cases = _hal_cases(device)
     for name, op, args, kwargs, has_autograd in cases:
-        if device == "mps":
+        if device == "mps" or not has_autograd:
             test_utils = ("test_schema", "test_faketensor", "test_aot_dispatch_dynamic")
         else:
             test_utils = ("test_schema", "test_autograd_registration", "test_faketensor", "test_aot_dispatch_dynamic")
@@ -243,6 +270,17 @@ def test_opcheck_ojasx_hal(device: str):
         assert isinstance(result, dict)
         for check_name, status in result.items():
             assert status == "SUCCESS", f"{name} failed {check_name} on {device}"
+
+        if device == "mps" and has_autograd:
+            out = op(*args, **kwargs)
+            if isinstance(out, tuple):
+                loss = sum(t.sum() for t in out if isinstance(t, torch.Tensor) and t.requires_grad)
+            else:
+                loss = out.sum()
+            loss.backward()
+            for a in args:
+                if isinstance(a, torch.Tensor) and a.requires_grad:
+                    assert a.grad is not None, f"Autograd gradient missing for {name} on MPS"
 
 
 @pytest.mark.parametrize("device", DEVICES)
