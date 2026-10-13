@@ -218,3 +218,246 @@ def _streaming_fused_lce_backward(
             if bias is not None:
                 z_tile = z_tile + bias[v_s:v_e].to(compute_dtype)
 
+            p_tile = torch.exp(z_tile - lse_chunk.unsqueeze(-1))
+            p_scaled = alpha_chunk.unsqueeze(-1) * p_tile
+
+            if needs_dh:
+                dh_2d[tok_s:tok_e] += torch.matmul(p_scaled, w_chunk)
+            if needs_dw:
+                dw[v_s:v_e] += torch.matmul(p_scaled.t(), h_chunk)
+            if needs_db:
+                db[v_s:v_e] += p_scaled.sum(dim=0)
+
+    dh = dh_2d.reshape(h.shape).to(h.dtype) if needs_dh else None
+    dw = dw.to(w.dtype) if needs_dw else None
+    db = db.to(bias.dtype) if needs_db else None
+
+    return dh, dw, None, db, None, None, None
+
+
+# =============================================================================
+# PyTorch Custom Operator Registration (ojasx_holonomic::fused_linear_cross_entropy)
+# =============================================================================
+
+@torch.library.custom_op("ojasx_holonomic::fused_linear_cross_entropy", mutates_args=())
+def _fused_linear_cross_entropy_op(
+    h: torch.Tensor,
+    w: torch.Tensor,
+    targets: torch.Tensor,
+    bias: Optional[torch.Tensor] = None,
+    ignore_index: int = -100,
+    label_smoothing: float = 0.0,
+    reduction: str = "mean",
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Evaluates Fused Linear Cross-Entropy loss and row-wise LogSumExp vector."""
+    return _streaming_fused_lce_forward(
+        h=h,
+        w=w,
+        targets=targets,
+        bias=bias,
+        ignore_index=ignore_index,
+        label_smoothing=label_smoothing,
+        reduction=reduction,
+    )
+
+
+@torch.library.register_fake("ojasx_holonomic::fused_linear_cross_entropy")
+def _fake_fused_linear_cross_entropy(
+    h: torch.Tensor,
+    w: torch.Tensor,
+    targets: torch.Tensor,
+    bias: Optional[torch.Tensor] = None,
+    ignore_index: int = -100,
+    label_smoothing: float = 0.0,
+    reduction: str = "mean",
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Abstract FakeTensor / Meta propagation kernel for torch.compile and AOTAutograd."""
+    if reduction == "none":
+        loss = torch.empty(targets.shape, dtype=h.dtype, device=h.device)
+    else:
+        loss = torch.empty((), dtype=h.dtype, device=h.device)
+    lse = torch.empty(targets.shape, dtype=torch.float32, device=h.device)
+    return loss, lse
+
+
+def _fused_lce_setup(ctx: Any, inputs: Tuple[Any, ...], output: Tuple[torch.Tensor, torch.Tensor]) -> None:
+    h, w, targets, bias, ignore_index, label_smoothing, reduction = inputs
+    loss, lse = output
+    ctx.save_for_backward(h, w, targets, bias, lse)
+    ctx.ignore_index = int(ignore_index)
+    ctx.label_smoothing = float(label_smoothing)
+    ctx.reduction = str(reduction)
+
+
+def _fused_lce_backward(
+    ctx: Any, grad_loss: Optional[torch.Tensor], grad_lse: Optional[torch.Tensor]
+) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], None, Optional[torch.Tensor], None, None, None]:
+    h, w, targets, bias, lse = ctx.saved_tensors
+    return _streaming_fused_lce_backward(
+        h=h,
+        w=w,
+        targets=targets,
+        bias=bias,
+        lse=lse,
+        grad_loss=grad_loss,
+        grad_lse=grad_lse,
+        ignore_index=ctx.ignore_index,
+        label_smoothing=ctx.label_smoothing,
+        reduction=ctx.reduction,
+    )
+
+
+_fused_linear_cross_entropy_op.register_autograd(_fused_lce_backward, setup_context=_fused_lce_setup)
+
+
+# =============================================================================
+# Explicit Autograd Function
+# =============================================================================
+
+class _HolonomicFusedLinearCrossEntropyFunction(torch.autograd.Function):
+    """
+    Autograd Function implementing Fused Linear Cross-Entropy:
+    - Retains only H, W, targets, bias, and 1D vector LSE in [M] (0 bytes [M, V] logits!).
+    - Dual-pass streaming accumulation over token tiles and vocabulary tiles.
+    """
+
+    @staticmethod
+    def forward(
+        ctx: Any,
+        h: torch.Tensor,
+        w: torch.Tensor,
+        targets: torch.Tensor,
+        bias: Optional[torch.Tensor] = None,
+        ignore_index: int = -100,
+        label_smoothing: float = 0.0,
+        reduction: str = "mean",
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        loss, lse = _streaming_fused_lce_forward(
+            h=h,
+            w=w,
+            targets=targets,
+            bias=bias,
+            ignore_index=ignore_index,
+            label_smoothing=label_smoothing,
+            reduction=reduction,
+        )
+        ctx.save_for_backward(h, w, targets, bias, lse)
+        ctx.ignore_index = int(ignore_index)
+        ctx.label_smoothing = float(label_smoothing)
+        ctx.reduction = str(reduction)
+        return loss, lse
+
+    @staticmethod
+    def backward(
+        ctx: Any, grad_loss: Optional[torch.Tensor], grad_lse: Optional[torch.Tensor]
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], None, Optional[torch.Tensor], None, None, None]:
+        h, w, targets, bias, lse = ctx.saved_tensors
+        return _streaming_fused_lce_backward(
+            h=h,
+            w=w,
+            targets=targets,
+            bias=bias,
+            lse=lse,
+            grad_loss=grad_loss,
+            grad_lse=grad_lse,
+            ignore_index=ctx.ignore_index,
+            label_smoothing=ctx.label_smoothing,
+            reduction=ctx.reduction,
+        )
+
+
+# =============================================================================
+# Functional and Module Interfaces
+# =============================================================================
+
+def holonomic_fused_linear_cross_entropy(
+    h: torch.Tensor,
+    w: torch.Tensor,
+    targets: torch.Tensor,
+    bias: Optional[torch.Tensor] = None,
+    ignore_index: int = -100,
+    label_smoothing: float = 0.0,
+    reduction: str = "mean",
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Computes cross-entropy loss directly from hidden representations H and weights W.
+
+    Returns (loss, lse).
+    """
+    return torch.ops.ojasx_holonomic.fused_linear_cross_entropy(
+        h, w, targets, bias, ignore_index, label_smoothing, reduction
+    )
+
+
+class HolonomicFusedLinearCrossEntropy(nn.Module):
+    """
+    Drop-in replacement for `nn.Linear + nn.CrossEntropyLoss`.
+
+    Eliminates DRAM materialization of the full [B, S, V] vocabulary logits tensor
+    by fusing linear projection and cross-entropy loss into a dual-pass streaming
+    token-and-vocabulary accumulation kernel.
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        vocab_size: int,
+        bias: bool = False,
+        ignore_index: int = -100,
+        label_smoothing: float = 0.0,
+        reduction: str = "mean",
+        device: Any = None,
+        dtype: Any = None,
+    ) -> None:
+        super().__init__()
+        self.in_features = in_features
+        self.vocab_size = vocab_size
+        self.ignore_index = ignore_index
+        self.label_smoothing = label_smoothing
+        self.reduction = reduction
+
+        self.weight = nn.Parameter(torch.empty((vocab_size, in_features), device=device, dtype=dtype))
+        if bias:
+            self.bias = nn.Parameter(torch.empty(vocab_size, device=device, dtype=dtype))
+        else:
+            self.register_parameter("bias", None)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        if self.bias is not None:
+            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight)
+            bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+            nn.init.uniform_(self.bias, -bound, bound)
+
+    def forward(
+        self,
+        h: torch.Tensor,
+        targets: torch.Tensor,
+        return_lse: bool = False,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        """
+        Forward computation taking hidden representations H and integer targets.
+
+        If `return_lse=True`, returns `(loss, lse)`.
+        Otherwise, returns `loss`.
+        """
+        loss, lse = torch.ops.ojasx_holonomic.fused_linear_cross_entropy(
+            h,
+            self.weight,
+            targets,
+            self.bias,
+            self.ignore_index,
+            self.label_smoothing,
+            self.reduction,
+        )
+        if return_lse:
+            return loss, lse
+        return loss
+
+    def extra_repr(self) -> str:
+        return (
+            f"in_features={self.in_features}, vocab_size={self.vocab_size}, "
+            f"bias={self.bias is not None}, ignore_index={self.ignore_index}, "
+            f"label_smoothing={self.label_smoothing}, reduction='{self.reduction}'"
+        )
