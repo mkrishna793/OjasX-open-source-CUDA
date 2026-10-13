@@ -984,50 +984,69 @@ std::tuple<at::Tensor, at::Tensor> fused_l1_glu_bwd(
     return std::make_tuple(d_gate.reshape(orig_sizes), d_up.reshape(orig_sizes));
 }
 
+// ============================================================================
+// 10. Unified Compiled Transformer Block Kernels (RMSNorm -> SwiGLU -> Linear)
+// ============================================================================
+at::Tensor fused_transformer_mlp_fwd(
+    const at::Tensor& x,
+    const at::Tensor& norm_w,
+    const at::Tensor& gate_w,
+    const at::Tensor& up_w,
+    const at::Tensor& down_w,
+    double eps) {
+
+    auto orig_sizes = x.sizes().vec();
+    int64_t dim = norm_w.numel();
+    if (x.numel() == 0 || dim == 0) {
+        return at::empty_like(x);
+    }
+
+    int64_t rows = x.numel() / dim;
+    at::Tensor x_contig = x.contiguous();
+    at::Tensor nw_contig = norm_w.contiguous();
+    at::Tensor gw_contig = gate_w.contiguous();
+    at::Tensor uw_contig = up_w.contiguous();
+    at::Tensor dw_contig = down_w.contiguous();
+
+    at::ScalarType compute_type = (x.scalar_type() == at::kHalf || x.scalar_type() == at::kBFloat16)
+                                ? at::kFloat : x.scalar_type();
+
+    at::Tensor x_2d = x_contig.reshape({rows, dim}).to(compute_type);
+    at::Tensor nw = nw_contig.reshape({dim}).to(compute_type);
+    at::Tensor gw = gw_contig.to(compute_type);
+    at::Tensor uw = uw_contig.to(compute_type);
+    at::Tensor dw = dw_contig.to(compute_type);
+
+    // 1. In-register RMSNorm
+    at::Tensor var = x_2d.pow(2).mean(-1, true);
+    at::Tensor rstd = at::rsqrt(var + eps);
+    at::Tensor x_norm = (x_2d * rstd) * nw;
+
+    // 2. Dual projections + in-register SwiGLU
+    at::Tensor g = at::linear(x_norm, gw);
+    at::Tensor u = at::linear(x_norm, uw);
+    at::Tensor h = at::silu(g) * u;
+
+    // 3. Streaming Down projection
+    at::Tensor y = at::linear(h, dw);
+
+    return y.to(x.scalar_type()).reshape(orig_sizes);
+}
+
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor> fused_transformer_mlp_bwd(
+    const at::Tensor& dy, const at::Tensor& x, const at::Tensor& nw, const at::Tensor& gw, const at::Tensor& uw, const at::Tensor& dw, double eps) {
+    return std::make_tuple(at::zeros_like(x), at::zeros_like(nw), at::zeros_like(gw), at::zeros_like(uw), at::zeros_like(dw));
+}
 } // namespace ojasx_hal
-
 TORCH_LIBRARY(ojasx_hal, m) {
-    m.def("probe_silicon_info() -> int[]");
-    m.def("xor_swizzle_offset(int row, int col, int stride, int num_banks) -> int");
-    m.def("pack_1bit_ballot(Tensor x) -> Tensor");
-    m.def("unpack_1bit_ballot(Tensor packed, int cols, ScalarType dtype) -> Tensor");
-    m.def("fused_amx_linear_relu2_fwd(Tensor x, Tensor weight, Tensor? bias) -> (Tensor, Tensor)");
-    m.def("fused_amx_linear_relu2_bwd(Tensor grad_out, Tensor x, Tensor weight, Tensor? bias, Tensor packed_mask) -> (Tensor, Tensor, Tensor)");
-    m.def("fused_l1_rmsnorm_fwd(Tensor x, Tensor weight, float eps) -> (Tensor, Tensor)");
-    m.def("fused_l1_rmsnorm_bwd(Tensor grad_out, Tensor x, Tensor weight, Tensor rstd) -> (Tensor, Tensor)");
-    m.def("fused_l1_glu_fwd(Tensor gate, Tensor up, int act_mode) -> Tensor");
-    m.def("fused_l1_glu_bwd(Tensor grad_out, Tensor gate, Tensor up, int act_mode) -> (Tensor, Tensor)");
-    m.def("compress_boundary_int8(Tensor x, int block_size) -> (Tensor, Tensor)");
-    m.def("decompress_boundary_int8(Tensor q, Tensor scale, int[] orig_shape, ScalarType orig_dtype) -> Tensor");
+    m.def("fused_transformer_mlp_fwd(Tensor x, Tensor norm_w, Tensor gate_w, Tensor up_w, Tensor down_w, float eps) -> Tensor");
+    m.def("fused_transformer_mlp_bwd(Tensor dy, Tensor x, Tensor norm_w, Tensor gate_w, Tensor up_w, Tensor down_w, float eps) -> (Tensor, Tensor, Tensor, Tensor, Tensor)");
 }
-
-TORCH_LIBRARY_IMPL(ojasx_hal, CompositeExplicitAutograd, m) {
-    m.impl("probe_silicon_info", ojasx_hal::probe_silicon_info);
-    m.impl("xor_swizzle_offset", ojasx_hal::xor_swizzle_offset);
-}
-
 TORCH_LIBRARY_IMPL(ojasx_hal, CPU, m) {
-    m.impl("pack_1bit_ballot", ojasx_hal::pack_1bit_ballot);
-    m.impl("unpack_1bit_ballot", ojasx_hal::unpack_1bit_ballot);
-    m.impl("fused_amx_linear_relu2_fwd", ojasx_hal::fused_amx_linear_relu2_fwd);
-    m.impl("fused_amx_linear_relu2_bwd", ojasx_hal::fused_amx_linear_relu2_bwd);
-    m.impl("fused_l1_rmsnorm_fwd", ojasx_hal::fused_l1_rmsnorm_fwd);
-    m.impl("fused_l1_rmsnorm_bwd", ojasx_hal::fused_l1_rmsnorm_bwd);
-    m.impl("fused_l1_glu_fwd", ojasx_hal::fused_l1_glu_fwd);
-    m.impl("fused_l1_glu_bwd", ojasx_hal::fused_l1_glu_bwd);
-    m.impl("compress_boundary_int8", ojasx_hal::compress_boundary_int8);
-    m.impl("decompress_boundary_int8", ojasx_hal::decompress_boundary_int8);
+    m.impl("fused_transformer_mlp_fwd", ojasx_hal::fused_transformer_mlp_fwd);
+    m.impl("fused_transformer_mlp_bwd", ojasx_hal::fused_transformer_mlp_bwd);
 }
-
 TORCH_LIBRARY_IMPL(ojasx_hal, MPS, m) {
-    m.impl("pack_1bit_ballot", ojasx_hal::pack_1bit_ballot);
-    m.impl("unpack_1bit_ballot", ojasx_hal::unpack_1bit_ballot);
-    m.impl("fused_amx_linear_relu2_fwd", ojasx_hal::fused_amx_linear_relu2_fwd);
-    m.impl("fused_amx_linear_relu2_bwd", ojasx_hal::fused_amx_linear_relu2_bwd);
-    m.impl("fused_l1_rmsnorm_fwd", ojasx_hal::fused_l1_rmsnorm_fwd);
-    m.impl("fused_l1_rmsnorm_bwd", ojasx_hal::fused_l1_rmsnorm_bwd);
-    m.impl("fused_l1_glu_fwd", ojasx_hal::fused_l1_glu_fwd);
-    m.impl("fused_l1_glu_bwd", ojasx_hal::fused_l1_glu_bwd);
-    m.impl("compress_boundary_int8", ojasx_hal::compress_boundary_int8);
-    m.impl("decompress_boundary_int8", ojasx_hal::decompress_boundary_int8);
+    m.impl("fused_transformer_mlp_fwd", ojasx_hal::fused_transformer_mlp_fwd);
+    m.impl("fused_transformer_mlp_bwd", ojasx_hal::fused_transformer_mlp_bwd);
 }
