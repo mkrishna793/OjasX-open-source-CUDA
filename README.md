@@ -4,11 +4,11 @@
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![Verification: OpCheck 100%](https://img.shields.io/badge/PyTorch_OpCheck-100%25_Verified-success.svg)](reports/OJASX_V05_TEST_DATABASE_MATRIX.json)
 [![Activation Memory: -72.09%](https://img.shields.io/badge/1B_LLM_Activation_Memory--72.09%25-brightgreen.svg)](reports/OJASX_V05_TEST_DATABASE_MATRIX.json)
-[![Apple Silicon & CUDA](https://img.shields.io/badge/Hardware-Apple_Silicon_MPS_%7C_CUDA_%7C_CPU-purple.svg)]()
+[![Universal Hardware](https://img.shields.io/badge/Hardware-NVIDIA_CUDA_%7C_Apple_Silicon_%7C_Linux_%7C_Windows_%7C_CPU-purple.svg)]()
 
 > **What OjasX is:** OjasX is a lightweight, open-source mathematical compiler that sits right underneath PyTorch. It rewrites how memory is handled during model training so you can train and fine-tune modern neural networks and Large Language Models (LLMs) on everyday laptops and consumer GPUs without running out of RAM (OOM).
 >
-> **The v0.5.0 Milestone:** In v0.5.0, OjasX introduces **Holonomic Dagger Attention** and **Fused Linear Cross-Entropy Loss**, cutting activation memory across complete 1B+ Transformer LLMs by **72.09%** with **100% exact mathematical gradient parity ($1.000000$ cosine similarity)** against standard PyTorch.
+> **The v0.5.0 Milestone:** In v0.5.0, OjasX introduces **Holonomic Dagger Attention** and **Fused Linear Cross-Entropy Loss**, cutting activation memory across complete 1B+ Transformer LLMs by **72.09%** with **100% exact mathematical gradient parity (1.000000 cosine similarity)** against standard PyTorch.
 
 ```python
 import torch
@@ -25,9 +25,25 @@ loss.backward()  # Retains 72.09% less memory on your GPU/RAM!
 
 ---
 
+## 🌍 Works on Any Machine: NVIDIA GPUs (CUDA), Windows, Linux, & Mac
+
+A common question is: **"Does OjasX only work on Apple laptops, or can anyone use it?"**
+
+**Answer: Anyone can use OjasX on ANY platform.** OjasX is built directly into standard PyTorch autograd and is 100% cross-platform:
+
+| Hardware & Platform | Backend Used | What It Does for You |
+| :--- | :---: | :--- |
+| **NVIDIA GPUs (Linux & Windows)**<br/>*(RTX 3060/4090, Tesla T4, A10G, A100, H100)* | **`cuda`** | Runs on NVIDIA Tensor Cores. Eliminates VRAM allocation for attention score matrices and vocabulary logits. Verified live on **Google Colab Tesla T4 GPUs (CUDA 13.0)**! |
+| **Everyday Laptops & Desktops without GPUs**<br/>*(Windows & Linux PCs with Intel Core or AMD Ryzen)* | **`cpu`** | Runs via vectorized CPU BLAS. Lets you train small models, vision CNNs, and tabular networks without crashing system RAM. |
+| **Apple Silicon Macs**<br/>*(MacBook Air/Pro, Mac Studio, Mac Mini — M1 through M5)* | **`mps`** | Runs on Apple Unified Memory GPUs with native Metal kernels, enabling 1B+ parameter models to train locally. |
+
+When you run `model, report = ojasx2.optimize_model(model)`, OjasX automatically detects your device (`cuda`, `mps`, or `cpu`) and routes execution through the optimal memory-reduced path!
+
+---
+
 ## 1. The Human Story: Why Does Training AI Crash Your Laptop?
 
-If you have ever tried training or fine-tuning an AI model on your laptop (like a MacBook or a desktop with an 8 GB or 16 GB GPU), you have probably seen this dreaded error:
+If you have ever tried training or fine-tuning an AI model on your laptop (like a Windows PC, Linux machine, or MacBook with an 8 GB or 16 GB GPU), you have probably seen this dreaded error:
 
 ```
 RuntimeError: CUDA out of memory. Tried to allocate ... (GPU 0; ... total capacity)
@@ -36,25 +52,25 @@ RuntimeError: CUDA out of memory. Tried to allocate ... (GPU 0; ... total capaci
 ### The "Giant Scratchpad" Metaphor
 Here is why that happens in simple terms:
 When PyTorch trains a model, it does two passes:
-1. **The Forward Pass (Thinking)**: The model processes the input tokens step by step to predict the output.
+1. **The Forward Pass (Thinking)**: The model processes input tokens step by step to predict the output.
 2. **The Backward Pass (Learning / Backprop)**: The model calculates gradients to update its weights.
 
 To do the backward pass, standard PyTorch keeps a **giant scratchpad** in RAM of everything it calculated during the forward pass:
-- It saves every intermediate attention score matrix ($[B, H, S, S]$).
-- It materializes massive vocabulary prediction tables ($[B, S, V]$ where $V = 32,000$ to $128,000$ words).
+- It saves every intermediate attention score matrix (`[Batch, Heads, SeqLen, SeqLen]`).
+- It materializes massive vocabulary prediction tables (`[Batch, SeqLen, VocabSize]` where `VocabSize = 32,000` to `128,000` words).
 - It keeps individual scratchpads for every activation, layer norm, and linear projection.
 
-On a 1 Billion parameter model, that scratchpad alone takes **over 2.4 Gigabytes of memory every single step**. If you increase the sequence length, the scratchpad explodes exponentially until your computer crashes.
+On a 1 Billion parameter model, that scratchpad alone takes **over 2.48 Gigabytes of memory every single training step**. If you increase the sequence length, the scratchpad explodes quadratically until your computer runs out of memory and crashes.
 
 ### What OjasX Does Differently
-OjasX does **not** approximate your model, it does **not** degrade training quality, and it does **not** require special hardware.
+OjasX does **not** approximate your model, it does **not** degrade training quality, and it does **not** require a specialized server.
 
 Instead, OjasX applies **algebraic and in-register compilation**:
-- **Attention without the scratchpad**: Instead of writing the massive $[B, H, S, S]$ attention matrix to your computer's RAM, OjasX tiles attention in high-speed hardware registers, tracking running row normalizers and discarding the intermediate scores immediately.
-- **Loss without the vocabulary explosion**: Instead of writing a giant $[B, S, 32000]$ vocabulary tensor to memory just to compute cross-entropy, OjasX streams loss calculations in small chunks, pulling back gradients directly from hidden states.
+- **Attention without the scratchpad**: Instead of writing the massive `[B, H, S, S]` attention matrix to your computer's RAM, OjasX tiles attention in high-speed hardware registers, tracking running row normalizers and discarding intermediate scores immediately.
+- **Loss without the vocabulary explosion**: Instead of writing a giant `[B, S, 32000]` vocabulary tensor to memory just to compute cross-entropy, OjasX streams loss calculations in small chunks, pulling back gradients directly from hidden states.
 - **Unified kernel execution**: Collapses chains of 14 separate autograd dispatch steps into 1 compiled kernel, eliminating dispatch overhead.
 
-The result: **72.09% of the activation scratchpad is gone.** The mathematical gradients produced are **$100\%$ identical ($1.000000$ match)** to standard PyTorch.
+The result: **72.09% of the activation scratchpad is eliminated.** The mathematical gradients produced are **100% identical (1.000000 cosine parity)** to standard PyTorch.
 
 ---
 
@@ -63,27 +79,27 @@ The result: **72.09% of the activation scratchpad is gone.** The mathematical gr
 All metrics below are measured and recorded in the verified test database matrix [`reports/OJASX_V05_TEST_DATABASE_MATRIX.json`](reports/OJASX_V05_TEST_DATABASE_MATRIX.json) using Meta's `BackendBench` testing harness:
 
 ### A. The 1.04 Billion Parameter Transformer LLM Benchmark
-*(18-Layer LLaMA/Qwen-style Transformer: $d=2048$, $h=5504$, 16 Attention Heads, Vocab = 32,000, Sequence Length = 512, Full Precision FP32)*
+*(18-Layer LLaMA/Qwen-style Transformer: Dim=2048, Hidden=5504, 16 Attention Heads, Vocab=32,000, Sequence Length=512, Full Precision FP32)*
 
 | Metric | Official PyTorch Eager | OjasX v0.5.0 | Improvement / Difference |
 | :--- | :---: | :---: | :---: |
-| **Activation Tape Memory per Step** | **$2,482.07\text{ MB}$** ($2.48\text{ GB}$) | **$692.66\text{ MB}$** ($0.69\text{ GB}$) | **$-72.09\%$ Memory Reduction** |
-| **Net Memory Saved per Step** | Baseline | **$1,789.41\text{ MB}$ Saved** | Frees up ~1.8 GB of VRAM per step |
-| **Attention Scores $[B, H, S, S]$ in DRAM** | Full Materialization (~$1.2\text{ GB}$) | **$0\text{ Bytes}$** | Computed in hardware registers |
-| **Vocab Logits $[B, S, V]$ in DRAM** | Full Materialization (~$524\text{ MB}$) | **$0\text{ Bytes}$** | Streaming chunk accumulation |
-| **Gradient Accuracy (Cosine Parity)** | $1.000000$ | **$1.000000$** | **Exact match ($0.00$ error)** |
+| **Activation Tape Memory per Step** | **2,482.07 MB (2.48 GB)** | **692.66 MB (0.69 GB)** | **-72.09% Memory Reduction** |
+| **Net Memory Saved per Step** | Baseline | **1,789.41 MB Saved** | Frees up ~1.79 GB of VRAM every step |
+| **Attention Scores in DRAM** | Full Materialization (~1.2 GB) | **0 Bytes** | Computed in hardware registers |
+| **Vocab Logits in DRAM** | Full Materialization (~524 MB) | **0 Bytes** | Streaming chunk accumulation |
+| **Gradient Accuracy (Cosine Parity)** | 1.000000 | **1.000000** | **Exact match (0.00 error)** |
 | **Autograd Dispatch Nodes per Block** | 14 separate nodes | **1 unified node** | Dispatch overhead bypassed |
 
 ### B. Comprehensive Benchmark Across All 6 Workload Families
 
 | Workload Family | Model Architecture | Standard PyTorch Tape | OjasX v0.5.0 Tape | Memory Reduction | Gradient Cosine Parity |
 | :--- | :--- | :---: | :---: | :---: | :---: |
-| **Family 1** | Modern LLM (SwiGLU MLP) | $852.99\text{ KB}$ | $262.66\text{ KB}$ | **$-69.21\%$** | **$1.000000$** |
-| **Family 2** | Classic Transformer (ViT / BERT) | $394.24\text{ KB}$ | $263.17\text{ KB}$ | **$-33.25\%$** | **$1.000000$** |
-| **Family 3** | Computer Vision CNN (PackedReLU) | $525.31\text{ KB}$ | $9.22\text{ KB}$ | **$-98.25\%$** | **$1.000000$** |
-| **Family 4** | Tabular & Narrow Neural ML | $36.86\text{ KB}$ | $20.99\text{ KB}$ | **$-43.06\%$** | **$1.000000$** |
-| **Family 5** | Parameter-Efficient LoRA Backbone | $135.17\text{ KB}$ | $69.63\text{ KB}$ | **$-48.48\%$** | **$1.000000$** |
-| **Family 6** | **Whole 1B+ Transformer LLM** | **$2,482.07\text{ MB}$** | **$692.66\text{ MB}$** | **$\mathbf{-72.09\%}$** | **$1.000000$** |
+| **Family 1** | Modern LLM (SwiGLU MLP) | 852.99 KB | 262.66 KB | **-69.21%** | **1.000000** |
+| **Family 2** | Classic Transformer (ViT / BERT) | 394.24 KB | 263.17 KB | **-33.25%** | **1.000000** |
+| **Family 3** | Computer Vision CNN (PackedReLU) | 525.31 KB | 9.22 KB | **-98.25%** | **1.000000** |
+| **Family 4** | Tabular & Narrow Neural ML | 36.86 KB | 20.99 KB | **-43.06%** | **1.000000** |
+| **Family 5** | Parameter-Efficient LoRA Backbone | 135.17 KB | 69.63 KB | **-48.48%** | **1.000000** |
+| **Family 6** | **Whole 1B+ Transformer LLM** | **2,482.07 MB (2.48 GB)** | **692.66 MB (0.69 GB)** | **-72.09%** | **1.000000** |
 
 ---
 
@@ -136,7 +152,7 @@ optimizer.zero_grad()
 
 ### Case 2: Training or Fine-Tuning Hugging Face Models
 
-OjasX works seamlessly with standard Hugging Face `transformers` models:
+OjasX works seamlessly with standard Hugging Face `transformers` models on CUDA, MPS, or CPU:
 
 ```python
 import torch
@@ -216,11 +232,11 @@ loss.backward()
 ```
 
 1. **Holonomic Dagger Attention ([`ojasx2/dagger_attention.py`](ojasx2/dagger_attention.py))**:
-   - In standard attention, calculating $S = \frac{QK^T}{\sqrt{d}}$ and $P = \text{softmax}(S)$ materializes an $[B, H, S, S]$ tensor in VRAM. For $S=2048$, this single tensor takes multiple gigabytes.
-   - OjasX uses in-register online softmax tiling. Blocks of $Q, K, V$ are streamed into fast hardware registers. Running row maximums and partition sums are maintained in registers. During backward passes, cotangent gradients $dQ, dK, dV$ are reconstructed on the fly.
+   - In standard attention, calculating `S = (Q @ K.T) / sqrt(d)` and `P = softmax(S)` materializes a `[Batch, Heads, SeqLen, SeqLen]` tensor in VRAM. For sequence length 2048, this single tensor takes multiple gigabytes.
+   - OjasX uses in-register online softmax tiling. Blocks of `Q, K, V` are streamed into fast hardware registers. Running row maximums and partition sums are maintained in registers. During backward passes, cotangent gradients `dQ, dK, dV` are reconstructed on the fly.
 2. **Fused Linear Cross-Entropy ([`ojasx2/fused_cross_entropy.py`](ojasx2/fused_cross_entropy.py))**:
-   - Standard output heads project hidden representations $H \in \mathbb{R}^{M \times D}$ through vocabulary weights $W \in \mathbb{R}^{V \times D}$ ($V=32,000$), writing a massive logits tensor to memory.
-   - OjasX performs a dual-pass chunked accumulation. Forward loss and normalizers are computed tile-by-tile, and backward cotangents $dH$ and $dW$ are accumulated directly without writing the logits tensor to memory.
+   - Standard output heads project hidden representations `H` through vocabulary weights `W` (`Vocab=32,000`), writing a massive logits tensor to memory.
+   - OjasX performs a dual-pass chunked accumulation. Forward loss and normalizers are computed tile-by-tile, and backward cotangents `dH` and `dW` are accumulated directly without writing the logits tensor to memory.
 3. **Unified Autograd Execution Kernels ([`ojasx2/csrc/ojasx_tile_kernels.cpp`](ojasx2/csrc/ojasx_tile_kernels.cpp))**:
    - Standard PyTorch executes each layer norm, projection, activation, and residual as a separate autograd function, causing dispatch latency and graph fragmentation.
    - OjasX lowers entire Transformer blocks into compiled native C++/Metal execution kernels, collapsing 14 nodes into 1 single node.
@@ -262,7 +278,7 @@ xychart-beta
     bar [2482, 5100, 10400, 16200]
     bar [692, 1420, 2900, 4800]
 ```
-*(Blue / First bar: Standard PyTorch; Purple / Second bar: OjasX v0.5.0)*
+*(First bar: Standard PyTorch; Second bar: OjasX v0.5.0)*
 
 Notice that while PyTorch's memory grows quadratically towards Out-Of-Memory crashes, OjasX stays lean and enables long-context training on consumer hardware.
 
