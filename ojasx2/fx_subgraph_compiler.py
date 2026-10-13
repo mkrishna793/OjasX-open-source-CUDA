@@ -34,6 +34,9 @@ from .holonomic_math_compiler import (
     halley_invert_activation,
 )
 from .residuals import pack_mask, unpack_mask
+import ojasx2.dagger_attention
+import ojasx2.fused_cross_entropy
+
 
 
 # =============================================================================
@@ -1026,6 +1029,8 @@ class TransformationStats:
     universal_glu_count: int = 0
     low_rank_bottleneck_count: int = 0
     residual_chain_count: int = 0
+    attention_count: int = 0
+    linear_cross_entropy_count: int = 0
     nodes_before: int = 0
     nodes_after: int = 0
 
@@ -1037,7 +1042,10 @@ class TransformationStats:
             + self.universal_glu_count
             + self.low_rank_bottleneck_count
             + self.residual_chain_count
+            + self.attention_count
+            + self.linear_cross_entropy_count
         )
+
 
 
 class HolonomicSubgraphTransformer(Transformer):
@@ -1195,6 +1203,9 @@ class HolonomicSubgraphTransformer(Transformer):
         gm = self.module
         self.stats.nodes_before = len(gm.graph.nodes)
 
+        # Pass 0: Attention subgraphs (F.scaled_dot_product_attention & explicit QK-softmax-V)
+        self._rewrite_attention_subgraphs(gm)
+
         # Pass 1: Chunked GLU (with or without down_proj)
         self._rewrite_chunked_glu(gm)
 
@@ -1213,11 +1224,15 @@ class HolonomicSubgraphTransformer(Transformer):
         # Pass 6: Residual Chains
         self._rewrite_residual_chains(gm)
 
+        # Pass 7: Linear + Cross-Entropy Loss
+        self._rewrite_linear_cross_entropy(gm)
+
         gm.graph.eliminate_dead_code()
         gm.graph.lint()
         gm.recompile()
         self.stats.nodes_after = len(gm.graph.nodes)
         return gm
+
 
     def _rewrite_chunked_glu(self, gm: GraphModule) -> None:
         graph = gm.graph
@@ -1532,6 +1547,178 @@ class HolonomicSubgraphTransformer(Transformer):
                             )
                             node.replace_all_uses_with(new_node)
                         self.stats.residual_chain_count += 1
+
+    def _rewrite_attention_subgraphs(self, gm: GraphModule) -> None:
+        """Recognizes attention subgraphs in symbolic FX graphs and replaces them with Holonomic Dagger Attention."""
+        graph = gm.graph
+        for node in list(graph.nodes):
+            # Case 1: F.scaled_dot_product_attention or aten.scaled_dot_product_attention
+            is_sdpa = False
+            if node.op == "call_function":
+                if node.target in (
+                    F.scaled_dot_product_attention,
+                    getattr(torch.ops.aten, "scaled_dot_product_attention", None),
+                ):
+                    is_sdpa = True
+            if is_sdpa and len(node.args) >= 3:
+                q = node.args[0]
+                k = node.args[1]
+                v = node.args[2]
+                is_causal = bool(node.kwargs.get("is_causal", False))
+                scale = node.kwargs.get("scale", None)
+
+                with graph.inserting_before(node):
+                    attn_node = graph.call_function(
+                        torch.ops.ojasx_holonomic.dagger_attention,
+                        (q, k, v, is_causal, scale),
+                    )
+                    out_node = graph.call_function(operator.getitem, (attn_node, 0))
+                node.replace_all_uses_with(out_node)
+                graph.erase_node(node)
+                self.stats.attention_count += 1
+                continue
+
+            # Case 2: Explicit QK softmax V matrix multiplication:
+            # out = matmul(p, v) where p = softmax(scores)
+            if node.op == "call_function" and node.target in (
+                torch.matmul,
+                torch.bmm,
+                getattr(torch.ops.aten, "bmm", None),
+                getattr(torch.ops.aten, "matmul", None),
+            ):
+                if len(node.args) >= 2:
+                    p_cand = node.args[0]
+                    v = node.args[1]
+                    if (
+                        isinstance(p_cand, Node)
+                        and p_cand.op == "call_function"
+                        and p_cand.target in (
+                            F.softmax,
+                            torch.softmax,
+                            getattr(torch.ops.aten, "softmax", None),
+                            getattr(torch.ops.aten, "_softmax", None),
+                        )
+                    ):
+                        scores_cand = p_cand.args[0]
+                        q, k, scale, is_causal = None, None, None, False
+                        raw_scores = scores_cand
+                        if isinstance(scores_cand, Node) and scores_cand.op == "call_function":
+                            if scores_cand.target in (
+                                operator.mul,
+                                torch.mul,
+                                getattr(torch.ops.aten, "mul", None),
+                            ):
+                                if len(scores_cand.args) >= 2 and isinstance(scores_cand.args[0], Node):
+                                    raw_scores = scores_cand.args[0]
+                                    if isinstance(scores_cand.args[1], (int, float)):
+                                        scale = float(scores_cand.args[1])
+                            elif scores_cand.target in (
+                                operator.truediv,
+                                torch.div,
+                                getattr(torch.ops.aten, "div", None),
+                            ):
+                                if len(scores_cand.args) >= 2 and isinstance(scores_cand.args[0], Node):
+                                    raw_scores = scores_cand.args[0]
+                                    if isinstance(scores_cand.args[1], (int, float)) and scores_cand.args[1] != 0:
+                                        scale = 1.0 / float(scores_cand.args[1])
+
+                        if (
+                            isinstance(raw_scores, Node)
+                            and raw_scores.op == "call_function"
+                            and raw_scores.target in (
+                                torch.matmul,
+                                torch.bmm,
+                                getattr(torch.ops.aten, "bmm", None),
+                                getattr(torch.ops.aten, "matmul", None),
+                            )
+                        ):
+                            if len(raw_scores.args) >= 2:
+                                q = raw_scores.args[0]
+                                k_t = raw_scores.args[1]
+                                if isinstance(k_t, Node) and (k_t.op in ("call_method", "call_function")):
+                                    if k_t.target in (
+                                        "transpose",
+                                        "permute",
+                                        torch.transpose,
+                                        getattr(torch.ops.aten, "transpose", None),
+                                        getattr(torch.ops.aten, "permute", None),
+                                    ):
+                                        k = k_t.args[0]
+                                    else:
+                                        k = k_t
+                                else:
+                                    k = k_t
+
+                        if q is not None and k is not None:
+                            with graph.inserting_before(node):
+                                attn_node = graph.call_function(
+                                    torch.ops.ojasx_holonomic.dagger_attention,
+                                    (q, k, v, is_causal, scale),
+                                )
+                                out_node = graph.call_function(operator.getitem, (attn_node, 0))
+                            node.replace_all_uses_with(out_node)
+                            graph.erase_node(node)
+                            self.stats.attention_count += 1
+                            continue
+
+    def _rewrite_linear_cross_entropy(self, gm: GraphModule) -> None:
+        """Recognizes linear projection followed by cross-entropy loss in FX graphs and replaces with Fused Linear Cross-Entropy."""
+        graph = gm.graph
+        for node in list(graph.nodes):
+            is_ce = False
+            logits_node = None
+            targets = None
+            ignore_index = -100
+            label_smoothing = 0.0
+            reduction = "mean"
+
+            if node.op == "call_function":
+                if node.target in (
+                    F.cross_entropy,
+                    getattr(torch.ops.aten, "cross_entropy_loss", None),
+                ):
+                    is_ce = True
+                    if len(node.args) >= 2:
+                        logits_node = node.args[0]
+                        targets = node.args[1]
+                        ignore_index = node.kwargs.get("ignore_index", -100)
+                        label_smoothing = float(node.kwargs.get("label_smoothing", 0.0))
+                        reduction = str(node.kwargs.get("reduction", "mean"))
+            elif node.op == "call_module":
+                mod = getattr(gm, node.target, None)
+                if isinstance(mod, nn.CrossEntropyLoss):
+                    is_ce = True
+                    if len(node.args) >= 2:
+                        logits_node = node.args[0]
+                        targets = node.args[1]
+                        ignore_index = mod.ignore_index
+                        label_smoothing = float(mod.label_smoothing)
+                        reduction = str(mod.reduction)
+
+            if not is_ce or not isinstance(logits_node, Node) or targets is None:
+                continue
+
+            lin_details = self._get_linear_details(gm, logits_node)
+            if lin_details is None:
+                continue
+
+            if len(logits_node.users) > 1:
+                continue
+
+            h, w, b = lin_details
+
+            with graph.inserting_before(node):
+                fused_node = graph.call_function(
+                    torch.ops.ojasx_holonomic.fused_linear_cross_entropy,
+                    (h, w, targets, b, ignore_index, label_smoothing, reduction),
+                )
+                loss_node = graph.call_function(operator.getitem, (fused_node, 0))
+
+            node.replace_all_uses_with(loss_node)
+            graph.erase_node(node)
+            if len(logits_node.users) == 0:
+                graph.erase_node(logits_node)
+            self.stats.linear_cross_entropy_count += 1
 
     @staticmethod
     def _get_node_param(gm: GraphModule, node: Any) -> Optional[torch.Tensor]:
