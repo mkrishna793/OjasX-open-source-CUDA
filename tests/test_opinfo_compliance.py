@@ -16,6 +16,7 @@ from __future__ import annotations
 import collections
 import sys
 import types
+import math
 from typing import Callable, Generator, List, Optional, Tuple
 
 import pytest
@@ -36,6 +37,8 @@ import ojasx2.ops
 import ojasx2.tile_hal
 import ojasx2.generated_holonomic_ops
 import ojasx2.fx_subgraph_compiler
+import ojasx2.dagger_attention
+import ojasx2.fused_cross_entropy
 from ojasx2.holonomic_math_compiler import holonomic_linear, holonomic_swiglu
 
 
@@ -68,45 +71,49 @@ def make_strided_tensor(
     device: str,
     dtype: torch.dtype,
     requires_grad: bool = False,
+    scale: float = 1.0,
 ) -> torch.Tensor:
     """Creates a tensor with specific contiguous or non-contiguous exotic stride layouts."""
     if any(s == 0 for s in shape):
-        t = torch.randn(shape, device=device, dtype=dtype)
+        t = torch.randn(shape, device=device, dtype=dtype) * scale
         if requires_grad and dtype.is_floating_point:
             t.requires_grad_(True)
         return t
 
     if stride_mode == "contiguous":
-        t = torch.randn(shape, device=device, dtype=dtype)
+        t = torch.randn(shape, device=device, dtype=dtype) * scale
     elif stride_mode == "transposed":
         if len(shape) == 2:
-            raw = torch.randn((shape[1], shape[0]), device=device, dtype=dtype)
+            raw = torch.randn((shape[1], shape[0]), device=device, dtype=dtype) * scale
             t = raw.t()
-        elif len(shape) >= 3:
-            raw = torch.randn(shape, device=device, dtype=dtype)
+        elif len(shape) == 3:
+            raw = torch.randn((shape[0], shape[2], shape[1]), device=device, dtype=dtype) * scale
             t = raw.transpose(-1, -2)
-            if t.shape != shape:
-                t = t.reshape(shape)
+        elif len(shape) >= 4:
+            swap_shape = list(shape)
+            swap_shape[-1], swap_shape[-2] = swap_shape[-2], swap_shape[-1]
+            raw = torch.randn(swap_shape, device=device, dtype=dtype) * scale
+            t = raw.transpose(-1, -2)
         else:
-            t = torch.randn(shape, device=device, dtype=dtype)
+            t = torch.randn(shape, device=device, dtype=dtype) * scale
     elif stride_mode == "sliced":
         # Sliced view: allocate 2x on last dim and step by 2
         last_d = shape[-1]
         alloc_shape = list(shape)
         alloc_shape[-1] = last_d * 2
-        raw = torch.randn(alloc_shape, device=device, dtype=dtype)
+        raw = torch.randn(alloc_shape, device=device, dtype=dtype) * scale
         t = raw[..., ::2]
     elif stride_mode == "permuted":
         if len(shape) == 3:
-            raw = torch.randn((shape[1], shape[0], shape[2]), device=device, dtype=dtype)
+            raw = torch.randn((shape[1], shape[0], shape[2]), device=device, dtype=dtype) * scale
             t = raw.permute(1, 0, 2)
         elif len(shape) == 4:
-            raw = torch.randn((shape[0], shape[2], shape[1], shape[3]), device=device, dtype=dtype)
+            raw = torch.randn((shape[0], shape[2], shape[1], shape[3]), device=device, dtype=dtype) * scale
             t = raw.permute(0, 2, 1, 3)
         else:
-            t = torch.randn(shape, device=device, dtype=dtype)
+            t = torch.randn(shape, device=device, dtype=dtype) * scale
     else:
-        t = torch.randn(shape, device=device, dtype=dtype)
+        t = torch.randn(shape, device=device, dtype=dtype) * scale
 
     if requires_grad and dtype.is_floating_point:
         t = t.clone().detach().requires_grad_(True)
@@ -243,6 +250,76 @@ def sample_attention_lse(op_info, device, dtype, requires_grad=False, **kwargs):
             yield SampleInput(scores, args=(), kwargs={})
 
 
+def sample_dagger_attention(op_info, device, dtype, requires_grad=False, **kwargs):
+    """Generates standard, prime, zero-element, and strided Dagger Attention samples."""
+    configs = [
+        # Standard
+        (2, 4, 16, 32),
+        # Prime and unaligned
+        (1, 2, 7, 13),
+        # Zero-element
+        (0, 4, 16, 32),
+    ]
+    stride_modes = ["contiguous", "transposed", "sliced"]
+    scale_factor = 0.2 if dtype in (torch.float16, torch.bfloat16) else 1.0
+
+    for shape in configs:
+        for stride_mode in stride_modes:
+            q = make_strided_tensor(shape, stride_mode, device, dtype, requires_grad=requires_grad, scale=scale_factor)
+            k = make_strided_tensor(shape, stride_mode, device, dtype, requires_grad=requires_grad, scale=scale_factor)
+            v = make_strided_tensor(shape, stride_mode, device, dtype, requires_grad=requires_grad, scale=scale_factor)
+            yield SampleInput(q, args=(k, v), kwargs={"is_causal": False, "sm_scale": None})
+
+
+def sample_fused_linear_cross_entropy(op_info, device, dtype, requires_grad=False, **kwargs):
+    """Generates standard, prime, zero-element, and strided Fused Linear Cross Entropy samples."""
+    configs = [
+        # Standard: h [4, 16], w [32, 16]
+        ((4, 16), (32, 16)),
+        # Prime and unaligned: h [7, 13], w [17, 13]
+        ((7, 13), (17, 13)),
+        # Zero-element: h [0, 16], w [32, 16]
+        ((0, 16), (32, 16)),
+    ]
+    stride_modes = ["contiguous", "transposed", "sliced"]
+    scale_factor = 0.2 if dtype in (torch.float16, torch.bfloat16) else 1.0
+
+    for (h_shape, w_shape) in configs:
+        for stride_mode in stride_modes:
+            h = make_strided_tensor(h_shape, stride_mode, device, dtype, requires_grad=requires_grad, scale=scale_factor)
+            w = make_strided_tensor(w_shape, stride_mode, device, dtype, requires_grad=requires_grad, scale=scale_factor)
+            n_tokens = h_shape[0]
+            vocab_size = w_shape[0]
+            if n_tokens > 0:
+                targets = torch.randint(0, vocab_size, (n_tokens,), device=device, dtype=torch.long)
+            else:
+                targets = torch.empty(0, device=device, dtype=torch.long)
+            yield SampleInput(h, args=(w, targets), kwargs={"bias": None, "ignore_index": -100, "label_smoothing": 0.0, "reduction": "mean"})
+
+
+def sample_fused_transformer_mlp(op_info, device, dtype, requires_grad=False, **kwargs):
+    """Generates standard, prime, zero-element, and strided Fused Transformer MLP samples."""
+    configs = [
+        # Standard: x [4, 16], d=16, h=32
+        ((4, 16), 16, 32),
+        # Prime and unaligned: x [7, 13], d=13, h=17
+        ((7, 13), 13, 17),
+        # Zero-element: x [0, 16], d=16, h=32
+        ((0, 16), 16, 32),
+    ]
+    stride_modes = ["contiguous", "transposed", "sliced"]
+    scale_factor = 0.1 if dtype in (torch.float16, torch.bfloat16) else 1.0
+
+    for (x_shape, d, h_dim) in configs:
+        for stride_mode in stride_modes:
+            x = make_strided_tensor(x_shape, stride_mode, device, dtype, requires_grad=requires_grad, scale=scale_factor)
+            norm_w = make_strided_tensor((d,), "contiguous", device, dtype, requires_grad=requires_grad, scale=scale_factor)
+            gate_w = make_strided_tensor((h_dim, d), stride_mode, device, dtype, requires_grad=requires_grad, scale=scale_factor)
+            up_w = make_strided_tensor((h_dim, d), stride_mode, device, dtype, requires_grad=requires_grad, scale=scale_factor)
+            down_w = make_strided_tensor((d, h_dim), stride_mode, device, dtype, requires_grad=requires_grad, scale=scale_factor)
+            yield SampleInput(x, args=(norm_w, gate_w, up_w, down_w), kwargs={"eps": 1e-6})
+
+
 # ============================================================================
 # Reference Implementations
 # ============================================================================
@@ -312,6 +389,49 @@ def ref_attention_lse(scores):
     probs = F.softmax(scores, dim=-1)
     lse = torch.logsumexp(scores, dim=-1, keepdim=True)
     return probs, lse
+
+
+def ref_dagger_attention(q, k, v, is_causal=False, sm_scale=None):
+    if q.numel() == 0 or k.numel() == 0 or v.numel() == 0:
+        out = torch.empty_like(q)
+        lse = torch.empty(q.shape[0], q.shape[1], q.shape[2], dtype=torch.float32, device=q.device)
+        return out, lse
+    scale = sm_scale if sm_scale is not None else (1.0 / math.sqrt(q.shape[-1]))
+    scores = torch.matmul(q.float(), k.float().transpose(-2, -1)) * scale
+    lse = torch.logsumexp(scores, dim=-1)
+    probs = torch.softmax(scores, dim=-1)
+    out = torch.matmul(probs, v.float()).to(q.dtype)
+    return out, lse
+
+
+def ref_fused_linear_cross_entropy(h, w, targets, bias=None, ignore_index=-100, label_smoothing=0.0, reduction="mean"):
+    if h.numel() == 0:
+        loss = (
+            torch.zeros((), dtype=h.dtype, device=h.device)
+            if reduction != "none"
+            else torch.zeros(targets.shape, dtype=h.dtype, device=h.device)
+        )
+        lse = torch.zeros(targets.shape, dtype=torch.float32, device=h.device)
+        return loss, lse
+    logits = torch.matmul(h.float(), w.float().t())
+    if bias is not None:
+        logits = logits + bias.float()
+    lse = torch.logsumexp(logits, dim=-1)
+    loss = F.cross_entropy(logits, targets, ignore_index=ignore_index, label_smoothing=label_smoothing, reduction=reduction).to(h.dtype)
+    return loss, lse
+
+
+def ref_fused_transformer_mlp(x, norm_w, gate_w, up_w, down_w, eps=1e-6):
+    if x.numel() == 0:
+        return torch.empty_like(x)
+    var = x.float().pow(2).mean(dim=-1, keepdim=True)
+    rstd = torch.rsqrt(var + eps)
+    x_norm = ((x.float() * rstd) * norm_w.float()).to(x.dtype)
+    g = torch.matmul(x_norm, gate_w.t())
+    u = torch.matmul(x_norm, up_w.t())
+    h = F.silu(g) * u
+    y = torch.matmul(h, down_w.t())
+    return y
 
 
 # ============================================================================
@@ -442,6 +562,33 @@ OJASX_OP_DB: List[OpInfo] = [
         op=torch.ops.ojasx_holonomic.attention_softmax_lse,
         ref=ref_attention_lse,
         sample_inputs_func=sample_attention_lse,
+        dtypes=DTYPES,
+        supports_autograd=True,
+    ),
+    # 15. Holonomic Dagger Attention
+    OpInfo(
+        name="dagger_attention",
+        op=lambda q, k, v, is_causal=False, sm_scale=None: torch.ops.ojasx_holonomic.dagger_attention(q, k, v, is_causal, sm_scale),
+        ref=ref_dagger_attention,
+        sample_inputs_func=sample_dagger_attention,
+        dtypes=DTYPES,
+        supports_autograd=True,
+    ),
+    # 16. Fused Linear Cross-Entropy Loss
+    OpInfo(
+        name="fused_linear_cross_entropy",
+        op=lambda h, w, targets, bias=None, ignore_index=-100, label_smoothing=0.0, reduction="mean": torch.ops.ojasx_holonomic.fused_linear_cross_entropy(h, w, targets, bias=bias, ignore_index=ignore_index, label_smoothing=label_smoothing, reduction=reduction),
+        ref=ref_fused_linear_cross_entropy,
+        sample_inputs_func=sample_fused_linear_cross_entropy,
+        dtypes=DTYPES,
+        supports_autograd=True,
+    ),
+    # 17. Fused Compiled Transformer MLP
+    OpInfo(
+        name="fused_transformer_mlp",
+        op=lambda x, norm_w, gate_w, up_w, down_w, eps=1e-6: torch.ops.ojasx_hal.fused_transformer_mlp_fwd(x, norm_w, gate_w, up_w, down_w, eps),
+        ref=ref_fused_transformer_mlp,
+        sample_inputs_func=sample_fused_transformer_mlp,
         dtypes=DTYPES,
         supports_autograd=True,
     ),
