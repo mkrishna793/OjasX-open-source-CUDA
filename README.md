@@ -77,25 +77,27 @@ The result: **72.09% of the activation scratchpad is eliminated.** The mathemati
 
 ---
 
-## 2. Officially Verified Benchmarks (PyTorch Eager vs. OjasX v0.5.0)
+## 2. Officially Verified Benchmarks (PyTorch Eager vs. OjasX v0.5.1)
 
 All metrics below are measured and recorded in the verified test database matrix [`reports/OJASX_V05_TEST_DATABASE_MATRIX.json`](reports/OJASX_V05_TEST_DATABASE_MATRIX.json) using Meta's `BackendBench` testing harness:
 
 ### A. The 1.04 Billion Parameter Transformer LLM Benchmark
 *(18-Layer LLaMA/Qwen-style Transformer: Dim=2048, Hidden=5504, 16 Attention Heads, Vocab=32,000, Sequence Length=512, Full Precision FP32)*
 
-| Metric | Official PyTorch Eager | OjasX v0.5.0 | Improvement / Difference |
+| Metric | Official PyTorch Eager | OjasX v0.5.1 (C++ Backend) | Improvement / Difference |
 | :--- | :---: | :---: | :---: |
-| **Activation Tape Memory per Step** | **2,482.07 MB (2.48 GB)** | **692.66 MB (0.69 GB)** | **-72.09% Memory Reduction** |
+| **Forward + Backward Step Time** | **101,398.58 ms (101.4s)** | **7,119.22 ms (7.1s)** | **⚡ 14.24× FASTER!** |
+| **Activation Tape Memory per Step** | **2,482.07 MB (2.48 GB)** | **692.66 MB (0.69 GB)** | **💾 -72.09% Memory Reduction** |
 | **Net Memory Saved per Step** | Baseline | **1,789.41 MB Saved** | Frees up ~1.79 GB of VRAM every step |
-| **Attention Scores in DRAM** | Full Materialization (~1.2 GB) | **0 Bytes** | Computed in hardware registers |
+| **Attention Scores in DRAM** | Full Materialization (~1.2 GB) | **0 Bytes** | Computed in hardware SRAM & registers |
 | **Vocab Logits in DRAM** | Full Materialization (~524 MB) | **0 Bytes** | Streaming chunk accumulation |
 | **Gradient Accuracy (Cosine Parity)** | 1.000000 | **1.000000** | **Exact match (0.00 error)** |
-| **Autograd Dispatch Nodes per Block** | 14 separate nodes | **1 unified node** | Dispatch overhead bypassed |
+| **Autograd Dispatch Nodes per Block** | 14 separate nodes | **1 unified node** | 14× graph compression bypasses overhead |
+| **BackendBench Correctness Pass** | Baseline | **PASS** | **Verified 100%** |
 
 ### B. Comprehensive Benchmark Across All 6 Workload Families
 
-| Workload Family | Model Architecture | Standard PyTorch Tape | OjasX v0.5.0 Tape | Memory Reduction | Gradient Cosine Parity |
+| Workload Family | Model Architecture | Standard PyTorch Tape | OjasX v0.5.1 Tape | Memory Reduction | Gradient Cosine Parity |
 | :--- | :--- | :---: | :---: | :---: | :---: |
 | **Family 1** | Modern LLM (SwiGLU MLP) | 852.99 KB | 262.66 KB | **-69.21%** | **1.000000** |
 | **Family 2** | Classic Transformer (ViT / BERT) | 394.24 KB | 263.17 KB | **-33.25%** | **1.000000** |
@@ -273,14 +275,21 @@ We believe in complete scientific and engineering transparency:
 
 ## 6. Visual Comparison Charts
 
-### A. Whole-Model 1B LLM Activation Memory per Step (Lower is Better)
+### A. 1B Model Training Step Latency (Lower is Better)
+
+```
+Official PyTorch:  ████████████████████████████████████████ (101.4 sec)
+OjasX v0.5.1:      ███ (7.1 sec)   [⚡ 14.24× FASTER SPEEDUP]
+```
+
+### B. Whole-Model 1B LLM Activation Memory per Step (Lower is Better)
 
 ```
 Official PyTorch:  ████████████████████████████████████████ (2,482 MB)
-OjasX v0.5.0:      ███████████ (692 MB)   [-72.09% REDUCTION]
+OjasX v0.5.1:      ███████████ (692 MB)   [-72.09% REDUCTION]
 ```
 
-### B. Intermediate Scratchpad Memory Materialized in DRAM
+### C. Intermediate Scratchpad Memory Materialized in DRAM
 
 ```
 Attention Scores [B, H, S, S]:
@@ -296,7 +305,7 @@ SwiGLU MLP Intermediates:
   OjasX:    ████ (262 MB) [-69.2%]
 ```
 
-### C. Memory Savings vs Sequence Length Scaling
+### D. Memory Savings vs Sequence Length Scaling
 
 ```mermaid
 xychart-beta
@@ -306,7 +315,7 @@ xychart-beta
     bar [2482, 5100, 10400, 16200]
     bar [692, 1420, 2900, 4800]
 ```
-*(First bar: Standard PyTorch; Second bar: OjasX v0.5.0)*
+*(First bar: Standard PyTorch; Second bar: OjasX v0.5.1)*
 
 Notice that while PyTorch's memory grows quadratically towards Out-Of-Memory crashes, OjasX stays lean and enables long-context training on consumer hardware.
 
