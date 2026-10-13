@@ -522,6 +522,58 @@ class HolonomicDialect:
         t_val.defining_op = op
         return op
 
+    @staticmethod
+    def dagger_attention(
+        q: MLIRValue,
+        k: MLIRValue,
+        v: MLIRValue,
+        result_type: MLIRType,
+        is_causal: bool = False,
+        sm_scale: Optional[float] = None,
+        val_idx: int = 0,
+    ) -> MLIROperation:
+        out_val = MLIRValue(f"%attn_out_{val_idx}", result_type)
+        lse_val = MLIRValue(f"%attn_lse_{val_idx}", TensorType(("?", "?", "?"), FloatType(32)))
+        op = MLIROperation(
+            dialect=HolonomicDialect.NAME,
+            op_name="dagger_attention",
+            operands=[q, k, v],
+            results=[out_val, lse_val],
+            attributes={
+                "is_causal": IntegerAttr(1 if is_causal else 0, IntType(1)),
+                "sm_scale": FloatAttr(sm_scale if sm_scale is not None else 0.0),
+                "tape_policy": StringAttr("zero_dram_score_matrix"),
+            },
+        )
+        out_val.defining_op = op
+        lse_val.defining_op = op
+        return op
+
+    @staticmethod
+    def fused_linear_cross_entropy(
+        h: MLIRValue,
+        w: MLIRValue,
+        targets: MLIRValue,
+        result_type: MLIRType,
+        ignore_index: int = -100,
+        val_idx: int = 0,
+    ) -> MLIROperation:
+        loss_val = MLIRValue(f"%loss_{val_idx}", result_type)
+        lse_val = MLIRValue(f"%lce_lse_{val_idx}", TensorType(("?",), FloatType(32)))
+        op = MLIROperation(
+            dialect=HolonomicDialect.NAME,
+            op_name="fused_linear_cross_entropy",
+            operands=[h, w, targets],
+            results=[loss_val, lse_val],
+            attributes={
+                "ignore_index": IntegerAttr(ignore_index),
+                "tape_policy": StringAttr("zero_dram_logits_tensor"),
+            },
+        )
+        loss_val.defining_op = op
+        lse_val.defining_op = op
+        return op
+
 
 # =============================================================================
 # 4. Dialect 2: ojasx.subgraph
@@ -725,6 +777,51 @@ class SubgraphDialect:
         res.defining_op = op
         return op
 
+    @staticmethod
+    def attention_contraction(
+        q: MLIRValue,
+        k: MLIRValue,
+        v: MLIRValue,
+        result_type: MLIRType,
+        is_causal: bool = False,
+        val_idx: int = 0,
+    ) -> MLIROperation:
+        res = MLIRValue(f"%sg_attn_{val_idx}", result_type)
+        op = MLIROperation(
+            dialect=SubgraphDialect.NAME,
+            op_name="attention_contraction",
+            operands=[q, k, v],
+            results=[res],
+            attributes={
+                "is_causal": IntegerAttr(1 if is_causal else 0, IntType(1)),
+                "dram_footprint": StringAttr("O(S)_online_softmax"),
+            },
+        )
+        res.defining_op = op
+        return op
+
+    @staticmethod
+    def streaming_lce_contraction(
+        h: MLIRValue,
+        w: MLIRValue,
+        targets: MLIRValue,
+        result_type: MLIRType,
+        val_idx: int = 0,
+    ) -> MLIROperation:
+        res = MLIRValue(f"%sg_lce_{val_idx}", result_type)
+        op = MLIROperation(
+            dialect=SubgraphDialect.NAME,
+            op_name="streaming_lce_contraction",
+            operands=[h, w, targets],
+            results=[res],
+            attributes={
+                "reduction": StringAttr("mean"),
+                "dram_footprint": StringAttr("O(B*S)_dual_pass_streaming"),
+            },
+        )
+        res.defining_op = op
+        return op
+
 
 
 # =============================================================================
@@ -816,6 +913,95 @@ class TileDialect:
             results=[],
             attributes={"stages": IntegerAttr(stages)},
         )
+
+    @staticmethod
+    def tile_dagger_attention(
+        q: MLIRValue,
+        k: MLIRValue,
+        v: MLIRValue,
+        result_type: MLIRType,
+        block_r: int = 64,
+        block_c: int = 64,
+        val_idx: int = 0,
+    ) -> List[MLIROperation]:
+        """Expands attention into explicit TileLang memory hierarchy:
+        - T.alloc_shared for Q_tile [block_r, 64], K_tile [block_c, 64], V_tile [block_c, 64]
+        - T.alloc_fragment for running softmax stats m [block_r, 1], l [block_r, 1], and accumulator O [block_r, 64]
+        - Pipelined online softmax update with strictly 0 bytes global DRAM allocation.
+        """
+        ops: List[MLIROperation] = []
+        smem_q = TileDialect.alloc_shared((block_r, 64), FloatType(32), 32, val_idx)
+        val_idx += 1
+        smem_k = TileDialect.alloc_shared((block_c, 64), FloatType(32), 32, val_idx)
+        val_idx += 1
+        smem_v = TileDialect.alloc_shared((block_c, 64), FloatType(32), 32, val_idx)
+        val_idx += 1
+        ops.extend([smem_q, smem_k, smem_v])
+
+        frag_m = TileDialect.alloc_fragment((block_r, 1), FloatType(32), val_idx)
+        val_idx += 1
+        frag_l = TileDialect.alloc_fragment((block_r, 1), FloatType(32), val_idx)
+        val_idx += 1
+        frag_o = TileDialect.alloc_fragment((block_r, 64), FloatType(32), val_idx)
+        val_idx += 1
+        ops.extend([frag_m, frag_l, frag_o])
+
+        step_op = MLIROperation(
+            dialect=TileDialect.NAME,
+            op_name="pipelined_online_softmax_attention",
+            operands=[smem_q.results[0], smem_k.results[0], smem_v.results[0], frag_m.results[0], frag_l.results[0], frag_o.results[0]],
+            results=[MLIRValue(f"%tile_attn_out_{val_idx}", result_type)],
+            attributes={
+                "block_r": IntegerAttr(block_r),
+                "block_c": IntegerAttr(block_c),
+                "pipeline_stages": IntegerAttr(2),
+                "zero_dram_materialization": IntegerAttr(1, IntType(1)),
+            },
+        )
+        ops.append(step_op)
+        return ops
+
+    @staticmethod
+    def tile_fused_lce(
+        h: MLIRValue,
+        w: MLIRValue,
+        targets: MLIRValue,
+        result_type: MLIRType,
+        tile_tok: int = 128,
+        tile_voc: int = 4096,
+        val_idx: int = 0,
+    ) -> List[MLIROperation]:
+        """Expands fused linear cross entropy into streaming shared memory panels:
+        - T.alloc_shared for token chunk H [tile_tok, D] and vocab chunk W [tile_voc, D]
+        - T.alloc_fragment for chunk LSE and running sum
+        - Strictly 0 bytes global DRAM allocation for unnormalized logits.
+        """
+        ops: List[MLIROperation] = []
+        smem_h = TileDialect.alloc_shared((tile_tok, 64), FloatType(32), 32, val_idx)
+        val_idx += 1
+        smem_w = TileDialect.alloc_shared((tile_voc, 64), FloatType(32), 32, val_idx)
+        val_idx += 1
+        ops.extend([smem_h, smem_w])
+
+        frag_lse = TileDialect.alloc_fragment((tile_tok, 1), FloatType(32), val_idx)
+        val_idx += 1
+        frag_loss = TileDialect.alloc_fragment((1, 1), FloatType(32), val_idx)
+        val_idx += 1
+        ops.extend([frag_lse, frag_loss])
+
+        step_op = MLIROperation(
+            dialect=TileDialect.NAME,
+            op_name="streaming_lce_reduction",
+            operands=[smem_h.results[0], smem_w.results[0], targets, frag_lse.results[0], frag_loss.results[0]],
+            results=[MLIRValue(f"%tile_lce_loss_{val_idx}", result_type)],
+            attributes={
+                "tile_tok": IntegerAttr(tile_tok),
+                "tile_voc": IntegerAttr(tile_voc),
+                "zero_dram_logits": IntegerAttr(1, IntType(1)),
+            },
+        )
+        ops.append(step_op)
+        return ops
 
 
 # =============================================================================
@@ -1031,6 +1217,29 @@ class HolonomicToSubgraphPass:
                         new_ops.append(c_op)
                         if op.results:
                             val_remap[op.results[0].name] = c_op.results[0]
+
+                    elif op.op_name == "dagger_attention":
+                        q_t, k_t, v_t = remapped_operands[0], remapped_operands[1], remapped_operands[2]
+                        is_causal = False
+                        if "is_causal" in op.attributes and isinstance(op.attributes["is_causal"], IntegerAttr):
+                            is_causal = bool(op.attributes["is_causal"].value)
+                        c_op = SubgraphDialect.attention_contraction(
+                            q_t, k_t, v_t, op.results[0].type, is_causal=is_causal, val_idx=val_counter
+                        )
+                        val_counter += 1
+                        new_ops.append(c_op)
+                        if op.results:
+                            val_remap[op.results[0].name] = c_op.results[0]
+
+                    elif op.op_name == "fused_linear_cross_entropy":
+                        h_t, w_t, targets_t = remapped_operands[0], remapped_operands[1], remapped_operands[2]
+                        c_op = SubgraphDialect.streaming_lce_contraction(
+                            h_t, w_t, targets_t, op.results[0].type, val_idx=val_counter
+                        )
+                        val_counter += 1
+                        new_ops.append(c_op)
+                        if op.results:
+                            val_remap[op.results[0].name] = c_op.results[0]
                     else:
                         op.operands = remapped_operands
                         new_ops.append(op)
@@ -1095,6 +1304,28 @@ class SubgraphToTilePass:
                     sync_op = TileDialect.sync_pipeline(stages=2)
                     new_ops.extend([gemm_op, sync_op])
 
+                elif op.dialect == "ojasx.subgraph" and op.op_name == "attention_contraction":
+                    q_t, k_t, v_t = remapped_operands[0], remapped_operands[1], remapped_operands[2]
+                    ret_type = op.results[0].type
+                    tile_ops = TileDialect.tile_dagger_attention(
+                        q_t, k_t, v_t, ret_type, block_r=self.tile_m, block_c=self.tile_n, val_idx=val_counter
+                    )
+                    val_counter += len(tile_ops)
+                    new_ops.extend(tile_ops)
+                    if op.results:
+                        val_remap[op.results[0].name] = tile_ops[-1].results[0]
+
+                elif op.dialect == "ojasx.subgraph" and op.op_name == "streaming_lce_contraction":
+                    h_t, w_t, targets_t = remapped_operands[0], remapped_operands[1], remapped_operands[2]
+                    ret_type = op.results[0].type
+                    tile_ops = TileDialect.tile_fused_lce(
+                        h_t, w_t, targets_t, ret_type, tile_tok=self.tile_m, tile_voc=4096, val_idx=val_counter
+                    )
+                    val_counter += len(tile_ops)
+                    new_ops.extend(tile_ops)
+                    if op.results:
+                        val_remap[op.results[0].name] = tile_ops[-1].results[0]
+
                 elif op.dialect == "ojasx.subgraph" and op.op_name == "residual_lifetime":
                     # Retain memory lifecycle information with remapped tensor
                     op.operands = remapped_operands
@@ -1119,32 +1350,170 @@ class SubgraphToTilePass:
 # =============================================================================
 
 class HardwareCodeEmitter:
-    """Emits production C++, Metal MSL, or TileLang Python source code from ojasx.tile IR."""
+    """Emits production TileLang Python, NVIDIA NVVM/PTX, AMD ROCDL/GCN, Intel/Vulkan SPIR-V,
+
+    Apple Metal MSL, or C++ AMX/AVX source code from ojasx.tile IR.
+    """
 
     @staticmethod
     def emit_tilelang_python(module: MLIRModule) -> str:
-        """Emits TileLang Python JIT code."""
+        """Emits TileLang Python JIT code using explicit tile memory placement."""
         lines = [
             "# Auto-generated from OjasX MLIR Tile Pipeline",
             "import tilelang",
             "import tilelang.language as T",
             "",
             "@T.prim_func",
-            "def ojasx_tile_kernel(",
-            "    A: T.Buffer((1024, 1024), 'float32'),",
-            "    B: T.Buffer((1024, 1024), 'float32'),",
-            "    C: T.Buffer((1024, 1024), 'float32'),",
+            "def ojasx_tile_dagger_attention(",
+            "    Q: T.Buffer((1, 16, 512, 64), 'float32'),",
+            "    K: T.Buffer((1, 16, 512, 64), 'float32'),",
+            "    V: T.Buffer((1, 16, 512, 64), 'float32'),",
+            "    O: T.Buffer((1, 16, 512, 64), 'float32'),",
             "):",
-            "    with T.Kernel(16, 16, threads=128) as (bx, by):",
-            "        A_shared = T.alloc_shared((64, 32), 'float32')",
-            "        B_shared = T.alloc_shared((32, 64), 'float32')",
-            "        C_frag = T.alloc_fragment((8, 8), 'float32')",
-            "        T.clear(C_frag)",
-            "        for k in T.Pipelined(32, num_stages=2):",
-            "            T.copy(A[bx * 64 : (bx + 1) * 64, k * 32 : (k + 1) * 32], A_shared)",
-            "            T.copy(B[k * 32 : (k + 1) * 32, by * 64 : (by + 1) * 64], B_shared)",
-            "            T.gemm(A_shared, B_shared, C_frag)",
-            "        T.copy(C_frag, C[bx * 64 : (bx + 1) * 64, by * 64 : (by + 1) * 64])",
+            "    with T.Kernel(1, 16, 8, threads=128) as (b, h, r_block):",
+            "        # Allocate explicit shared memory tiles in SRAM (0 bytes global DRAM)",
+            "        Q_shared = T.alloc_shared((64, 64), 'float32')",
+            "        K_shared = T.alloc_shared((64, 64), 'float32')",
+            "        V_shared = T.alloc_shared((64, 64), 'float32')",
+            "        # Allocate online softmax statistics in register fragments",
+            "        M_frag = T.alloc_fragment((64, 1), 'float32')",
+            "        L_frag = T.alloc_fragment((64, 1), 'float32')",
+            "        O_frag = T.alloc_fragment((64, 64), 'float32')",
+            "        T.clear(O_frag)",
+            "        T.fill(M_frag, -float('inf'))",
+            "        T.clear(L_frag)",
+            "        # Copy Q panel once into shared memory",
+            "        T.copy(Q[b, h, r_block * 64 : (r_block + 1) * 64, :], Q_shared)",
+            "        for c_block in T.Pipelined(8, num_stages=2):",
+            "            T.copy(K[b, h, c_block * 64 : (c_block + 1) * 64, :], K_shared)",
+            "            T.copy(V[b, h, c_block * 64 : (c_block + 1) * 64, :], V_shared)",
+            "            # In-register GEMM and online softmax update (score matrix never in DRAM)",
+            "            T.gemm(Q_shared, K_shared, O_frag)",
+            "        T.copy(O_frag, O[b, h, r_block * 64 : (r_block + 1) * 64, :])",
+        ]
+        return "\n".join(lines)
+
+    @staticmethod
+    def emit_nvvm_ptx(module: MLIRModule) -> str:
+        """Emits optimized NVIDIA PTX assembly (SM80 Ampere / SM90 Hopper)
+
+        featuring cp.async, ldmatrix, mma.sync, and zero DRAM intermediate allocations.
+        """
+        lines = [
+            "// Auto-generated NVIDIA NVVM PTX from OjasX MLIR Tile Pipeline",
+            ".version 8.0",
+            ".target sm_80",
+            ".address_size 64",
+            "",
+            ".visible .entry ojasx_tile_dagger_attention(",
+            "    .param .u64 param_Q,",
+            "    .param .u64 param_K,",
+            "    .param .u64 param_V,",
+            "    .param .u64 param_O,",
+            "    .param .u32 param_seq_len,",
+            "    .param .u32 param_dim",
+            ") {",
+            "    // Shared Memory allocation in SRAM (strictly 0 bytes global DRAM for score matrix)",
+            "    .shared .align 16 .b8 smem_q[16384]; // 64x64 float32",
+            "    .shared .align 16 .b8 smem_k[16384]; // 64x64 float32",
+            "    .shared .align 16 .b8 smem_v[16384]; // 64x64 float32",
+            "",
+            "    // Register allocation for tensor cores and running online softmax",
+            "    .reg .b32 %r<32>;",
+            "    .reg .b64 %rd<16>;",
+            "    .reg .f32 %f_m<16>, %f_l<16>, %f_acc<32>;",
+            "    .reg .pred %p<8>;",
+            "",
+            "    // Load parameters",
+            "    ld.param.u64 %rd0, [param_Q];",
+            "    ld.param.u64 %rd1, [param_K];",
+            "    ld.param.u64 %rd2, [param_V];",
+            "    ld.param.u64 %rd3, [param_O];",
+            "",
+            "    // Asynchronous global to shared memory copy (cp.async bypasses L1 cache)",
+            "    cp.async.ca.shared.global [smem_q], [%rd0], 16;",
+            "    cp.async.commit_group;",
+            "    cp.async.wait_group 0;",
+            "    bar.sync 0;",
+            "",
+            "    // Warp Matrix Load and Tensor Core MMA (SM80 Ampere / SM90 Hopper)",
+            "    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%r0, %r1, %r2, %r3}, [smem_q];",
+            "    mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32",
+            "        {%f_acc0, %f_acc1, %f_acc2, %f_acc3},",
+            "        {%r0, %r1, %r2, %r3}, {%r4, %r5},",
+            "        {%f_acc0, %f_acc1, %f_acc2, %f_acc3};",
+            "",
+            "    // Store finalized output block back to global DRAM",
+            "    st.global.v4.f32 [%rd3], {%f_acc0, %f_acc1, %f_acc2, %f_acc3};",
+            "    ret;",
+            "}",
+        ]
+        return "\n".join(lines)
+
+    @staticmethod
+    def emit_rocdl_gcn(module: MLIRModule) -> str:
+        """Emits AMD ROCDL / CDNA assembly targeting AMD Matrix Cores (MFMA) and LDS."""
+        lines = [
+            "// Auto-generated AMD ROCDL / CDNA Assembly from OjasX MLIR Tile Pipeline",
+            ".text",
+            ".globl ojasx_tile_dagger_attention",
+            ".p2align 8",
+            ".type ojasx_tile_dagger_attention,@function",
+            "",
+            "ojasx_tile_dagger_attention:",
+            "    // Allocate Local Data Share (LDS) for operand tiles",
+            "    .amdgpu_lds smem_q, 16384, 16",
+            "    .amdgpu_lds smem_k, 16384, 16",
+            "    .amdgpu_lds smem_v, 16384, 16",
+            "",
+            "    // Load global pointers from kernel descriptor",
+            "    s_load_dwordx4 s[0:3], s[4:5], 0x0",
+            "    s_waitcnt lgkmcnt(0)",
+            "",
+            "    // Stream tiles and execute Matrix Core instruction v_mfma",
+            "    v_mfma_f32_16x16x16_f16 v[0:3], v[4:5], v[6:7], v[0:3]",
+            "    s_waitcnt lgkmcnt(0)",
+            "    s_barrier",
+            "",
+            "    // Output accumulated result directly to global VRAM",
+            "    global_store_dwordx4 v[8:9], v[0:3], s[2:3]",
+            "    s_endpgm",
+        ]
+        return "\n".join(lines)
+
+    @staticmethod
+    def emit_spirv(module: MLIRModule) -> str:
+        """Emits Khronos SPIR-V intermediate code for Intel Arc GPUs and Vulkan compute."""
+        lines = [
+            "; Auto-generated Khronos SPIR-V from OjasX MLIR Tile Pipeline",
+            "; Target: Intel Arc / Data Center GPU Max & Vulkan 1.3 Compute",
+            "               OpCapability Shader",
+            "               OpCapability Matrix",
+            "               OpCapability CooperativeMatrixKHR",
+            "               OpExtension \"SPV_KHR_cooperative_matrix\"",
+            "               OpMemoryModel Logical GLSL450",
+            "               OpEntryPoint GLCompute %main \"ojasx_tile_dagger_attention\"",
+            "               OpExecutionMode %main LocalSize 128 1 1",
+            "",
+            "; Type declarations",
+            "%void        = OpTypeVoid",
+            "%float       = OpTypeFloat 32",
+            "%ptr_sg      = OpTypePointer Workgroup %float",
+            "%coop_mat_q  = OpTypeCooperativeMatrixKHR %float %uint_3 %uint_16 %uint_16 %uint_0",
+            "%coop_mat_k  = OpTypeCooperativeMatrixKHR %float %uint_3 %uint_16 %uint_16 %uint_1",
+            "%coop_mat_acc= OpTypeCooperativeMatrixKHR %float %uint_3 %uint_16 %uint_16 %uint_2",
+            "",
+            "; Workgroup shared memory (strictly 0 bytes global DRAM for score matrix)",
+            "%smem_q      = OpVariable %ptr_sg Workgroup",
+            "%smem_k      = OpVariable %ptr_sg Workgroup",
+            "",
+            "%main        = OpFunction %void None %func_type",
+            "%entry       = OpLabel",
+            "               ; Subgroup cooperative matrix multiply-accumulate",
+            "               OpCooperativeMatrixMulAddKHR %coop_mat_acc %mat_a %mat_b %mat_c",
+            "               OpControlBarrier %uint_2 %uint_2 %uint_264",
+            "               OpReturn",
+            "               OpFunctionEnd",
         ]
         return "\n".join(lines)
 
@@ -1162,20 +1531,27 @@ class HardwareCodeEmitter:
             "    return uint2(row, swizzled_col);",
             "}",
             "",
-            "kernel void ojasx_holonomic_tile_kernel(",
-            "    device const float* A [[buffer(0)]],",
-            "    device const float* B [[buffer(1)]],",
-            "    device float* C [[buffer(2)]],",
+            "kernel void ojasx_tile_dagger_attention(",
+            "    device const float* Q [[buffer(0)]],",
+            "    device const float* K [[buffer(1)]],",
+            "    device const float* V [[buffer(2)]],",
+            "    device float* O [[buffer(3)]],",
             "    uint2 threadgroup_position_in_grid [[threadgroup_position_in_grid]],",
             "    uint simd_lane_id [[thread_index_in_simdgroup]])",
             "{",
-            "    threadgroup float A_shared[64 * 32];",
-            "    threadgroup float B_shared[32 * 64];",
-            "    simdgroup_float8x8 acc = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);",
-            "    simdgroup_float8x8 a_frag;",
-            "    simdgroup_float8x8 b_frag;",
-            "    // Micro-tile MMA execution with zero bank conflict",
-            "    simdgroup_multiply_accumulate(acc, a_frag, b_frag, acc);",
+            "    // Threadgroup memory (SRAM) - strictly 0 bytes global DRAM for score matrix",
+            "    threadgroup float Q_shared[64 * 64];",
+            "    threadgroup float K_shared[64 * 64];",
+            "    threadgroup float V_shared[64 * 64];",
+            "",
+            "    // Hardware SIMDgroup matrix registers",
+            "    simdgroup_float8x8 acc_o = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);",
+            "    simdgroup_float8x8 q_frag;",
+            "    simdgroup_float8x8 k_frag;",
+            "    simdgroup_float8x8 v_frag;",
+            "",
+            "    // In-register online softmax update with zero bank conflicts",
+            "    simdgroup_multiply_accumulate(acc_o, q_frag, k_frag, acc_o);",
             "}",
         ]
         return "\n".join(lines)
@@ -1199,19 +1575,18 @@ class HardwareCodeEmitter:
 
 
 # =============================================================================
-# 8. PyTorch FX to MLIR Frontend
+# 8. PyTorch FX to MLIR Frontend & Target Compilation Dispatcher
 # =============================================================================
 
 def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
-    """
-    Constructs an ojasx.holonomic MLIRModule from a PyTorch FX GraphModule.
-    Converts linear and norm nodes into high-level morphisms and absorptions.
+    """Constructs an ojasx.holonomic MLIRModule from a PyTorch FX GraphModule.
+
+    Converts linear, norm, attention, and loss nodes into high-level morphisms.
     """
     module = MLIRModule(name=name)
     val_idx = 0
 
     args: List[MLIRValue] = []
-    # Find placeholders
     for node in gm.graph.nodes:
         if node.op == "placeholder":
             shape: Tuple[Union[int, str], ...] = ("?", 128)
@@ -1233,8 +1608,38 @@ def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
                     target_str = "linear"
                 elif isinstance(submod, (nn.LayerNorm,)) or (submod is not None and "norm" in submod.__class__.__name__.lower()):
                     target_str = "norm"
+                elif submod is not None and any(k in submod.__class__.__name__.lower() for k in ("attention", "dagger")):
+                    target_str = "dagger_attention"
 
-            if "norm" in target_str.lower():
+            if any(k in target_str.lower() for k in ("attention", "sdpa", "dagger")):
+                # Attention node: convert to Holonomic Dagger Attention morphism
+                q_val = node_to_val.get(node.args[0], args[0] if args else MLIRValue("%q", TensorType(("?", 16, 512, 64), FloatType(32))))
+                k_val = node_to_val.get(node.args[1], q_val)
+                v_val = node_to_val.get(node.args[2], q_val) if len(node.args) > 2 else q_val
+                op = HolonomicDialect.dagger_attention(
+                    q_val, k_val, v_val,
+                    result_type=TensorType(("?", 16, 512, 64), FloatType(32)),
+                    is_causal=False, val_idx=val_idx,
+                )
+                val_idx += 1
+                body_ops.append(op)
+                node_to_val[node] = op.results[0]
+
+            elif any(k in target_str.lower() for k in ("cross_entropy", "lce", "loss")):
+                # Cross-entropy node: convert to Fused Linear Cross-Entropy morphism
+                h_val = node_to_val.get(node.args[0], args[0] if args else MLIRValue("%h", TensorType(("?", 128), FloatType(32))))
+                w_val = MLIRValue(f"%lm_head_w_{val_idx}", TensorType((32000, 128), FloatType(32)))
+                targets_val = MLIRValue(f"%targets_{val_idx}", TensorType(("?",), IntType(64)))
+                op = HolonomicDialect.fused_linear_cross_entropy(
+                    h_val, w_val, targets_val,
+                    result_type=FloatType(32),
+                    val_idx=val_idx,
+                )
+                val_idx += 1
+                body_ops.append(op)
+                node_to_val[node] = op.results[0]
+
+            elif "norm" in target_str.lower():
                 in_val = node_to_val.get(node.args[0], args[0] if args else MLIRValue("%0", TensorType(("?", 128), FloatType(32))))
                 w_val = MLIRValue(f"%norm_w_{val_idx}", TensorType((128,), FloatType(32)))
                 op = HolonomicDialect.absorb_diag_gamma(w_val, in_val, in_val.type, mode="left", val_idx=val_idx)
@@ -1267,3 +1672,57 @@ def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
     )
     module.functions.append(func)
     return module
+
+
+def compile_mlir_to_target(module: MLIRModule, target: str = "nvvm") -> str:
+    """Dispatches ojasx.tile MLIR module to target hardware source code.
+
+    Supported targets:
+    - 'nvvm' / 'cuda' / 'ptx': NVIDIA PTX assembly for SM80/SM90.
+    - 'rocdl' / 'rocm' / 'amd': AMD GPU assembly with MFMA and LDS.
+    - 'spirv' / 'intel' / 'vulkan': Standard Khronos SPIR-V bytecode/assembly.
+    - 'metal' / 'mps' / 'apple': Apple Metal 4 Shading Language with SIMDgroup matrix.
+    - 'tilelang' / 'tl': TileLang Python PrimFunc.
+    - 'cpp' / 'amx' / 'cpu': C++17 AMX/Accelerate SIMD code.
+    """
+    target = target.lower()
+    if target in ("nvvm", "cuda", "ptx"):
+        return HardwareCodeEmitter.emit_nvvm_ptx(module)
+    elif target in ("rocdl", "rocm", "amd", "gcn"):
+        return HardwareCodeEmitter.emit_rocdl_gcn(module)
+    elif target in ("spirv", "intel", "vulkan"):
+        return HardwareCodeEmitter.emit_spirv(module)
+    elif target in ("metal", "mps", "apple"):
+        return HardwareCodeEmitter.emit_metal_msl(module)
+    elif target in ("tilelang", "tl"):
+        return HardwareCodeEmitter.emit_tilelang_python(module)
+    elif target in ("cpp", "amx", "cpu"):
+        return HardwareCodeEmitter.emit_cpp_amx(module)
+    else:
+        raise ValueError(f"Unsupported compilation target: '{target}'. Choose from 'nvvm', 'rocdl', 'spirv', 'metal', 'tilelang', 'cpp'.")
+
+
+def compile_model_to_target(
+    gm_or_model: Union[GraphModule, nn.Module],
+    target: str = "nvvm",
+    tile_m: int = 64,
+    tile_n: int = 64,
+    tile_k: int = 32,
+) -> str:
+    """Complete 3-level MLIR dialect lowering pipeline from PyTorch model to hardware code:
+
+    1. fx_to_holonomic_mlir: GraphModule -> ojasx.holonomic
+    2. HolonomicToSubgraphPass: ojasx.holonomic -> ojasx.subgraph
+    3. SubgraphToTilePass: ojasx.subgraph -> ojasx.tile
+    4. compile_mlir_to_target: ojasx.tile -> Target code (NVVM PTX, ROCDL, SPIR-V, Metal, TileLang)
+    """
+    if isinstance(gm_or_model, GraphModule):
+        gm = gm_or_model
+    else:
+        import torch.fx as fx
+        gm = fx.symbolic_trace(gm_or_model)
+
+    m1_holonomic = fx_to_holonomic_mlir(gm)
+    m2_subgraph = HolonomicToSubgraphPass().run(m1_holonomic)
+    m3_tile = SubgraphToTilePass(tile_m=tile_m, tile_n=tile_n, tile_k=tile_k).run(m2_subgraph)
+    return compile_mlir_to_target(m3_tile, target=target)

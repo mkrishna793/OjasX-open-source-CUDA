@@ -99,5 +99,9 @@ from .fused_cross_entropy import (
     holonomic_fused_linear_cross_entropy,
     HolonomicFusedLinearCrossEntropy,
 )
+from .mlir_dialects import (
+    compile_model_to_target,
+    compile_mlir_to_target,
+)
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
