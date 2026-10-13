@@ -31,6 +31,7 @@ reports/*.json
 !reports/TWO_LAPTOP_PHYSICAL_MESH_REPORT.json
 !reports/COLAB_T4_GPU_OOM_PROOF_REPORT.json
 !reports/OJASX_V04_TEST_DATABASE_MATRIX.json
+!reports/OJASX_V05_TEST_DATABASE_MATRIX.json
 .agents/
 ojasx2/csrc/*.dylib
 ojasx2/csrc/*.so
