@@ -90,5 +90,14 @@ from .mesh_hal import (
     MeshRemoteWorkerServer,
     plan_mesh_partitions,
 )
+from .dagger_attention import (
+    dagger_attention,
+    holonomic_dagger_attention,
+    holonomic_dagger_attention_with_lse,
+)
+from .fused_cross_entropy import (
+    holonomic_fused_linear_cross_entropy,
+    HolonomicFusedLinearCrossEntropy,
+)
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

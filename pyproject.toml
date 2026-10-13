@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ojasx-verified-core"
-version = "0.4.0"
+version = "0.5.0"
 description = "OjasX: Open-source math-level PyTorch training & memory-optimization compiler with Lean/Rocq specs, C++/Metal kernels, and TCP sharding"
 readme = "README.md"
 requires-python = ">=3.9"
