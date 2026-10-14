@@ -536,7 +536,18 @@ xychart-beta
     bar [2482, 5100, 10400, 16200]
     bar [692, 1420, 2900, 4800]
 ```
-*(First bar: Standard PyTorch; Second bar: OjasX v0.6.0)*
+### E. Run the Auto-Hardware Benchmark on Your Machine (1-Command)
+
+OjasX includes an automatic hardware- and RAM-aware benchmarking utility that detects your active accelerator (NVIDIA CUDA, AMD ROCm, Apple Metal MPS, Intel XPU, or CPU), measures available memory, selects the largest fitting Transformer LLM tier (125M up to 13B+), and records peak activation tape memory, 0-byte persistent `.grad` consumption, and forward+backward step runtime:
+
+```bash
+# Auto-detect hardware accelerator, RAM, and largest fitting LLM tier:
+python tools/auto_hardware_benchmark.py
+
+# Or explicitly customize model tier, precision, and training mode:
+python tools/auto_hardware_benchmark.py --tier 1b --dtype fp32 --optimizer sgd
+python tools/auto_hardware_benchmark.py --tier 7b --dtype bf16 --optimizer adamw --lora
+```
 
 ---
 
@@ -580,6 +591,7 @@ OjasX-open-source-CUDA/
 │   ├── test_backendbench_matrix.py   # Meta BackendBench real-world model suites (including 1.04B LLM)
 │   └── test_review_regressions.py    # Regression tests for mathematical pullbacks and edge cases
 ├── tools/                          # Developer & Verification CLI Utilities
+│   ├── auto_hardware_benchmark.py  # Automatic hardware & RAM-aware community benchmark runner
 │   ├── test_universal_recipe.py    # End-to-end multi-device universal recipe verification script
 │   ├── verify_static_and_symbolic.py # 8-gate static, symbolic, MLIR SSA, and formal proof validator
 │   └── self_audit_complete.py      # Complete AST symbol resolver and cross-module auditor
