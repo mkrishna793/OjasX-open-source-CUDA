@@ -509,3 +509,44 @@ def test_stress_symplectic_deep_chain_with_frozen_modules(device: str):
                 assert p.grad is not None and not torch.isnan(p.grad).any()
             for p in g.parameters():
                 assert p.grad is None
+
+
+def test_stress_symplectic_with_smart_router_optimize_model():
+    """Verify that smart_router.optimize_model seamlessly preserves SymplecticTransformerBlock."""
+    from ojasx2.smart_router import optimize_model
+    from ojasx2.grad_free_optimizer import HolonomicGradFreeOptimizer
+
+    class HybridSymplecticModel(nn.Module):
+        def __init__(self, dim: int = 32, depth: int = 4):
+            super().__init__()
+            self.in_proj = nn.Linear(dim, dim)
+            self.blocks = nn.ModuleList([
+                SymplecticTransformerBlock(dim=dim, num_heads=2) for _ in range(depth)
+            ])
+            self.out_head = nn.Linear(dim, 10)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            h = self.in_proj(x)
+            for block in self.blocks:
+                h = block(h)
+            return self.out_head(h)
+
+    model = HybridSymplecticModel(dim=32, depth=4)
+    optimized_model, report = optimize_model(model, batch_tokens=16)
+
+    # Verify symplectic blocks are preserved and not mutated internally
+    for block in optimized_model.blocks:
+        assert isinstance(block, SymplecticTransformerBlock)
+        assert isinstance(block.f, nn.Sequential)
+        assert isinstance(block.g, nn.Sequential)
+
+    optimizer = HolonomicGradFreeOptimizer(optimized_model.parameters(), lr=1e-3, algorithm="adamw")
+
+    x = torch.randn(2, 8, 32, requires_grad=True)
+    out = optimized_model(x)
+    loss = out.sum()
+    loss.backward()
+
+    assert x.grad is not None and not torch.isnan(x.grad).any()
+    optimizer.step()
+    optimizer.zero_grad()

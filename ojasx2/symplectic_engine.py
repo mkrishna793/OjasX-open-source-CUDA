@@ -244,23 +244,27 @@ class SymplecticTransformerBlock(nn.Module):
         dim: int,
         num_heads: int = 4,
         hidden_dim: Optional[int] = None,
+        split_dim: bool = True,
     ) -> None:
         super().__init__()
         self.dim = dim
         self.num_heads = num_heads
-        self.hidden_dim = hidden_dim or (dim * 4)
+        self.split_dim = split_dim
+        b_dim = (dim // 2) if (split_dim and dim % 2 == 0) else dim
+        self.branch_dim = b_dim
+        self.hidden_dim = hidden_dim or (b_dim * 4)
 
         self.f = nn.Sequential(
-            nn.LayerNorm(dim),
-            nn.Linear(dim, dim),
+            nn.LayerNorm(b_dim),
+            nn.Linear(b_dim, b_dim),
             nn.SiLU(),
-            nn.Linear(dim, dim),
+            nn.Linear(b_dim, b_dim),
         )
         self.g = nn.Sequential(
-            nn.LayerNorm(dim),
-            nn.Linear(dim, self.hidden_dim),
+            nn.LayerNorm(b_dim),
+            nn.Linear(b_dim, self.hidden_dim),
             nn.SiLU(),
-            nn.Linear(self.hidden_dim, dim),
+            nn.Linear(self.hidden_dim, b_dim),
         )
 
     def forward(
@@ -269,7 +273,7 @@ class SymplecticTransformerBlock(nn.Module):
         q2: Optional[torch.Tensor] = None,
     ) -> Union[Tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
         if q2 is None:
-            half = q1.shape[-1] // 2
+            half = self.branch_dim if q1.shape[-1] == 2 * self.branch_dim else q1.shape[-1] // 2
             a, b = q1[..., :half], q1[..., half:]
             y1, y2 = symplectic_coupling_chain(a, b, [self])
             return torch.cat([y1, y2], dim=-1)

@@ -53,6 +53,7 @@ from .tile_hal import (
 )
 from .dagger_attention import HolonomicDaggerAttention
 from .fused_cross_entropy import HolonomicFusedLinearCrossEntropy
+from .symplectic_engine import SymplecticCoupling, SymplecticTransformerBlock
 
 
 class HolonomicFusedLinearCrossEntropyHead(HolonomicFusedLinearCrossEntropy):
@@ -246,6 +247,8 @@ class SmartWorkloadRouter:
                     HolonomicDaggerAttention,
                     HolonomicFusedLinearCrossEntropy,
                     HolonomicUnifiedTransformerMLP,
+                    SymplecticCoupling,
+                    SymplecticTransformerBlock,
                 ),
             )
             or isinstance(m, nn.GLU)
@@ -387,6 +390,8 @@ class SmartWorkloadRouter:
                     HolonomicFusedLinearCrossEntropy,
                     HolonomicFusedLinearCrossEntropyHead,
                     HolonomicUnifiedTransformerMLP,
+                    SymplecticCoupling,
+                    SymplecticTransformerBlock,
                 ),
             ):
                 continue
