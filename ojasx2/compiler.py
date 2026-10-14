@@ -183,3 +183,97 @@ def make_backend(accuracy='strict', minimum_inner=128, memory_policy='native',
 
     backend.evidence = evidence
     return backend
+
+
+# =============================================================================
+# 3-Dialect MLIR Compiler Pipeline & Executable Dispatcher
+# =============================================================================
+
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+import torch.fx as fx
+
+from .mlir_dialects import (
+    MLIRModule,
+    HolonomicToSubgraphPass,
+    SubgraphToTilePass,
+    HardwareCodeEmitter,
+    fx_to_holonomic_mlir,
+    lower_fx_to_mlir_artifacts,
+    _trace_or_build_fx_graph,
+    _LoweredHolonomicInterpreter,
+    MLIRCompiledExecutable,
+)
+
+
+@dataclass
+class CompilationArtifact:
+    """Artifact containing verified 3-dialect MLIR representations and target hardware code."""
+    target: str
+    holonomic_mlir: str
+    subgraph_mlir: str
+    tile_mlir: str
+    target_code: str
+    op_count: int
+
+
+def compile_module_to_target_code(module: MLIRModule, target: str = "nvvm") -> str:
+    """Emits hardware assembly or C++/Python code from an ojasx.tile MLIR module."""
+    target_norm = target.lower().strip()
+    if target_norm in ("nvvm", "cuda", "ptx"):
+        return HardwareCodeEmitter.emit_nvvm_ptx(module)
+    if target_norm in ("rocdl", "rocm", "amd", "hsaco", "gcn"):
+        return HardwareCodeEmitter.emit_rocdl_gcn(module)
+    if target_norm in ("spirv", "intel", "xpu", "vulkan"):
+        return HardwareCodeEmitter.emit_spirv(module)
+    if target_norm in ("metal", "msl", "mps", "apple"):
+        return HardwareCodeEmitter.emit_metal_msl(module)
+    if target_norm in ("cpp", "avx2", "cpu", "amx"):
+        return HardwareCodeEmitter.emit_cpp_amx(module)
+    if target_norm in ("tilelang", "python", "tl"):
+        return HardwareCodeEmitter.emit_tilelang_python(module)
+    raise ValueError(f"Unsupported compilation target: {target}")
+
+
+def compile_model_to_target(
+    model: torch.nn.Module,
+    target: str = "nvvm",
+    example_inputs: Optional[Sequence[torch.Tensor]] = None,
+) -> str:
+    """Compiles a PyTorch model through the 3-dialect MLIR pipeline and returns target hardware code."""
+    executable = compile_mlir_executable(model, target=target, example_inputs=example_inputs)
+    return executable.target_code
+
+
+def compile_mlir_executable(
+    model: torch.nn.Module,
+    target: str = "auto",
+    example_inputs: Optional[Sequence[torch.Tensor]] = None,
+    tile_m: int = 64,
+    tile_n: int = 64,
+    tile_k: int = 32,
+) -> MLIRCompiledExecutable:
+    """Compiles a PyTorch model into an executable `MLIRCompiledExecutable`."""
+    from .mlir_dialects import compile_mlir_executable as _dialects_compile
+    return _dialects_compile(model, target=target, tile_m=tile_m, tile_n=tile_n, tile_k=tile_k)
+
+
+def _ojasx_dynamo_backend(
+    gm: fx.GraphModule,
+    example_inputs: List[torch.Tensor],
+) -> Callable[..., Any]:
+    target = "nvvm" if any(t.is_cuda for t in example_inputs if isinstance(t, torch.Tensor)) else "auto"
+    executable = compile_mlir_executable(gm, target=target, example_inputs=example_inputs)
+    return executable
+
+
+def register_ojasx_compiler_backend() -> None:
+    try:
+        from torch._dynamo import register_backend
+        register_backend(name="ojasx_mlir", compiler_fn=_ojasx_dynamo_backend)
+    except Exception:
+        pass
+
+
+register_ojasx_compiler_backend()
+

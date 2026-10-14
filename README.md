@@ -78,7 +78,15 @@ import torch.nn as nn
 import ojasx2
 from ojasx2.grad_free_optimizer import HolonomicGradFreeOptimizer
 
-# Step 1: Pick any available accelerator ("cuda", "mps", "xpu", or "cpu")
+# Step 1: Define or load any standard PyTorch model (LLM, ViT, CNN, or MLP)
+class MyPyTorchModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(nn.Linear(128, 256), nn.GELU(), nn.Linear(256, 128))
+
+    def forward(self, x):
+        return self.net(x)
+
 device = (
     "cuda" if torch.cuda.is_available()
     else "mps" if (hasattr(torch.backends, "mps") and torch.backends.mps.is_available())
@@ -105,12 +113,14 @@ optimizer = HolonomicGradFreeOptimizer(
 
 # Step 4: Train normally — weights update in-place during loss.backward()!
 model.train()
-for inputs, targets in dataloader:
-    inputs, targets = inputs.to(device), targets.to(device)
-    optimizer.zero_grad()
-    loss = model(inputs, targets) if hasattr(model, "lm_head") else loss_fn(model(inputs), targets)
-    loss.backward()      # Applies parameter updates layer-by-layer & frees .grad immediately
-    optimizer.step()
+inputs = torch.randn(8, 128, device=device)
+targets = torch.randn(8, 128, device=device)
+loss_fn = nn.MSELoss()
+
+optimizer.zero_grad()
+loss = loss_fn(model(inputs), targets)
+loss.backward()      # Applies parameter updates layer-by-layer & frees .grad immediately
+optimizer.step()
 ```
 
 ---

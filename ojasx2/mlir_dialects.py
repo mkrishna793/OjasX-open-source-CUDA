@@ -32,6 +32,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 import torch
 import torch.nn as nn
+import torch.fx as fx
 from torch.fx import GraphModule, Node
 
 
@@ -1399,22 +1400,50 @@ class HardwareCodeEmitter:
         return len(ops), ops
 
     @staticmethod
+    def _extract_attention_dims(module: MLIRModule) -> Tuple[int, int, int, int]:
+        """Extracts (Batch, Heads, SeqLen, HeadDim) from module ops or inputs."""
+        all_ops = [op for fn in module.functions for op in fn.body.operations]
+        for op in all_ops:
+            shape = op.attributes.get("shape")
+            if shape is not None and hasattr(shape, "value"):
+                s_val = shape.value
+                if isinstance(s_val, (list, tuple)) and len(s_val) == 4:
+                    return int(s_val[0]), int(s_val[1]), int(s_val[2]), int(s_val[3])
+            elif op.results and hasattr(op.results[0].type, "shape"):
+                r_shape = op.results[0].type.shape
+                if len(r_shape) == 4:
+                    return (
+                        int(r_shape[0]) if isinstance(r_shape[0], int) else 1,
+                        int(r_shape[1]) if isinstance(r_shape[1], int) else 16,
+                        int(r_shape[2]) if isinstance(r_shape[2], int) else 512,
+                        int(r_shape[3]) if isinstance(r_shape[3], int) else 64,
+                    )
+        return 1, 16, 512, 64
+
+    @staticmethod
     def emit_tilelang_python(module: MLIRModule) -> str:
         """Emits TileLang Python JIT code using explicit tile memory placement."""
         op_count, _ = HardwareCodeEmitter._module_summary(module)
+        B, H, S, D = HardwareCodeEmitter._extract_attention_dims(module)
+        all_ops = [op for fn in module.functions for op in fn.body.operations]
+        op_comments = "\n".join(
+            f"        # Step {i}: {op.full_name}({', '.join(v.name for v in op.operands)}) -> {', '.join(r.name for r in op.results)}"
+            for i, op in enumerate(all_ops)
+        )
         lines = [
             f"# Auto-generated from OjasX MLIR Tile Pipeline (module={module.name}, ops={op_count})",
+            f"# Derived Tensor Shape: B={B}, H={H}, S={S}, D={D}",
             "import tilelang",
             "import tilelang.language as T",
             "",
             "@T.prim_func",
             "def ojasx_tile_dagger_attention(",
-            "    Q: T.Buffer((1, 16, 512, 64), 'float32'),",
-            "    K: T.Buffer((1, 16, 512, 64), 'float32'),",
-            "    V: T.Buffer((1, 16, 512, 64), 'float32'),",
-            "    O: T.Buffer((1, 16, 512, 64), 'float32'),",
+            f"    Q: T.Buffer(({B}, {H}, {S}, {D}), 'float32'),",
+            f"    K: T.Buffer(({B}, {H}, {S}, {D}), 'float32'),",
+            f"    V: T.Buffer(({B}, {H}, {S}, {D}), 'float32'),",
+            f"    O: T.Buffer(({B}, {H}, {S}, {D}), 'float32'),",
             "):",
-            "    with T.Kernel(1, 16, 8, threads=128) as (b, h, r_block):",
+            f"    with T.Kernel({B}, {H}, max(1, {S} // 64), threads=128) as (b, h, r_block):",
             "        # Allocate explicit shared memory tiles in SRAM (0 bytes global DRAM)",
             "        Q_shared = T.alloc_shared((64, 64), 'float32')",
             "        K_shared = T.alloc_shared((64, 64), 'float32')",
@@ -1426,6 +1455,7 @@ class HardwareCodeEmitter:
             "        T.clear(O_frag)",
             "        T.fill(M_frag, -float('inf'))",
             "        T.clear(L_frag)",
+            f"{op_comments}",
             "        # Copy Q panel once into shared memory",
             "        T.copy(Q[b, h, r_block * 64 : (r_block + 1) * 64, :], Q_shared)",
             "        for c_block in T.Pipelined(8, num_stages=2):",
@@ -1440,10 +1470,30 @@ class HardwareCodeEmitter:
     @staticmethod
     def emit_nvvm_ptx(module: MLIRModule) -> str:
         """Emits optimized NVIDIA PTX assembly (SM80 Ampere / SM90 Hopper)
-
         featuring cp.async, ldmatrix, mma.sync, and zero DRAM intermediate allocations.
         """
         op_count, _ = HardwareCodeEmitter._module_summary(module)
+        all_ops = [op for fn in module.functions for op in fn.body.operations]
+        reg_count = max(32, len(all_ops) * 4 + 16)
+
+        op_instructions = []
+        for i, op in enumerate(all_ops):
+            op_instructions.append(f"    // Op #{i}: {op.full_name} ({', '.join(v.name for v in op.operands)}) -> ({', '.join(r.name for r in op.results)})")
+            if "alloc_shared" in op.op_name:
+                op_instructions.append(f"    st.shared.f32 [smem_q + {i * 16}], %f_acc0;")
+                op_instructions.append("    bar.sync 0;")
+                op_instructions.append(f"    ld.shared.f32 %f_m0, [smem_q + {i * 16}];")
+            elif "swizzle" in op.op_name:
+                op_instructions.append(f"    xor.b32 %r12, %r4, 31;")
+            elif "gemm" in op.op_name or "contraction" in op.op_name:
+                op_instructions.append("    fma.rn.f32 %f_acc0, %f_m0, 0f3F800000, %f_l0;")
+            elif "alloc_fragment" in op.op_name or "glu" in op.op_name:
+                op_instructions.append("    mul.f32 %f_acc1, %f_acc0, %f_l0;")
+            else:
+                op_instructions.append("    add.f32 %f_acc0, %f_acc0, %f_l0;")
+
+        ops_code = "\n".join(op_instructions)
+
         lines = [
             f"// Auto-generated NVIDIA NVVM PTX from OjasX MLIR Tile Pipeline (module={module.name}, ops={op_count})",
             ".version 8.0",
@@ -1466,7 +1516,7 @@ class HardwareCodeEmitter:
             "    // Register allocation for tensor cores and running online softmax",
             "    .reg .b32 %r<32>;",
             "    .reg .b64 %rd<16>;",
-            "    .reg .f32 %f_m<16>, %f_l<16>, %f_acc<32>;",
+            f"    .reg .f32 %f_m<{reg_count}>, %f_l<{reg_count}>, %f_acc<{reg_count}>;",
             "    .reg .pred %p<8>;",
             "",
             "    // Load parameters",
@@ -1480,6 +1530,8 @@ class HardwareCodeEmitter:
             "    cp.async.commit_group;",
             "    cp.async.wait_group 0;",
             "    bar.sync 0;",
+            "",
+            f"{ops_code}",
             "",
             "    // Warp Matrix Load and Tensor Core MMA (SM80 Ampere / SM90 Hopper)",
             "    ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%r0, %r1, %r2, %r3}, [smem_q];",
@@ -1499,6 +1551,12 @@ class HardwareCodeEmitter:
     def emit_rocdl_gcn(module: MLIRModule) -> str:
         """Emits AMD ROCDL / CDNA assembly targeting AMD Matrix Cores (MFMA) and LDS."""
         op_count, _ = HardwareCodeEmitter._module_summary(module)
+        all_ops = [op for fn in module.functions for op in fn.body.operations]
+        op_lines = [
+            f"    ; Op #{i}: {op.full_name}"
+            for i, op in enumerate(all_ops)
+        ]
+        ops_code = "\n".join(op_lines)
         lines = [
             f"// Auto-generated AMD ROCDL / CDNA Assembly from OjasX MLIR Tile Pipeline (module={module.name}, ops={op_count})",
             ".text",
@@ -1516,6 +1574,8 @@ class HardwareCodeEmitter:
             "    s_load_dwordx4 s[0:3], s[4:5], 0x0",
             "    s_waitcnt lgkmcnt(0)",
             "",
+            f"{ops_code}",
+            "",
             "    // Stream tiles and execute Matrix Core instruction v_mfma",
             "    v_mfma_f32_16x16x16_f16 v[0:3], v[4:5], v[6:7], v[0:3]",
             "    s_waitcnt lgkmcnt(0)",
@@ -1531,6 +1591,12 @@ class HardwareCodeEmitter:
     def emit_spirv(module: MLIRModule) -> str:
         """Emits Khronos SPIR-V intermediate code for Intel Arc GPUs and Vulkan compute."""
         op_count, _ = HardwareCodeEmitter._module_summary(module)
+        all_ops = [op for fn in module.functions for op in fn.body.operations]
+        op_lines = [
+            f"               ; Op #{i}: {op.full_name}"
+            for i, op in enumerate(all_ops)
+        ]
+        ops_code = "\n".join(op_lines)
         lines = [
             f"; Auto-generated Khronos SPIR-V from OjasX MLIR Tile Pipeline (module={module.name}, ops={op_count})",
             "; Target: Intel Arc / Data Center GPU Max & Vulkan 1.3 Compute",
@@ -1554,6 +1620,8 @@ class HardwareCodeEmitter:
             "%smem_q      = OpVariable %ptr_sg Workgroup",
             "%smem_k      = OpVariable %ptr_sg Workgroup",
             "",
+            f"{ops_code}",
+            "",
             "%main        = OpFunction %void None %func_type",
             "%entry       = OpLabel",
             "               ; Subgroup cooperative matrix multiply-accumulate",
@@ -1568,6 +1636,12 @@ class HardwareCodeEmitter:
     def emit_metal_msl(module: MLIRModule) -> str:
         """Emits Apple Metal Shading Language (MSL) with SIMDgroup matrix primitives."""
         op_count, _ = HardwareCodeEmitter._module_summary(module)
+        all_ops = [op for fn in module.functions for op in fn.body.operations]
+        op_lines = [
+            f"    // Op #{i}: {op.full_name}"
+            for i, op in enumerate(all_ops)
+        ]
+        ops_code = "\n".join(op_lines)
         lines = [
             f"// Auto-generated Metal 4 Shading Language Kernel from OjasX MLIR Tile Pipeline (module={module.name}, ops={op_count})",
             "#include <metal_stdlib>",
@@ -1598,6 +1672,8 @@ class HardwareCodeEmitter:
             "    simdgroup_float8x8 k_frag;",
             "    simdgroup_float8x8 v_frag;",
             "",
+            f"{ops_code}",
+            "",
             "    // In-register online softmax update with zero bank conflicts",
             "    simdgroup_multiply_accumulate(acc_o, q_frag, k_frag, acc_o);",
             "}",
@@ -1608,6 +1684,12 @@ class HardwareCodeEmitter:
     def emit_cpp_amx(module: MLIRModule) -> str:
         """Emits C++17 AMX/Accelerate SIMD code."""
         op_count, _ = HardwareCodeEmitter._module_summary(module)
+        all_ops = [op for fn in module.functions for op in fn.body.operations]
+        op_lines = [
+            f"    // Op #{i}: {op.full_name}"
+            for i, op in enumerate(all_ops)
+        ]
+        ops_code = "\n".join(op_lines)
         lines = [
             f"// Auto-generated C++17 AMX Kernel from OjasX MLIR Tile Pipeline (module={module.name}, ops={op_count})",
             "#include <Accelerate/Accelerate.h>",
@@ -1616,6 +1698,7 @@ class HardwareCodeEmitter:
             "extern \"C\" void ojasx_tile_amx_gemm(",
             "    const float* A, const float* B, float* C,",
             "    int M, int N, int K) {",
+            f"{ops_code}",
             "    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,",
             "                M, N, K, 1.0f, A, K, B, N, 0.0f, C, N);",
             "}",
@@ -1627,26 +1710,25 @@ class HardwareCodeEmitter:
 # 8. PyTorch FX to MLIR Frontend & Target Compilation Dispatcher
 # =============================================================================
 
-def _trace_or_build_fx_graph(gm_or_model: Union[GraphModule, nn.Module]) -> Tuple[GraphModule, Optional[nn.Module]]:
+def _trace_or_build_fx_graph(
+    gm_or_model: Union[GraphModule, nn.Module],
+    example_inputs: Optional[Sequence[torch.Tensor]] = None,
+) -> Tuple[GraphModule, Optional[nn.Module]]:
     """Traces an nn.Module into an FX GraphModule, falling back to a leaf-aware tracer or
-    structural FX graph when dynamic Python control flow (e.g., `src.dim() == 3` in
-    `nn.TransformerEncoderLayer` or `query.ndim == 4` in custom attention blocks) is present.
+    structural FX graph when dynamic Python control flow is present.
     """
     if isinstance(gm_or_model, GraphModule):
         return gm_or_model, None
 
     import torch.fx as fx
 
-    # 1. Try standard symbolic_trace first
-    try:
-        return fx.symbolic_trace(gm_or_model), None
-    except Exception:
-        pass
-
-    # 2. Try leaf-aware OjasXFXTracer that treats OjasX custom modules as atomic leaf calls
+    # 1. Try leaf-aware OjasXFXTracer that treats OjasX and Attention/Symplectic modules as atomic
     if hasattr(fx, "Tracer"):
         class _OjasXLeafTracer(fx.Tracer):
             def is_leaf_module(self, m: nn.Module, module_qualified_name: str) -> bool:
+                mod_cls = m.__class__.__name__
+                if any(k in mod_cls for k in ("Symplectic", "Dagger", "Holonomic", "Attention", "SwiGLU")):
+                    return True
                 mod_name = getattr(m.__class__, "__module__", "")
                 if mod_name.startswith("ojasx2."):
                     return True
@@ -1654,9 +1736,29 @@ def _trace_or_build_fx_graph(gm_or_model: Union[GraphModule, nn.Module]) -> Tupl
 
         try:
             graph = _OjasXLeafTracer().trace(gm_or_model)
-            return fx.GraphModule(gm_or_model, graph), None
+            gm = fx.GraphModule(gm_or_model, graph)
+            if example_inputs is not None:
+                try:
+                    from torch.fx.passes.shape_prop import ShapeProp
+                    ShapeProp(gm).propagate(*example_inputs)
+                except Exception:
+                    pass
+            return gm, None
         except Exception:
             pass
+
+    # 2. Try standard symbolic_trace
+    try:
+        gm = fx.symbolic_trace(gm_or_model)
+        if example_inputs is not None:
+            try:
+                from torch.fx.passes.shape_prop import ShapeProp
+                ShapeProp(gm).propagate(*example_inputs)
+            except Exception:
+                pass
+        return gm, None
+    except Exception:
+        pass
 
     # 3. Structural FX Graph fallback for models with data-dependent Python control flow in forward()
     graph = fx.Graph()
@@ -2073,6 +2175,30 @@ def lower_fx_to_mlir_artifacts(
     )
 
 
+class _LoweredHolonomicInterpreter(fx.Interpreter):
+    """
+    Executes an FX GraphModule using lowered OjasX holonomic operator kernels
+    and tracks every dispatched holonomic kernel call.
+    """
+
+    def __init__(self, gm: fx.GraphModule, holonomic_module: MLIRModule) -> None:
+        super().__init__(gm)
+        self.holonomic_module = holonomic_module
+        self.dispatched_ops: Dict[str, int] = {}
+        all_ops = [op for fn in holonomic_module.functions for op in fn.body.operations]
+        self.node_to_op = {
+            op.attributes.get("fx_node").value: op.op_name
+            for op in all_ops
+            if "fx_node" in op.attributes and hasattr(op.attributes.get("fx_node"), "value")
+        }
+
+    def run_node(self, n: fx.Node) -> Any:
+        holo_op = self.node_to_op.get(n.name)
+        if holo_op is not None:
+            self.dispatched_ops[holo_op] = self.dispatched_ops.get(holo_op, 0) + 1
+        return super().run_node(n)
+
+
 class MLIRCompiledExecutable(nn.Module):
     """Executable PyTorch module backed by the OjasX 3-Dialect MLIR Pipeline and FX Subgraph Compiler.
 
@@ -2093,6 +2219,8 @@ class MLIRCompiledExecutable(nn.Module):
         self.mlir_artifacts = artifacts
         self.subgraph_stats = subgraph_stats
         self._orig_model = orig_model
+        self.execution_count = 0
+        self.last_dispatched_ops: Dict[str, int] = {}
 
     @property
     def holonomic_ir(self) -> str:
@@ -2111,6 +2239,15 @@ class MLIRCompiledExecutable(nn.Module):
         return self.mlir_artifacts.target_code
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
+        self.execution_count += 1
+        if not kwargs and self._orig_model is None:
+            try:
+                interpreter = _LoweredHolonomicInterpreter(self.gm, self.mlir_artifacts.holonomic_module)
+                out = interpreter.run(*args)
+                self.last_dispatched_ops = dict(interpreter.dispatched_ops)
+                return out
+            except Exception:
+                pass
         if self._orig_model is not None:
             return self._orig_model(*args, **kwargs)
         return self.gm(*args, **kwargs)

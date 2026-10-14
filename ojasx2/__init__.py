@@ -17,6 +17,10 @@ from .symplectic_engine import (
     SymplecticCouplingFunction,
     SymplecticCoupling,
     SymplecticTransformerBlock,
+    SymplecticCausalAttention,
+    SymplecticSwiGLUFFN,
+    SymplecticStack,
+    SymplecticMetrics,
     symplectic_coupling,
     symplectic_coupling_chain,
     audit_symplectic_reversibility,
@@ -67,6 +71,7 @@ from .tile_hal import (
     tilelang_emit_universal_source,
     HolonomicBitPackedLinear,
     HolonomicNativeRMSNorm,
+    HolonomicUnifiedTransformerMLP,
 )
 from .smart_router import (
     SmartLayerDecision,
@@ -102,6 +107,7 @@ from .dagger_attention import (
     dagger_attention,
     holonomic_dagger_attention,
     holonomic_dagger_attention_with_lse,
+    HolonomicDaggerAttention,
 )
 from .fused_cross_entropy import (
     holonomic_fused_linear_cross_entropy,

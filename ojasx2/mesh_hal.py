@@ -33,15 +33,24 @@ _DTYPE_TO_CODE = {
 _CODE_TO_DTYPE = {v: k for k, v in _DTYPE_TO_CODE.items()}
 
 
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+
+
 @dataclass(frozen=True)
 class MeshNodeSpec:
-    node_id: str
-    chip_class: str
-    free_memory_gb: float
-    compute_tflops: float
+    node_id: Any = "0"
+    chip_class: str = "generic_silicon"
+    free_memory_gb: float = 16.0
+    compute_tflops: float = 10.0
     device: str = "cpu"
     host: str = "127.0.0.1"
     port: int = 0  # 0: local device; positive port: preloaded remote partition worker
+    is_local: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "node_id", str(self.node_id))
+        if self.is_local:
+            object.__setattr__(self, "port", 0)
 
 
 @dataclass
@@ -556,13 +565,25 @@ class HolonomicVirtualMeshEngine(nn.Module):
 
     def __init__(
         self,
-        model: nn.Sequential,
-        nodes: List[MeshNodeSpec],
-        compress_boundary: bool = True,
+        model: Optional[Union[nn.Sequential, Sequence[nn.Module]]] = None,
+        nodes: Optional[List[MeshNodeSpec]] = None,
+        compress_boundary: Optional[bool] = None,
         timeout: float = 30.0,
+        *,
+        stages: Optional[Sequence[nn.Module]] = None,
+        compress_wire: Optional[bool] = None,
     ) -> None:
         super().__init__()
-        if len(nodes) < 2:
+        if model is None and stages is not None:
+            model = stages
+        if isinstance(model, (list, tuple)):
+            model = nn.Sequential(*model)
+        if compress_wire is not None:
+            compress_boundary = compress_wire
+        if compress_boundary is None:
+            compress_boundary = True
+
+        if nodes is None or len(nodes) < 2:
             raise ValueError("HolonomicVirtualMeshEngine requires at least 2 MeshNodeSpec nodes")
         if len({n.node_id for n in nodes}) != len(nodes):
             raise ValueError("Mesh node IDs must be unique")
@@ -661,8 +682,28 @@ class HolonomicVirtualMeshEngine(nn.Module):
         for client in self.remote_clients.values():
             client._exchange(b"\x06")
 
+    @property
+    def stats(self) -> MeshTransferTelemetry:
+        return self.telemetry
+
+    def forward_backward(
+        self, x: torch.Tensor, loss_fn: Optional[Callable[[torch.Tensor], torch.Tensor]] = None
+    ) -> torch.Tensor:
+        out = self.forward(x)
+        if loss_fn is not None:
+            loss = loss_fn(out)
+            loss.backward()
+        return out
+
     def close(self) -> None:
         if self.channel is not None:
             self.channel.close()
+            self.channel = None
         for client in self.remote_clients.values():
             client.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass

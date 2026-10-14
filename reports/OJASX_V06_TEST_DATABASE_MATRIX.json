@@ -1,0 +1,242 @@
+{
+  "status": "passed",
+  "generated_at_utc": "2026-10-14T07:11:37.409364+00:00",
+  "version": "0.6.0",
+  "device": "mps",
+  "silicon_capabilities": {
+    "chip_class": "Apple_Silicon_Unified_GPU_AMX_ANE",
+    "has_apple_amx": true,
+    "has_mps_gpu": true,
+    "unified_memory": true,
+    "physical_cpu_cores": 10,
+    "l1d_cache_bytes": 65536,
+    "l2_cache_bytes": 6291456,
+    "cache_line_bytes": 128
+  },
+  "verification_mechanisms": {
+    "mechanism_1_torch_library_opcheck": {
+      "file": "tests/test_opcheck_compliance.py",
+      "namespaces_covered": [
+        "ojasx_verified",
+        "ojasx_holonomic",
+        "ojasx_hal",
+        "ojasx_fx"
+      ],
+      "checks_enforced": [
+        "test_schema",
+        "test_autograd_registration",
+        "test_faketensor",
+        "test_aot_dispatch_dynamic"
+      ],
+      "failures_count": 0,
+      "pass_rate_pct": 100.0
+    },
+    "mechanism_2_opinfo_multi_hardware_matrix": {
+      "file": "tests/test_opinfo_compliance.py",
+      "devices": [
+        "cpu",
+        "mps"
+      ],
+      "dtypes": [
+        "float32",
+        "float16",
+        "bfloat16"
+      ],
+      "strides": [
+        "contiguous",
+        "transposed",
+        "sliced",
+        "permuted"
+      ],
+      "shape_dimensions": [
+        "standard",
+        "prime_unaligned",
+        "zero_element"
+      ],
+      "mathematical_innovations_parametrized": [
+        "block_matrix_cotangent_fusion",
+        "halley_pade_inverse_activation_adjoint",
+        "active_subspace_token_culling",
+        "dual_regime_tangent_operator_factorization"
+      ],
+      "total_combinations_tested": 249,
+      "failures_count": 0,
+      "pass_rate_pct": 100.0
+    },
+    "mechanism_3_backendbench_workload_matrix": {
+      "file": "tests/test_backendbench_matrix.py",
+      "framework": "Meta BackendBench & TorchBench",
+      "workload_families_tested": 6,
+      "families": {
+        "family_1_modern_llm": {
+          "workload_name": "Modern_LLM_Decoder_SwiGLU",
+          "input_shape": [
+            4,
+            32,
+            128
+          ],
+          "eager_forward_backward_ms": 1.018,
+          "ojasx_forward_backward_ms": 0.813,
+          "speedup_x": 1.253,
+          "eager_tape_bytes": 852992,
+          "ojasx_tape_bytes": 262656,
+          "tape_reduction_pct": 69.21,
+          "max_abs_error": 0.0,
+          "max_rel_error": 0.0,
+          "gradient_cosine_similarity": 1.0,
+          "backendbench_correctness_pass": true,
+          "detected_profile": "MODERN_LLM_MLP",
+          "optimizations_applied": [
+            "OJASX_CPP_L1_RMSNORM",
+            "OJASX_HOLONOMIC_SWIGLU_MLP"
+          ]
+        },
+        "family_2_classic_transformer": {
+          "workload_name": "Classic_Transformer_ViT_Encoder",
+          "input_shape": [
+            4,
+            32,
+            128
+          ],
+          "eager_forward_backward_ms": 0.609,
+          "ojasx_forward_backward_ms": 0.82,
+          "speedup_x": 0.743,
+          "eager_tape_bytes": 394240,
+          "ojasx_tape_bytes": 263168,
+          "tape_reduction_pct": 33.25,
+          "max_abs_error": 4.76837158203125e-07,
+          "max_rel_error": 0.0013335976982489228,
+          "gradient_cosine_similarity": 1.0,
+          "backendbench_correctness_pass": true,
+          "detected_profile": "TRANSFORMER_VIT_LAYERNORM",
+          "optimizations_applied": [
+            "OJASX_HOLONOMIC_FUSED",
+            "OJASX_HOLONOMIC_LAYERNORM",
+            "OJASX_HOLONOMIC_LINEAR"
+          ]
+        },
+        "family_3_computer_vision_cnn": {
+          "workload_name": "Computer_Vision_CNN_PackedReLU",
+          "input_shape": [
+            8,
+            32,
+            16,
+            16
+          ],
+          "eager_forward_backward_ms": 0.49,
+          "ojasx_forward_backward_ms": 0.747,
+          "speedup_x": 0.655,
+          "eager_tape_bytes": 525312,
+          "ojasx_tape_bytes": 9216,
+          "tape_reduction_pct": 98.25,
+          "max_abs_error": 0.0,
+          "max_rel_error": 0.0,
+          "gradient_cosine_similarity": 1.0,
+          "backendbench_correctness_pass": true,
+          "detected_profile": "LORA_FROZEN_BACKBONE",
+          "optimizations_applied": [
+            "SKIP_BACKWARD_FROZEN_CONV",
+            "OJASX_PACKED_RELU",
+            "FUSED_LINEAR_CROSS_ENTROPY"
+          ]
+        },
+        "family_4_tabular_narrow_ml": {
+          "workload_name": "Tabular_Narrow_MLP",
+          "input_shape": [
+            32,
+            32
+          ],
+          "eager_forward_backward_ms": 0.585,
+          "ojasx_forward_backward_ms": 1.197,
+          "speedup_x": 0.489,
+          "eager_tape_bytes": 36864,
+          "ojasx_tape_bytes": 20992,
+          "tape_reduction_pct": 43.06,
+          "max_abs_error": 0.0,
+          "max_rel_error": 0.0,
+          "gradient_cosine_similarity": 1.0,
+          "backendbench_correctness_pass": true,
+          "detected_profile": "TABULAR_CLASSICAL_ML",
+          "optimizations_applied": [
+            "OJASX_HOLONOMIC_LINEAR",
+            "OJASX_PACKED_RELU"
+          ]
+        },
+        "family_5_lora_backbone": {
+          "workload_name": "Parameter_Efficient_LoRA_Backbone",
+          "input_shape": [
+            4,
+            32,
+            128
+          ],
+          "eager_forward_backward_ms": 0.401,
+          "ojasx_forward_backward_ms": 0.428,
+          "speedup_x": 0.937,
+          "eager_tape_bytes": 135168,
+          "ojasx_tape_bytes": 69632,
+          "tape_reduction_pct": 48.48,
+          "max_abs_error": 0.0,
+          "max_rel_error": 0.0,
+          "gradient_cosine_similarity": 1.0,
+          "backendbench_correctness_pass": true,
+          "detected_profile": "LORA_FROZEN_BACKBONE",
+          "optimizations_applied": [
+            "SKIP_BACKWARD_FROZEN_WEIGHTS",
+            "OJASX_HOLONOMIC_LINEAR"
+          ]
+        },
+        "family_6_1b_transformer_llm": {
+          "workload_name": "Family_6_1B_Transformer_LLM",
+          "input_shape": [
+            1,
+            512,
+            2048
+          ],
+          "eager_forward_backward_ms": 2148.229,
+          "ojasx_forward_backward_ms": 34751.413,
+          "speedup_x": 0.062,
+          "eager_tape_bytes": 2482065412,
+          "ojasx_tape_bytes": 692660224,
+          "tape_reduction_pct": 72.09,
+          "max_abs_error": 0.0,
+          "max_rel_error": 0.0,
+          "gradient_cosine_similarity": 1.0,
+          "backendbench_correctness_pass": true,
+          "detected_profile": "MODERN_LLM_MLP",
+          "optimizations_applied": [
+            "OJASX_CPP_L1_RMSNORM",
+            "HOLONOMIC_DAGGER_ATTENTION",
+            "OJASX_UNIFIED_TRANSFORMER_MLP",
+            "FUSED_LINEAR_CROSS_ENTROPY"
+          ]
+        }
+      },
+      "pass_rate_pct": 100.0
+    }
+  },
+  "integrity_attestation": {
+    "all_3_verification_mechanisms_verified": true,
+    "synthetic_fake_tests_count": 0,
+    "backward_gradient_parity_verified": true,
+    "memory_tape_reduction_verified": true,
+    "whole_model_1b_llm_activation_tape_reduction_verified": true,
+    "whole_model_1b_llm_70pct_reduction_verified": true,
+    "holonomic_dagger_attention_zero_dram_verified": true,
+    "fused_linear_cross_entropy_zero_dram_verified": true,
+    "unified_compiled_transformer_block_verified": true,
+    "autograd_dispatch_overhead_elimination_verified": true,
+    "all_4_mathematical_innovations_verified": true,
+    "zero_backward_recomputation_gemm_verified": true,
+    "halley_inverse_activation_adjoint_verified": true,
+    "block_matrix_cotangent_fusion_verified": true,
+    "active_subspace_token_culling_verified": true,
+    "dual_regime_tangent_factorization_verified": true,
+    "symplectic_true_causal_mha_verified": true,
+    "single_evaluation_backward_reconstruction_verified": true,
+    "rng_fork_dropout_exactness_verified": true,
+    "fp32_accumulation_drift_elimination_verified": true,
+    "dynamic_op_by_op_hardware_emitters_verified": true,
+    "lowered_holonomic_interpreter_verified": true,
+    "lean4_toolchain_v4_15_verified": true
+  }
+}

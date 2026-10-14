@@ -47,6 +47,8 @@ from ojasx2.symplectic_engine import (
     SymplecticCouplingFunction,
     SymplecticCoupling,
     SymplecticTransformerBlock,
+    SymplecticCausalAttention,
+    SymplecticSwiGLUFFN,
     symplectic_coupling,
     symplectic_coupling_chain,
     audit_symplectic_reversibility,
@@ -537,8 +539,8 @@ def test_stress_symplectic_with_smart_router_optimize_model():
     # Verify symplectic blocks are preserved and not mutated internally
     for block in optimized_model.blocks:
         assert isinstance(block, SymplecticTransformerBlock)
-        assert isinstance(block.f, nn.Sequential)
-        assert isinstance(block.g, nn.Sequential)
+        assert isinstance(block.f, (nn.Sequential, SymplecticCausalAttention))
+        assert isinstance(block.g, (nn.Sequential, SymplecticSwiGLUFFN))
 
     optimizer = HolonomicGradFreeOptimizer(optimized_model.parameters(), lr=1e-3, algorithm="adamw")
 
