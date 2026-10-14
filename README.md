@@ -1,4 +1,5 @@
-# OjasX v0.6.0 — The Open-Source Mathematical & MLIR Compiler for Training PyTorch Models on Any Hardware
+# OjasX v0.6.0 — The Open-Source CUDA. 
+# A new Mathematical & MLIR Compiler for Training PyTorch Models on Any Hardware
 
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.4%2B-ee4c2c.svg?logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
