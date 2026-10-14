@@ -9,7 +9,7 @@
 [![Universal Hardware](https://img.shields.io/badge/Hardware-NVIDIA_CUDA_%7C_AMD_ROCm_%7C_Intel_SPIR--V_%7C_Apple_Silicon_%7C_CPU-purple.svg)]()
 
 > ### 🌟 Project Motto
-> **"Democratizing Deep Learning Compute: Breaking the Hardware Monopoly through Pure Mathematics, Category Theory, and Open Compiler Infrastructure."**
+> **"Democratizing Deep Learning Compute: Breaking the Hardware Monopoly through Pure Mathematics,and Open Compiler Infrastructure."**
 
 ---
 
