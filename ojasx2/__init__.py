@@ -13,6 +13,14 @@ from .nonlinear import layernorm_linear_chain, layernorm_chain_cost
 from .nonlinear import gram_layernorm_linear_chain, gram_layernorm_chain_cost
 from .radial_core import rms_core_linear_chain, rms_core_cost
 from .reversible import reversible_coupling_chain
+from .symplectic_engine import (
+    SymplecticCouplingFunction,
+    SymplecticCoupling,
+    SymplecticTransformerBlock,
+    symplectic_coupling,
+    symplectic_coupling_chain,
+    audit_symplectic_reversibility,
+)
 
 from .holonomic_math_compiler import (
     holonomic_linear,
@@ -100,6 +108,15 @@ from .fused_cross_entropy import (
     HolonomicFusedLinearCrossEntropy,
 )
 from .mlir_dialects import (
+    MLIRPipelineArtifacts,
+    MLIRCompiledExecutable,
+    HolonomicToSubgraphPass,
+    SubgraphToTilePass,
+    fx_to_holonomic_mlir,
+    lower_fx_to_mlir_artifacts,
+    compile_mlir_executable,
+    mlir_holonomic_backend,
+    detect_default_mlir_target,
     compile_model_to_target,
     compile_mlir_to_target,
 )

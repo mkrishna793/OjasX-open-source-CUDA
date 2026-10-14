@@ -100,10 +100,11 @@ def _dagger_attention_forward_tiled(
             m_block = scores.amax(dim=-1)
             m_new = torch.maximum(m_i, m_block)
 
-            alpha = torch.exp(m_i - m_new)
+            safe_m_new = torch.where(torch.isfinite(m_new), m_new, torch.zeros_like(m_new))
+            alpha = torch.exp(m_i - safe_m_new)
             alpha = torch.nan_to_num(alpha, nan=0.0)
 
-            p_block = torch.exp(scores - m_new.unsqueeze(-1))
+            p_block = torch.exp(scores - safe_m_new.unsqueeze(-1))
             if is_causal and c_end - 1 >= r_start:
                 p_block = p_block.masked_fill(mask, 0.0)
 
@@ -206,7 +207,8 @@ def _dagger_attention_backward_tiled(
                 scores = scores.masked_fill(mask, -float("inf"))
 
             # Reconstruct exact attention probabilities tile P_{ij} = exp(S_{ij} - L_i)
-            p_block = torch.exp(scores - lse_block.unsqueeze(-1))
+            safe_lse = torch.where(torch.isfinite(lse_block), lse_block, torch.zeros_like(lse_block))
+            p_block = torch.exp(scores - safe_lse.unsqueeze(-1))
             if has_causal_mask:
                 p_block = p_block.masked_fill(mask, 0.0)
 
@@ -405,6 +407,8 @@ class HolonomicDaggerAttention(nn.Module):
         bias: bool = True,
         is_causal: bool = False,
         batch_first: bool = True,
+        device: Any = None,
+        dtype: Any = None,
     ) -> None:
         super().__init__()
         self.num_heads = num_heads
@@ -412,6 +416,8 @@ class HolonomicDaggerAttention(nn.Module):
         self.is_causal = is_causal
         self.batch_first = batch_first
         self.dropout = dropout
+
+        factory_kwargs = {"device": device, "dtype": dtype}
 
         if q_proj is not None and k_proj is not None and v_proj is not None:
             self.q_proj = q_proj
@@ -432,27 +438,33 @@ class HolonomicDaggerAttention(nn.Module):
                 embed_dim = 256
             self.embed_dim = embed_dim
             self.head_dim = head_dim if head_dim is not None else (embed_dim // num_heads)
-            self.q_proj = nn.Linear(embed_dim, self.num_heads * self.head_dim, bias=bias)
-            self.k_proj = nn.Linear(embed_dim, self.num_kv_heads * self.head_dim, bias=bias)
-            self.v_proj = nn.Linear(embed_dim, self.num_kv_heads * self.head_dim, bias=bias)
-            self.o_proj = nn.Linear(self.num_heads * self.head_dim, embed_dim, bias=bias)
+            self.q_proj = nn.Linear(embed_dim, self.num_heads * self.head_dim, bias=bias, **factory_kwargs)
+            self.k_proj = nn.Linear(embed_dim, self.num_kv_heads * self.head_dim, bias=bias, **factory_kwargs)
+            self.v_proj = nn.Linear(embed_dim, self.num_kv_heads * self.head_dim, bias=bias, **factory_kwargs)
+            self.o_proj = nn.Linear(self.num_heads * self.head_dim, embed_dim, bias=bias, **factory_kwargs)
 
     def forward(
         self,
         query: torch.Tensor,
         key: Optional[torch.Tensor] = None,
         value: Optional[torch.Tensor] = None,
-        is_causal: Optional[bool] = None,
+        key_padding_mask: Optional[torch.Tensor] = None,
         need_weights: Optional[bool] = None,
+        attn_mask: Optional[torch.Tensor] = None,
+        average_attn_weights: bool = True,
+        is_causal: Optional[bool] = None,
         rotary_cos: Optional[torch.Tensor] = None,
         rotary_sin: Optional[torch.Tensor] = None,
+        **kwargs: Any,
     ):
         """Forward pass for multi-head attention.
 
         Supports query input of shape [B, S, D] (or [S, B, D] if batch_first=False),
-        or direct [B, H, S, d] tensor projection.
+        or direct [B, H, S, d] tensor projection. Fully compatible with nn.MultiheadAttention.
         """
         causal = is_causal if is_causal is not None else self.is_causal
+        if attn_mask is not None and getattr(attn_mask, "is_causal", False):
+            causal = True
 
         # Case 1: Already projected 4D inputs [B, H, S, d]
         if query.ndim == 4 and key is not None and value is not None and key.ndim == 4:
@@ -482,14 +494,15 @@ class HolonomicDaggerAttention(nn.Module):
 
         # Apply RoPE if provided
         if rotary_cos is not None and rotary_sin is not None:
-            # Simple standard RoPE application
             d_half = self.head_dim // 2
+            cos_eff = torch.cat([rotary_cos, rotary_cos], dim=-1) if rotary_cos.shape[-1] == d_half else rotary_cos
+            sin_eff = torch.cat([rotary_sin, rotary_sin], dim=-1) if rotary_sin.shape[-1] == d_half else rotary_sin
             q1, q2 = q_proj[..., :d_half], q_proj[..., d_half : 2 * d_half]
             k1, k2 = k_proj[..., :d_half], k_proj[..., d_half : 2 * d_half]
             q_rot = torch.cat([-q2, q1], dim=-1)
             k_rot = torch.cat([-k2, k1], dim=-1)
-            q_proj = q_proj * rotary_cos + q_rot * rotary_sin
-            k_proj = k_proj * rotary_cos + k_rot * rotary_sin
+            q_proj = q_proj * cos_eff + q_rot * sin_eff
+            k_proj = k_proj * cos_eff + k_rot * sin_eff
 
         attn_out = holonomic_dagger_attention(q_proj, k_proj, v_proj, is_causal=causal)
         # [B, H, Sq, d] -> [B, Sq, H * d]

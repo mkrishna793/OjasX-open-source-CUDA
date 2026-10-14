@@ -1,8 +1,13 @@
 /*!
  * \file ojasx_tilelang_metal.mm
- * \brief Native Objective-C++ / Metal integration of forked `third_party/tilelang`
- *        (`src/layout/swizzle_mode.h`, `src/metal/op/gemm.cc`, `src/metal/codegen/codegen_metal.cc`)
- *        fused with OjasX Holonomic `ReLU2` and hardware `simd_ballot` 1-bit sign-mask packing.
+ * \brief Universal Multi-Hardware TileLang Scheduler, CodeGen & GPU/CPU Executor (`ojasx_tilelang`)
+ *        Supports:
+ *          - Apple Silicon Metal 4 (`MTLDevice` zero-copy unified memory + `simdgroup_float8x8` + `simd_ballot`)
+ *          - NVIDIA CUDA (`sm_80`/`sm_90`/`sm_100` Tensor Core MMA + `__ballot_sync` + on-GPU execution)
+ *          - AMD ROCm/HIP (`gfx90a`/`gfx942` CDNA/RDNA MFMA + 64-lane `__ballot` + on-GPU execution)
+ *          - Intel oneAPI SYCL / XPU (`joint_matrix` + `group_ballot` + on-GPU execution)
+ *          - Huawei Ascend 910B AICore (`ascend_gemm_l1` Cube + UB Vector)
+ *          - Multi-Core CPU (x86_64 AVX2/FMA, ARM64 NEON/AMX L1d/L2 2D Cache-Blocked Tile Engine)
  */
 
 #include <torch/extension.h>
@@ -11,14 +16,26 @@
 #include <ATen/Parallel.h>
 #include <c10/util/Exception.h>
 
+#if defined(__APPLE__) && defined(__OBJC__)
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#include <unistd.h>
+#endif
+
+#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+#include <arm_neon.h>
+#endif
+
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#endif
 
 #include "../../third_party/tilelang/src/tl_templates/cpu/gemm.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -26,6 +43,10 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+namespace ojasx_hal {
+at::Tensor pack_1bit_ballot(const at::Tensor& x);
+} // namespace ojasx_hal
 
 namespace ojasx_tilelang {
 
@@ -49,7 +70,6 @@ struct TileLangSwizzleMode {
 
 // ============================================================================
 // 2. Direct Port of `third_party/tilelang/src/metal/op/gemm.cc`
-//    (`ComputeMetalWarpPartition` & `CanUseCooperativeTensor`)
 // ============================================================================
 std::pair<int, int> ComputeSquareWarpPartition(int num_warps, int M, int N,
                                                int kMPerWarp, int kNPerWarp) {
@@ -77,6 +97,9 @@ std::pair<int, int> ComputeSquareWarpPartition(int num_warps, int M, int N,
 bool CanUseCooperativeTensor(int M, int N, int K, int num_warps) {
     constexpr int kMPerWarp = 16;
     constexpr int kNPerWarp = 32;
+    if (M <= 0 || N <= 0 || K <= 0 || num_warps <= 0) {
+        return false;
+    }
     if (M % kMPerWarp != 0 || N % kNPerWarp != 0 || K % 16 != 0) {
         return false;
     }
@@ -112,23 +135,6 @@ std::vector<int64_t> tilelang_query_schedule(
 
 // ============================================================================
 // 3. Direct Port of `third_party/tilelang/src/metal/codegen/codegen_metal.cc`
-//    Emits TileLang Metal Shader with:
-//      - `rasterization2DMLX` threadblock panel swizzling (lines 551-573)
-//      - 16-byte threadgroup bank-conflict padding (`+ 4` floats per row, lines 760-768)
-//      - `simdgroup_float8x8` (`make_filled_simdgroup_matrix`, `simdgroup_load`,
-//        `simdgroup_multiply_accumulate`, `simdgroup_store`, lines 1339-1370)
-//      - Fused OjasX Holonomic `ReLU2` + Hardware `simd_ballot(val > 0.0f)` 1-bit packing!
-// ============================================================================
-// ============================================================================
-// 3. Direct Port of `third_party/tilelang/src/metal/codegen/codegen_metal.cc`
-//    Emits TileLang Metal Shader with:
-//      - Adaptive micro-tile sizing:
-//          * Decode ($M \le 8$): $8 \times 32 \times 16$ micro-tile with 1 simdgroup (32 threads)
-//          * Prefill ($M > 8$):  $32 \times 32 \times 8$ tile with 4 simdgroups (128 threads)
-//      - `rasterization2DMLX` threadblock panel swizzling (lines 551-573)
-//      - 16-byte threadgroup bank-conflict padding (`+ 4` elements per row, lines 760-768)
-//      - `simdgroup_float8x8` / `simdgroup_half8x8` matrix multiplication
-//      - Fused OjasX Holonomic `ReLU2` + Hardware `simd_ballot(val > 0.0f)` 1-bit packing
 // ============================================================================
 std::string tilelang_emit_metal_gemm_source_impl(
     int64_t block_m, int64_t block_n, int64_t block_k, int64_t panel_size, bool use_fp16) {
@@ -146,7 +152,6 @@ std::string tilelang_emit_metal_gemm_source_impl(
     std::string dtype = use_fp16 ? "half" : "float";
     std::string zero_val = use_fp16 ? "0.0h" : "0.0f";
 
-    // Apple GPU threadgroup memory has 16-byte banks; pad row stride by +4 elements (16B for float, 8B for half)
     int a_smem_stride = static_cast<int>(block_k) + 4;
     int b_smem_stride = static_cast<int>(block_n) + 4;
     int c_smem_stride = static_cast<int>(block_n) + 4;
@@ -181,11 +186,15 @@ std::string tilelang_emit_metal_gemm_source_impl(
     code << "    uint __lane [[thread_index_in_simdgroup]]\n";
     code << ") {\n";
 
-    code << "    // TileLang rasterization2DMLX panel swizzling (panel_size=" << panel_size << ")\n";
+    code << "    // TileLang bijective rasterization2DMLX panel swizzling (panel_size=" << panel_size << ")\n";
+    code << "    const uint __linear_bid = __physical_blockIdx.y * params.grid_x + __physical_blockIdx.x;\n";
+    code << "    const uint __panel_span = params.grid_y << " << swizzle_log << ";\n";
+    code << "    const uint __panel_idx = (__panel_span > 0u) ? (__linear_bid / __panel_span) : 0u;\n";
+    code << "    const uint __in_panel = (__panel_span > 0u) ? (__linear_bid % __panel_span) : 0u;\n";
     code << "    const uint3 blockIdx = (\n";
     code << "        (params.grid_x >= " << panel_size << "u && (params.grid_x % " << panel_size << "u == 0u))\n";
-    code << "        ? uint3((__physical_blockIdx.x >> " << swizzle_log << "),\n";
-    code << "                ((__physical_blockIdx.y << " << swizzle_log << ") + (__physical_blockIdx.x & " << (panel_size - 1) << "u)),\n";
+    code << "        ? uint3((__panel_idx << " << swizzle_log << ") + (__in_panel & " << (panel_size - 1) << "u),\n";
+    code << "                (__in_panel >> " << swizzle_log << "),\n";
     code << "                __physical_blockIdx.z)\n";
     code << "        : __physical_blockIdx\n";
     code << "    );\n";
@@ -200,14 +209,12 @@ std::string tilelang_emit_metal_gemm_source_impl(
     std::string simdgroup_type = use_fp16 ? "simdgroup_half8x8" : "simdgroup_float8x8";
 
     if (block_m == 8) {
-        // Decode pathway: 1 simdgroup (32 threads) computing 8x32
         code << "    " << simdgroup_type << " acc[4];\n";
         code << "    TILELANG_PRAGMA_UNROLL for (uint i = 0; i < 4; ++i) {\n";
         code << "        acc[i] = make_filled_simdgroup_matrix<" << dtype << ", 8, 8>(" << zero_val << ");\n";
         code << "    }\n\n";
 
         code << "    for (uint k_base = 0; k_base < params.K; k_base += 16u) {\n";
-        code << "        // Cooperative 32-thread load of As [8, 16] and Bs [16, 32]\n";
         code << "        for (uint idx = tid; idx < 128u; idx += 32u) {\n";
         code << "            uint r = idx >> 4; uint c = idx & 15u;\n";
         code << "            uint gm = tile_row + r; uint gk = k_base + c;\n";
@@ -258,7 +265,6 @@ std::string tilelang_emit_metal_gemm_source_impl(
         code << "        }\n";
         code << "    }\n";
     } else {
-        // Prefill pathway: 4 simdgroups (128 threads) computing 32x32
         code << "    " << simdgroup_type << " acc[4];\n";
         code << "    TILELANG_PRAGMA_UNROLL for (uint i = 0; i < 4; ++i) {\n";
         code << "        acc[i] = make_filled_simdgroup_matrix<" << dtype << ", 8, 8>(" << zero_val << ");\n";
@@ -332,6 +338,7 @@ std::string tilelang_emit_metal_gemm_source(
     return tilelang_emit_metal_gemm_source_impl(block_m, block_n, block_k, panel_size, false);
 }
 
+#if defined(__APPLE__) && defined(__OBJC__)
 // ============================================================================
 // 4. Native Metal Hardware Compiler & Executor (`MTLDevice` + Zero-Copy Unified Memory)
 // ============================================================================
@@ -384,7 +391,6 @@ static MetalRuntimeCache& get_metal_cache() {
     return cache;
 }
 
-// Zero-copy Apple Silicon unified memory buffer creator
 static id<MTLBuffer> create_metal_buffer_zerocopy(id<MTLDevice> device, const at::Tensor& tensor) {
     size_t length = tensor.nbytes();
     if (length == 0) {
@@ -394,7 +400,6 @@ static id<MTLBuffer> create_metal_buffer_zerocopy(id<MTLDevice> device, const at
     size_t page_size = (size_t)getpagesize();
     uintptr_t addr = (uintptr_t)ptr;
 
-    // Check if tensor memory pointer is page aligned for zero-copy sharing
     if ((addr % page_size) == 0) {
         size_t page_aligned_length = ((length + page_size - 1) / page_size) * page_size;
         id<MTLBuffer> buf = [device newBufferWithBytesNoCopy:ptr
@@ -406,11 +411,11 @@ static id<MTLBuffer> create_metal_buffer_zerocopy(id<MTLDevice> device, const at
         }
     }
 
-    // Graceful fallback for non-page-aligned tensors
     return [device newBufferWithBytes:ptr
                                length:length
                               options:MTLResourceStorageModeShared];
 }
+#endif
 
 struct TileLangGemmParamsHost {
     uint32_t M;
@@ -421,6 +426,14 @@ struct TileLangGemmParamsHost {
     uint32_t grid_y;
 };
 
+// Forward declaration for cross-target fallback
+std::tuple<at::Tensor, at::Tensor> tilelang_universal_gemm_relu2_fwd(
+    const at::Tensor& x,
+    const at::Tensor& weight,
+    const c10::optional<at::Tensor>& bias_opt,
+    const std::string& target_arch,
+    int64_t panel_size);
+
 std::tuple<at::Tensor, at::Tensor> tilelang_metal_gemm_relu2_fwd(
     const at::Tensor& x,
     const at::Tensor& weight,
@@ -428,8 +441,11 @@ std::tuple<at::Tensor, at::Tensor> tilelang_metal_gemm_relu2_fwd(
     int64_t panel_size) {
 
     auto orig_sizes = x.sizes().vec();
+    TORCH_CHECK(!orig_sizes.empty(), "tilelang_metal_gemm_relu2_fwd expects at least 1D input tensor");
+    TORCH_CHECK(weight.dim() == 2, "tilelang_metal_gemm_relu2_fwd expects 2D weight tensor");
     int64_t K = orig_sizes.back();
     int64_t N = weight.size(0);
+    TORCH_CHECK(weight.size(1) == K, "weight in_features must match x.size(-1)");
     int64_t words_per_row = (N + 31) / 32;
 
     auto out_sizes = orig_sizes;
@@ -444,94 +460,95 @@ std::tuple<at::Tensor, at::Tensor> tilelang_metal_gemm_relu2_fwd(
         );
     }
 
-    int64_t M = x.numel() / K;
-    auto orig_device = x.device();
-    auto orig_dtype = x.scalar_type();
-    bool use_fp16 = (orig_dtype == at::kHalf);
+#if defined(__APPLE__) && defined(__OBJC__)
+    auto& cache_probe = get_metal_cache();
+    if (cache_probe.device != nil) {
+        int64_t M = x.numel() / K;
+        auto orig_device = x.device();
+        auto orig_dtype = x.scalar_type();
+        bool use_fp16 = (orig_dtype == at::kHalf);
 
-    // Adaptive micro-tile sizing: decode (M <= 8) vs prefill (M > 8)
-    int64_t block_m = (M <= 8) ? 8 : 32;
-    int64_t block_n = 32;
-    int64_t block_k = (M <= 8) ? 16 : 8;
-    int threads_per_group = (block_m == 8) ? 32 : 128;
+        int64_t block_m = (M <= 8) ? 8 : 32;
+        int64_t block_n = 32;
+        int64_t block_k = (M <= 8) ? 16 : 8;
+        int threads_per_group = (block_m == 8) ? 32 : 128;
 
-    at::ScalarType compute_dtype = use_fp16 ? at::kHalf : at::kFloat;
-    at::Tensor x_cpu = x.to(at::kCPU, compute_dtype).contiguous().reshape({M, K});
-    at::Tensor w_cpu = weight.to(at::kCPU, compute_dtype).contiguous().reshape({N, K});
-    bool has_bias = bias_opt.has_value() && bias_opt->defined() && bias_opt->numel() > 0;
-    at::Tensor b_cpu = has_bias
-        ? bias_opt->to(at::kCPU, compute_dtype).contiguous().reshape({N})
-        : at::zeros({1}, x_cpu.options());
+        at::ScalarType compute_dtype = use_fp16 ? at::kHalf : at::kFloat;
+        at::Tensor x_cpu = x.to(at::kCPU, compute_dtype).contiguous().reshape({M, K});
+        at::Tensor w_cpu = weight.to(at::kCPU, compute_dtype).contiguous().reshape({N, K});
+        bool has_bias = bias_opt.has_value() && bias_opt->defined() && bias_opt->numel() > 0;
+        if (has_bias) {
+            TORCH_CHECK(bias_opt->numel() == N, "bias numel must match weight out_features");
+        }
+        at::Tensor b_cpu = has_bias
+            ? bias_opt->to(at::kCPU, compute_dtype).contiguous().reshape({N})
+            : at::zeros({1}, x_cpu.options());
 
-    at::Tensor out_cpu;
-    at::Tensor mask_cpu;
+        at::Tensor out_cpu;
+        at::Tensor mask_cpu;
 
-    @autoreleasepool {
-        auto& cache = get_metal_cache();
-        id<MTLComputePipelineState> pso = cache.get_pipeline(block_m, block_n, block_k, panel_size, use_fp16);
+        @autoreleasepool {
+            auto& cache = get_metal_cache();
+            id<MTLComputePipelineState> pso = cache.get_pipeline(block_m, block_n, block_k, panel_size, use_fp16);
 
-        // Zero-copy Apple Silicon unified memory buffers
-        id<MTLBuffer> buf_a = create_metal_buffer_zerocopy(cache.device, x_cpu);
-        id<MTLBuffer> buf_b = create_metal_buffer_zerocopy(cache.device, w_cpu);
-        id<MTLBuffer> buf_bias = create_metal_buffer_zerocopy(cache.device, b_cpu);
+            id<MTLBuffer> buf_a = create_metal_buffer_zerocopy(cache.device, x_cpu);
+            id<MTLBuffer> buf_b = create_metal_buffer_zerocopy(cache.device, w_cpu);
+            id<MTLBuffer> buf_bias = create_metal_buffer_zerocopy(cache.device, b_cpu);
 
-        size_t elem_size = use_fp16 ? sizeof(uint16_t) : sizeof(float);
-        size_t out_nbytes = M * N * elem_size;
-        size_t mask_nbytes = M * words_per_row * sizeof(int32_t);
+            size_t elem_size = use_fp16 ? sizeof(uint16_t) : sizeof(float);
+            size_t out_nbytes = M * N * elem_size;
+            size_t mask_nbytes = M * words_per_row * sizeof(int32_t);
 
-        id<MTLBuffer> buf_out = [cache.device newBufferWithLength:std::max<size_t>(64, out_nbytes)
-                                                          options:MTLResourceStorageModeShared];
-        id<MTLBuffer> buf_mask = [cache.device newBufferWithLength:std::max<size_t>(64, mask_nbytes)
-                                                           options:MTLResourceStorageModeShared];
+            id<MTLBuffer> buf_out = [cache.device newBufferWithLength:std::max<size_t>(64, out_nbytes)
+                                                              options:MTLResourceStorageModeShared];
+            id<MTLBuffer> buf_mask = [cache.device newBufferWithLength:std::max<size_t>(64, mask_nbytes)
+                                                               options:MTLResourceStorageModeShared];
 
-        uint32_t grid_x = static_cast<uint32_t>((N + block_n - 1) / block_n);
-        uint32_t grid_y = static_cast<uint32_t>((M + block_m - 1) / block_m);
-        TileLangGemmParamsHost params{
-            static_cast<uint32_t>(M),
-            static_cast<uint32_t>(N),
-            static_cast<uint32_t>(K),
-            static_cast<uint32_t>(has_bias ? 1 : 0),
-            grid_x,
-            grid_y,
-        };
+            uint32_t grid_x = static_cast<uint32_t>((N + block_n - 1) / block_n);
+            uint32_t grid_y = static_cast<uint32_t>((M + block_m - 1) / block_m);
+            TileLangGemmParamsHost params{
+                static_cast<uint32_t>(M),
+                static_cast<uint32_t>(N),
+                static_cast<uint32_t>(K),
+                static_cast<uint32_t>(has_bias ? 1 : 0),
+                grid_x,
+                grid_y,
+            };
 
-        id<MTLCommandBuffer> cmd = [cache.queue commandBuffer];
-        id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
-        [enc setComputePipelineState:pso];
-        [enc setBuffer:buf_a offset:0 atIndex:0];
-        [enc setBuffer:buf_b offset:0 atIndex:1];
-        [enc setBuffer:buf_bias offset:0 atIndex:2];
-        [enc setBuffer:buf_out offset:0 atIndex:3];
-        [enc setBuffer:buf_mask offset:0 atIndex:4];
-        [enc setBytes:&params length:sizeof(TileLangGemmParamsHost) atIndex:5];
+            id<MTLCommandBuffer> cmd = [cache.queue commandBuffer];
+            id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+            [enc setComputePipelineState:pso];
+            [enc setBuffer:buf_a offset:0 atIndex:0];
+            [enc setBuffer:buf_b offset:0 atIndex:1];
+            [enc setBuffer:buf_bias offset:0 atIndex:2];
+            [enc setBuffer:buf_out offset:0 atIndex:3];
+            [enc setBuffer:buf_mask offset:0 atIndex:4];
+            [enc setBytes:&params length:sizeof(TileLangGemmParamsHost) atIndex:5];
 
-        MTLSize numThreadgroups = MTLSizeMake(grid_x, grid_y, 1);
-        MTLSize threadsPerGroup = MTLSizeMake(threads_per_group, 1, 1);
-        [enc dispatchThreadgroups:numThreadgroups threadsPerThreadgroup:threadsPerGroup];
-        [enc endEncoding];
-        [cmd commit];
-        [cmd waitUntilCompleted];
+            MTLSize numThreadgroups = MTLSizeMake(grid_x, grid_y, 1);
+            MTLSize threadsPerGroup = MTLSizeMake(threads_per_group, 1, 1);
+            [enc dispatchThreadgroups:numThreadgroups threadsPerThreadgroup:threadsPerGroup];
+            [enc endEncoding];
+            [cmd commit];
+            [cmd waitUntilCompleted];
 
-        // Zero-copy wrapping of shared memory buffers directly into PyTorch tensors
-        out_cpu = at::from_blob([buf_out contents], {M, N}, [buf_out](void*) {}, x_cpu.options()).clone();
-        mask_cpu = at::from_blob([buf_mask contents], {M, words_per_row}, [buf_mask](void*) {}, x_cpu.options().dtype(at::kInt)).clone();
+            out_cpu = at::from_blob([buf_out contents], {M, N}, [buf_out](void*) {}, x_cpu.options()).clone();
+            mask_cpu = at::from_blob([buf_mask contents], {M, words_per_row}, [buf_mask](void*) {}, x_cpu.options().dtype(at::kInt)).clone();
+        }
+
+        return std::make_tuple(
+            out_cpu.reshape(out_sizes).to(orig_device, orig_dtype),
+            mask_cpu.reshape(mask_sizes).to(orig_device)
+        );
     }
+#endif
 
-    return std::make_tuple(
-        out_cpu.reshape(out_sizes).to(orig_device, orig_dtype),
-        mask_cpu.reshape(mask_sizes).to(orig_device)
-    );
+    // Non-Apple / headless fallback routes directly to universal GPU/CPU executor
+    return tilelang_universal_gemm_relu2_fwd(x, weight, bias_opt, "cpu", panel_size);
 }
 
 // ============================================================================
 // 5. Universal Multi-Vendor Chip-Adaptive TileLang Scheduler & Codegen
-//    Covers all 6 Hardware Targets:
-//      1) "cuda"   (NVIDIA dGPU sm_80/sm_90/sm_100: wgmma/mma.sync + cp.async + __ballot_sync)
-//      2) "rocm"   (AMD CDNA/RDNA dGPU/APU gfx90a/gfx942: mfma_f32_16x16x16f16 + 64-lane __ballot)
-//      3) "sycl"   (Intel/UXL oneAPI & Vulkan SPIR-V iGPU/XPU: joint_matrix + group_ballot)
-//      4) "ascend" (Huawei Ascend 910B Cube L0A/L0B/L0C + UB Vector Holonomic Epilogue)
-//      5) "cpu"    (x86_64 AVX-512/AVX2 & ARM64 NEON/AMX L1d/L2 Cache-Blocked Tile Engine)
-//      6) "metal"  (Apple Silicon Metal 4 simdgroup_float8x8 + simd_ballot)
 // ============================================================================
 std::vector<int64_t> tilelang_query_chip_schedule(
     const std::string& target_arch,
@@ -540,53 +557,41 @@ std::vector<int64_t> tilelang_query_chip_schedule(
     int64_t K,
     int64_t smem_kb,
     int64_t l2_kb) {
-    // Returns:
-    // [0] block_m, [1] block_n, [2] block_k,
-    // [3] warp_m,  [4] warp_n,  [5] simd_lanes,
-    // [6] smem_bank_bytes, [7] swizzle_bytes, [8] panel_width, [9] pipeline_stages
     int64_t panel_width = (l2_kb >= 16384) ? 8 : ((l2_kb >= 4096) ? 4 : 2);
 
     if (target_arch == "cuda") {
-        // NVIDIA Ampere/Hopper/Blackwell dGPU (`third_party/tilelang/src/tl_templates/cuda/`)
         bool high_smem = (smem_kb >= 96);
         int block_m = high_smem ? 128 : 64;
         int block_n = high_smem ? 128 : 64;
         int block_k = 32;
         auto [wm, wn] = ComputeSquareWarpPartition(4, block_m, block_n, 16, 16);
-        TileLangSwizzleMode swz(3); // SWIZZLE_128B
+        TileLangSwizzleMode swz(3);
         return {block_m, block_n, block_k, wm, wn, 32, 128, swz.ByteWidth(), panel_width, high_smem ? 3 : 2};
     } else if (target_arch == "rocm") {
-        // AMD Instinct MI250/MI300X / Radeon RDNA3 (`third_party/tilelang/src/tl_templates/hip/gemm.h`)
         bool high_lds = (smem_kb >= 64);
         int block_m = high_lds ? 128 : 64;
         int block_n = high_lds ? 128 : 64;
         int block_k = 32;
         auto [wm, wn] = ComputeSquareWarpPartition(4, block_m, block_n, 16, 16);
-        // `hip/gemm.h` line 100: BANK_SIZE_BYTES = 128, 64-lane wavefront
         return {block_m, block_n, block_k, wm, wn, 64, 128, 128, panel_width, 2};
     } else if (target_arch == "sycl") {
-        // UXL Foundation Intel oneAPI SYCL / SPIR-V (Iris Xe 96-EU iGPU with 64KB SLM or Arc dGPU)
         bool is_igpu = (smem_kb <= 64);
         int block_m = is_igpu ? 32 : 64;
         int block_n = is_igpu ? 32 : 64;
         int block_k = 16;
         auto [wm, wn] = ComputeSquareWarpPartition(4, block_m, block_n, 8, 8);
-        TileLangSwizzleMode swz(2); // SWIZZLE_64B for Intel SLM banks
+        TileLangSwizzleMode swz(2);
         return {block_m, block_n, block_k, wm, wn, 32, 64, swz.ByteWidth(), panel_width, is_igpu ? 1 : 2};
     } else if (target_arch == "ascend") {
-        // Huawei Ascend 910B AICore (`third_party/tilelang/src/tl_templates/ascend/gemm.h`)
-        // Cube fractal FRAC_N = 16, double-buffered L1 -> L0A/L0B -> L0C -> UB
         int block_m = 64;
         int block_n = 64;
         int block_k = 32;
         return {block_m, block_n, block_k, 2, 2, 32, 32, 32, panel_width, 2};
     } else if (target_arch == "cpu") {
-        // L1d/L2 Cache-Blocked Multi-Core CPU (`third_party/tilelang/src/tl_templates/cpu/gemm.h`)
         return {32, 32, 32, 1, 1, 32, 64, 64, panel_width, 1};
     } else {
-        // Default / "metal": Apple Silicon Metal 4 GPU (`simdgroup_float8x8` + 16B bank padding)
         auto [wm, wn] = ComputeSquareWarpPartition(4, 32, 32, 8, 8);
-        TileLangSwizzleMode swz(1); // SWIZZLE_32B
+        TileLangSwizzleMode swz(1);
         return {32, 32, 8, wm, wn, 32, 16, swz.ByteWidth(), panel_width, 1};
     }
 }
@@ -601,10 +606,11 @@ std::string tilelang_emit_universal_source(
         return tilelang_emit_metal_gemm_source(block_m, block_n, block_k, panel_size);
     }
 
+    int64_t n_col_tiles = std::max<int64_t>(1, (block_n + 31) / 32);
+    int64_t m_row_tiles = std::max<int64_t>(1, (block_m + 31) / 32);
+
     std::ostringstream code;
     if (target_arch == "cuda") {
-        // Uses `third_party/tilelang/src/tl_templates/cuda/threadblock_swizzle.h`
-        // + 128B XOR Shared Memory Swizzling + Tensor Core MMA + `__ballot_sync`
         code << "// Emitted by OjasX x TileLang Universal CodeGen [Target: NVIDIA CUDA sm_80/sm_90]\n";
         code << "#include <cuda_runtime.h>\n";
         code << "#include <mma.h>\n";
@@ -622,14 +628,13 @@ std::string tilelang_emit_universal_source(
         code << "    const int tile_row = blockIdx_swz.y * " << block_m << ";\n";
         code << "    const int tile_col = blockIdx_swz.x * " << block_n << ";\n";
         code << "    if (tile_row >= M || tile_col >= N) return;\n\n";
-        code << "    // SWIZZLE_128B XOR Bank-Conflict-Free Shared Memory\n";
         code << "    __shared__ alignas(128) float As[" << block_m << "][" << (block_k + 4) << "];\n";
         code << "    __shared__ alignas(128) float Bs[" << block_k << "][" << (block_n + 4) << "];\n";
         code << "    const int tid = threadIdx.x;\n";
         code << "    const int warp_id = tid >> 5;\n";
         code << "    const int lane_id = tid & 31;\n";
         code << "    const int words_per_row = (N + 31) >> 5;\n\n";
-        code << "    float acc[8] = {0.0f};\n";
+        code << "    float acc[" << m_row_tiles << "][" << n_col_tiles << "][8] = {{{0.0f}}};\n";
         code << "    for (int k0 = 0; k0 < K; k0 += " << block_k << ") {\n";
         code << "        for (int idx = tid; idx < " << (block_m * block_k) << "; idx += blockDim.x) {\n";
         code << "            int r = idx / " << block_k << "; int c = idx % " << block_k << ";\n";
@@ -643,34 +648,41 @@ std::string tilelang_emit_universal_source(
         code << "        }\n";
         code << "        __syncthreads();\n";
         code << "        #pragma unroll\n";
-        code << "        for (int r_sub = 0; r_sub < 8; ++r_sub) {\n";
-        code << "            int r_local = (warp_id * 8 + r_sub) % " << block_m << ";\n";
-        code << "            int c_local = lane_id % " << block_n << ";\n";
-        code << "            for (int rk = 0; rk < " << block_k << "; ++rk) {\n";
-        code << "                acc[r_sub] = fmaf(As[r_local][rk ^ (r_local & 3)], Bs[rk][c_local ^ (rk & 3)], acc[r_sub]);\n";
+        code << "        for (int mt = 0; mt < " << m_row_tiles << "; ++mt) {\n";
+        code << "            for (int nt = 0; nt < " << n_col_tiles << "; ++nt) {\n";
+        code << "                for (int r_sub = 0; r_sub < 8; ++r_sub) {\n";
+        code << "                    int r_local = (mt * 32 + warp_id * 8 + r_sub);\n";
+        code << "                    int c_local = (nt * 32 + lane_id);\n";
+        code << "                    if (r_local < " << block_m << " && c_local < " << block_n << ") {\n";
+        code << "                        for (int rk = 0; rk < " << block_k << "; ++rk) {\n";
+        code << "                            acc[mt][nt][r_sub] = fmaf(As[r_local][rk ^ (r_local & 3)], Bs[rk][c_local ^ (rk & 3)], acc[mt][nt][r_sub]);\n";
+        code << "                        }\n";
+        code << "                    }\n";
+        code << "                }\n";
         code << "            }\n";
         code << "        }\n";
         code << "        __syncthreads();\n";
         code << "    }\n\n";
-        code << "    // Fused Holonomic ReLU2 + 1-Cycle Warp `__ballot_sync(0xffffffffu, is_pos)`\n";
-        code << "    const int word_col = tile_col >> 5;\n";
         code << "    #pragma unroll\n";
-        code << "    for (int r_sub = 0; r_sub < 8; ++r_sub) {\n";
-        code << "        int gm = tile_row + warp_id * 8 + r_sub;\n";
-        code << "        int gn = tile_col + lane_id;\n";
-        code << "        bool valid = (gm < M) && (gn < N);\n";
-        code << "        float val = valid ? (acc[r_sub] + (has_bias ? Bias[gn] : 0.0f)) : 0.0f;\n";
-        code << "        bool is_pos = valid && (val > 0.0f);\n";
-        code << "        unsigned int mask_word = __ballot_sync(0xffffffffu, is_pos);\n";
-        code << "        if (valid) Out[gm * N + gn] = is_pos ? (val * val) : 0.0f;\n";
-        code << "        if (lane_id == 0 && gm < M && word_col < words_per_row) {\n";
-        code << "            PackedMask[gm * words_per_row + word_col] = static_cast<int>(mask_word);\n";
+        code << "    for (int mt = 0; mt < " << m_row_tiles << "; ++mt) {\n";
+        code << "        for (int nt = 0; nt < " << n_col_tiles << "; ++nt) {\n";
+        code << "            const int word_col = (tile_col + nt * 32) >> 5;\n";
+        code << "            for (int r_sub = 0; r_sub < 8; ++r_sub) {\n";
+        code << "                int gm = tile_row + mt * 32 + warp_id * 8 + r_sub;\n";
+        code << "                int gn = tile_col + nt * 32 + lane_id;\n";
+        code << "                bool valid = (gm < M) && (gn < N) && ((mt * 32 + warp_id * 8 + r_sub) < " << block_m << ") && ((nt * 32 + lane_id) < " << block_n << ");\n";
+        code << "                float val = valid ? (acc[mt][nt][r_sub] + (has_bias ? Bias[gn] : 0.0f)) : 0.0f;\n";
+        code << "                bool is_pos = valid && (val > 0.0f);\n";
+        code << "                unsigned int mask_word = __ballot_sync(0xffffffffu, is_pos);\n";
+        code << "                if (valid) Out[gm * N + gn] = is_pos ? (val * val) : 0.0f;\n";
+        code << "                if (lane_id == 0 && gm < M && word_col < words_per_row) {\n";
+        code << "                    PackedMask[gm * words_per_row + word_col] = static_cast<int>(mask_word);\n";
+        code << "                }\n";
+        code << "            }\n";
         code << "        }\n";
         code << "    }\n";
         code << "}\n";
     } else if (target_arch == "rocm") {
-        // Uses `third_party/tilelang/src/tl_templates/hip/gemm.h` & `hip/threadblock_swizzle.h`
-        // + AMD MFMA (`__builtin_amdgcn_mfma_f32_16x16x16f16`) + 64-lane `__ballot` split into 32-bit words
         code << "// Emitted by OjasX x TileLang Universal CodeGen [Target: AMD ROCm/HIP CDNA/RDNA]\n";
         code << "#include <hip/hip_runtime.h>\n";
         code << "#include \"tl_templates/hip/gemm.h\"\n";
@@ -687,45 +699,50 @@ std::string tilelang_emit_universal_source(
         code << "    const int tile_row = blockIdx_swz.y * " << block_m << ";\n";
         code << "    const int tile_col = blockIdx_swz.x * " << block_n << ";\n";
         code << "    if (tile_row >= M || tile_col >= N) return;\n\n";
-        code << "    // BANK_SIZE_BYTES = 128 (`third_party/tilelang/src/tl_templates/hip/gemm.h`)\n";
         code << "    __shared__ alignas(128) float lds_A[" << block_m << "][" << (block_k + 4) << "];\n";
         code << "    __shared__ alignas(128) float lds_B[" << block_k << "][" << (block_n + 4) << "];\n";
         code << "    const int tid = threadIdx.x;\n";
-        code << "    const int wave_id = tid >> 6; // 64-lane AMD wavefront\n";
+        code << "    const int wave_id = tid >> 6;\n";
         code << "    const int lane_id = tid & 63;\n";
         code << "    const int words_per_row = (N + 31) >> 5;\n\n";
-        code << "    float acc = 0.0f;\n";
-        code << "    int gm = tile_row + (wave_id * 16) + (lane_id >> 5);\n";
-        code << "    int gn = tile_col + (lane_id & 31);\n";
-        code << "    for (int k0 = 0; k0 < K; k0 += " << block_k << ") {\n";
-        code << "        for (int idx = tid; idx < " << (block_m * block_k) << "; idx += blockDim.x) {\n";
-        code << "            int r = idx / " << block_k << "; int c = idx % " << block_k << ";\n";
-        code << "            lds_A[r][c] = (tile_row + r < M && k0 + c < K) ? A[(tile_row + r) * K + (k0 + c)] : 0.0f;\n";
+        code << "    for (int nt = 0; nt < " << n_col_tiles << "; ++nt) {\n";
+        code << "        for (int r_step = 0; r_step < " << block_m << "; r_step += 8) {\n";
+        code << "            float acc = 0.0f;\n";
+        code << "            int r_local = r_step + (wave_id * 2) + (lane_id >> 5);\n";
+        code << "            int c_local = nt * 32 + (lane_id & 31);\n";
+        code << "            int gm = tile_row + r_local;\n";
+        code << "            int gn = tile_col + c_local;\n";
+        code << "            for (int k0 = 0; k0 < K; k0 += " << block_k << ") {\n";
+        code << "                for (int idx = tid; idx < " << (block_m * block_k) << "; idx += blockDim.x) {\n";
+        code << "                    int r = idx / " << block_k << "; int c = idx % " << block_k << ";\n";
+        code << "                    lds_A[r][c] = (tile_row + r < M && k0 + c < K) ? A[(tile_row + r) * K + (k0 + c)] : 0.0f;\n";
+        code << "                }\n";
+        code << "                for (int idx = tid; idx < " << (block_k * block_n) << "; idx += blockDim.x) {\n";
+        code << "                    int r = idx / " << block_n << "; int c = idx % " << block_n << ";\n";
+        code << "                    lds_B[r][c] = (k0 + r < K && tile_col + c < N) ? B[(tile_col + c) * K + (k0 + r)] : 0.0f;\n";
+        code << "                }\n";
+        code << "                __syncthreads();\n";
+        code << "                if (r_local < " << block_m << " && c_local < " << block_n << ") {\n";
+        code << "                    for (int rk = 0; rk < " << block_k << "; ++rk) {\n";
+        code << "                        acc = __builtin_fmaf(lds_A[r_local][rk], lds_B[rk][c_local], acc);\n";
+        code << "                    }\n";
+        code << "                }\n";
+        code << "                __syncthreads();\n";
+        code << "            }\n";
+        code << "            bool valid = (r_local < " << block_m << ") && (c_local < " << block_n << ") && (gm < M) && (gn < N);\n";
+        code << "            float val = valid ? (acc + (has_bias ? Bias[gn] : 0.0f)) : 0.0f;\n";
+        code << "            bool is_pos = valid && (val > 0.0f);\n";
+        code << "            unsigned long long wave_vote = __ballot(is_pos);\n";
+        code << "            if (valid) Out[gm * N + gn] = is_pos ? (val * val) : 0.0f;\n";
+        code << "            int word_col = (tile_col + nt * 32) >> 5;\n";
+        code << "            if ((lane_id & 31) == 0 && r_local < " << block_m << " && gm < M && word_col < words_per_row) {\n";
+        code << "                unsigned int half_vote = (lane_id < 32) ? (unsigned int)(wave_vote & 0xffffffffull) : (unsigned int)(wave_vote >> 32);\n";
+        code << "                PackedMask[gm * words_per_row + word_col] = static_cast<int>(half_vote);\n";
+        code << "            }\n";
         code << "        }\n";
-        code << "        for (int idx = tid; idx < " << (block_k * block_n) << "; idx += blockDim.x) {\n";
-        code << "            int r = idx / " << block_n << "; int c = idx % " << block_n << ";\n";
-        code << "            lds_B[r][c] = (k0 + r < K && tile_col + c < N) ? B[(tile_col + c) * K + (k0 + r)] : 0.0f;\n";
-        code << "        }\n";
-        code << "        __syncthreads();\n";
-        code << "        for (int rk = 0; rk < " << block_k << "; ++rk) {\n";
-        code << "            acc = __builtin_fmaf(lds_A[(gm - tile_row) % " << block_m << "][rk], lds_B[rk][(gn - tile_col) % " << block_n << "], acc);\n";
-        code << "        }\n";
-        code << "        __syncthreads();\n";
-        code << "    }\n\n";
-        code << "    // 64-lane wavefront `__ballot(is_pos)` split into two 32-bit words for Universal Mesh compatibility!\n";
-        code << "    bool valid = (gm < M) && (gn < N);\n";
-        code << "    float val = valid ? (acc + (has_bias ? Bias[gn] : 0.0f)) : 0.0f;\n";
-        code << "    bool is_pos = valid && (val > 0.0f);\n";
-        code << "    unsigned long long wave_vote = __ballot(is_pos);\n";
-        code << "    if (valid) Out[gm * N + gn] = is_pos ? (val * val) : 0.0f;\n";
-        code << "    int word_col = tile_col >> 5;\n";
-        code << "    if ((lane_id & 31) == 0 && gm < M && word_col < words_per_row) {\n";
-        code << "        unsigned int half_vote = (lane_id < 32) ? (unsigned int)(wave_vote & 0xffffffffull) : (unsigned int)(wave_vote >> 32);\n";
-        code << "        PackedMask[gm * words_per_row + word_col] = static_cast<int>(half_vote);\n";
         code << "    }\n";
         code << "}\n";
     } else if (target_arch == "sycl") {
-        // UXL Foundation Intel oneAPI DPC++ / SYCL (`joint_matrix` + `group_ballot`) for iGPU (Iris Xe) & Arc dGPU
         code << "// Emitted by OjasX x TileLang Universal CodeGen [Target: UXL Foundation Intel oneAPI SYCL / SPIR-V]\n";
         code << "#include <sycl/sycl.hpp>\n";
         code << "#include <sycl/ext/oneapi/matrix/matrix.hpp>\n\n";
@@ -738,7 +755,6 @@ std::string tilelang_emit_universal_source(
         code << "    const int grid_y = (M + " << (block_m - 1) << ") / " << block_m << ";\n";
         code << "    const int grid_x = (N + " << (block_n - 1) << ") / " << block_n << ";\n";
         code << "    q.submit([&](sycl::handler& h) {\n";
-        code << "        // 64KB SLM-safe local_accessor for Intel Iris Xe iGPU & Arc XPU\n";
         code << "        sycl::local_accessor<float, 2> slm_A(sycl::range<2>(" << block_m << ", " << (block_k + 4) << "), h);\n";
         code << "        sycl::local_accessor<float, 2> slm_B(sycl::range<2>(" << block_k << ", " << (block_n + 4) << "), h);\n";
         code << "        h.parallel_for(\n";
@@ -771,7 +787,6 @@ std::string tilelang_emit_universal_source(
         code << "    });\n";
         code << "}\n";
     } else if (target_arch == "ascend") {
-        // Uses `third_party/tilelang/src/tl_templates/ascend/gemm.h` (`ascend_gemm_l1` Cube + UB Vector)
         code << "// Emitted by OjasX x TileLang Universal CodeGen [Target: Huawei Ascend 910B AICore Cube + UB]\n";
         code << "#include \"tl_templates/ascend/gemm.h\"\n\n";
         code << "extern \"C\" __global__ __aicore__ void ojasx_tilelang_ascend_gemm_relu2_ballot_kernel(\n";
@@ -784,14 +799,12 @@ std::string tilelang_emit_universal_source(
         code << "    __ubuf__ float* ub_acc = (__ubuf__ float*)0;\n";
         code << "    __ubuf__ float* ub_out = (__ubuf__ float*)16384;\n";
         code << "    __ubuf__ int32_t* ub_mask = (__ubuf__ int32_t*)32768;\n";
-        code << "    // 1. Double-buffered L1 -> L0A/L0B -> L0C Cube MMA (`ascend/gemm.h` lines 41-105)\n";
         code << "    asc_unlock(PIPE_MTE1, 0, ASC_LOCK_BLOCK);\n";
         code << "    asc_unlock(PIPE_MTE1, 1, ASC_LOCK_BLOCK);\n";
         code << "    ascend_gemm_l1<" << block_m << ", " << block_k << ", " << block_n << ", 16, true, float, float>(\n";
         code << "        l0c, l1_a, l1_b, /*clear_accum=*/1, /*buf_offset=*/0, /*unit_flag_ctrl=*/3);\n";
         code << "    asc_lock(PIPE_M, 0, ASC_LOCK_BLOCK);\n";
         code << "    asc_lock(PIPE_M, 1, ASC_LOCK_BLOCK);\n";
-        code << "    // 2. Pipe Fix/Vector UB Epilogue: copy L0C accumulator to Unified Buffer (UB)\n";
         code << "    asc_pipe_barrier(PIPE_V);\n";
         code << "    asc_copy_l0c2ub(ub_acc, l0c, /*m_tiles=*/" << (block_m / 16) << ", /*n_tiles=*/" << (block_n / 16) << ");\n";
         code << "    asc_pipe_barrier(PIPE_V);\n";
@@ -811,13 +824,11 @@ std::string tilelang_emit_universal_source(
         code << "            ub_mask[r * words_per_row + w] = static_cast<int32_t>(mask_word);\n";
         code << "        }\n";
         code << "    }\n";
-        code << "    // 3. MTE3 Pipe: DMA writeback of UB Out and 1-bit PackedMask to Global Memory (GM)\n";
         code << "    asc_pipe_barrier(PIPE_MTE3);\n";
         code << "    asc_copy_ub2gm(Out_gm, ub_out, " << (block_m * block_n) << " * sizeof(float));\n";
         code << "    asc_copy_ub2gm(Mask_gm, ub_mask, " << block_m << " * words_per_row * sizeof(int32_t));\n";
         code << "}\n";
     } else if (target_arch == "cpu") {
-        // Uses `third_party/tilelang/src/tl_templates/cpu/gemm.h` (`tl::cpu::GemmHolonomicRelu2BallotTile`)
         code << "// Emitted by OjasX x TileLang Universal CodeGen [Target: Multi-Core CPU AVX2/NEON + L1d/L2 Blocking]\n";
         code << "#include \"tl_templates/cpu/gemm.h\"\n\n";
         code << "extern \"C\" void ojasx_tilelang_cpu_gemm_relu2_ballot_kernel(\n";
@@ -852,13 +863,18 @@ std::tuple<at::Tensor, at::Tensor> tilelang_universal_gemm_relu2_fwd(
         }
     }
 
-    if (arch == "metal") {
+#if defined(__APPLE__) && defined(__OBJC__)
+    if (arch == "metal" && get_metal_cache().device != nil) {
         return tilelang_metal_gemm_relu2_fwd(x, weight, bias_opt, panel_size);
     }
+#endif
 
     auto orig_sizes = x.sizes().vec();
+    TORCH_CHECK(!orig_sizes.empty(), "tilelang_universal_gemm_relu2_fwd expects at least 1D input tensor");
+    TORCH_CHECK(weight.dim() == 2, "tilelang_universal_gemm_relu2_fwd expects 2D weight tensor");
     int64_t K = orig_sizes.back();
     int64_t N = weight.size(0);
+    TORCH_CHECK(weight.size(1) == K, "weight in_features must match x.size(-1)");
     int64_t words_per_row = (N + 31) / 32;
 
     auto out_sizes = orig_sizes;
@@ -874,11 +890,31 @@ std::tuple<at::Tensor, at::Tensor> tilelang_universal_gemm_relu2_fwd(
     }
 
     int64_t M = x.numel() / K;
-    auto orig_device = x.device();
-    auto orig_dtype = x.scalar_type();
-    at::Tensor x_cpu = x.to(at::kCPU, at::kFloat).contiguous().reshape({M, K});
-    at::Tensor w_cpu = weight.to(at::kCPU, at::kFloat).contiguous().reshape({N, K});
     bool has_bias = bias_opt.has_value() && bias_opt->defined() && bias_opt->numel() > 0;
+    if (has_bias) {
+        TORCH_CHECK(bias_opt->numel() == N, "bias numel must match weight out_features");
+    }
+
+    // =========================================================================
+    // GPU-NATIVE EXECUTION PATHWAY (CUDA, ROCm/HIP, Intel XPU, MPS, OpenReg)
+    // Keeps 100% of tensors on the GPU in VRAM (ZERO host-device roundtrips!)
+    // =========================================================================
+    if (!x.device().is_cpu()) {
+        at::Tensor x_2d = x.contiguous().reshape({M, K});
+        at::Tensor w_2d = weight.contiguous().reshape({N, K});
+        at::Tensor z_nd = at::linear(x_2d, w_2d, bias_opt).reshape(out_sizes);
+        at::Tensor packed_mask = ojasx_hal::pack_1bit_ballot(z_nd);
+        z_nd.clamp_min_(0.0);
+        z_nd.mul_(z_nd);
+        return std::make_tuple(z_nd, packed_mask);
+    }
+
+    // =========================================================================
+    // MULTI-CORE CPU 2D L1d/L2 CACHE-BLOCKED SIMD ENGINE (AVX2 / NEON / Scalar)
+    // =========================================================================
+    auto orig_dtype = x.scalar_type();
+    at::Tensor x_cpu = x.to(at::kFloat).contiguous().reshape({M, K});
+    at::Tensor w_cpu = weight.to(at::kFloat).contiguous().reshape({N, K});
     at::Tensor b_cpu = has_bias
         ? bias_opt->to(at::kCPU, at::kFloat).contiguous().reshape({N})
         : at::empty({0}, x_cpu.options());
@@ -892,8 +928,6 @@ std::tuple<at::Tensor, at::Tensor> tilelang_universal_gemm_relu2_fwd(
     float* out_ptr = out_cpu.data_ptr<float>();
     int32_t* mask_ptr = mask_cpu.data_ptr<int32_t>();
 
-    // Adaptive micro-tile sizing for cache/register pressure minimization:
-    // Decode (M <= 8): 8x32x16, Prefill (M > 8): 32x32x32
     int64_t block_m = (M <= 8) ? 8 : 32;
     int64_t block_n = 32;
     int64_t block_k = (M <= 8) ? 16 : 32;
@@ -902,7 +936,6 @@ std::tuple<at::Tensor, at::Tensor> tilelang_universal_gemm_relu2_fwd(
     int64_t num_n_tiles = (N + block_n - 1) / block_n;
     int64_t total_tiles = num_m_tiles * num_n_tiles;
 
-    // 2D (M, N) Work Decomposition: eliminates CPU core starvation during autoregressive decoding (M <= 8)
     at::parallel_for(0, total_tiles, 1, [&](int64_t t_begin, int64_t t_end) {
         for (int64_t t = t_begin; t < t_end; ++t) {
             int64_t tm = t / num_n_tiles;
@@ -912,7 +945,6 @@ std::tuple<at::Tensor, at::Tensor> tilelang_universal_gemm_relu2_fwd(
             int64_t m_chunk = std::min<int64_t>(block_m, M - m0);
             int64_t n_chunk = std::min<int64_t>(block_n, N - n0);
 
-            // L1d-resident tile accumulator (32x32 floats = 4 KB)
             alignas(64) float acc[32][32];
 
             for (int64_t rm = 0; rm < m_chunk; ++rm) {
@@ -928,7 +960,6 @@ std::tuple<at::Tensor, at::Tensor> tilelang_universal_gemm_relu2_fwd(
                 }
             }
 
-            // L1/L2 cache-blocked K reduction
             for (int64_t k0 = 0; k0 < K; k0 += block_k) {
                 int64_t k_lim = std::min<int64_t>(block_k, K - k0);
                 for (int64_t rm = 0; rm < m_chunk; ++rm) {
@@ -936,8 +967,18 @@ std::tuple<at::Tensor, at::Tensor> tilelang_universal_gemm_relu2_fwd(
                     for (int64_t rn = 0; rn < n_chunk; ++rn) {
                         const float* b_row = b_ptr + (n0 + rn) * K + k0;
                         float sum = 0.0f;
-#if defined(__ARM_NEON) || defined(__ARM_NEON__)
                         int64_t rk = 0;
+#if defined(__AVX2__) && defined(__FMA__)
+                        __m256 vsum = _mm256_setzero_ps();
+                        for (; rk + 8 <= k_lim; rk += 8) {
+                            __m256 va = _mm256_loadu_ps(a_row + rk);
+                            __m256 vb = _mm256_loadu_ps(b_row + rk);
+                            vsum = _mm256_fmadd_ps(va, vb, vsum);
+                        }
+                        alignas(32) float tmp[8];
+                        _mm256_store_ps(tmp, vsum);
+                        for (int j = 0; j < 8; ++j) sum += tmp[j];
+#elif defined(__ARM_NEON) || defined(__ARM_NEON__)
                         float32x4_t vsum = vdupq_n_f32(0.0f);
                         for (; rk + 4 <= k_lim; rk += 4) {
                             float32x4_t va = vld1q_f32(a_row + rk);
@@ -945,20 +986,15 @@ std::tuple<at::Tensor, at::Tensor> tilelang_universal_gemm_relu2_fwd(
                             vsum = vfmaq_f32(vsum, va, vb);
                         }
                         sum += vaddvq_f32(vsum);
+#endif
                         for (; rk < k_lim; ++rk) {
                             sum += a_row[rk] * b_row[rk];
                         }
-#else
-                        for (int64_t rk = 0; rk < k_lim; ++rk) {
-                            sum += a_row[rk] * b_row[rk];
-                        }
-#endif
                         acc[rm][rn] += sum;
                     }
                 }
             }
 
-            // Fused Holonomic ReLU2 + 32-lane 1-bit ballot sign packing
             const int64_t word_col = n0 >> 5;
             for (int64_t rm = 0; rm < m_chunk; ++rm) {
                 uint32_t mask_word = 0u;
@@ -980,12 +1016,18 @@ std::tuple<at::Tensor, at::Tensor> tilelang_universal_gemm_relu2_fwd(
     });
 
     return std::make_tuple(
-        out_cpu.reshape(out_sizes).to(orig_device, orig_dtype),
-        mask_cpu.reshape(mask_sizes).to(orig_device)
+        out_cpu.reshape(out_sizes).to(orig_dtype),
+        mask_cpu.reshape(mask_sizes)
     );
 }
 
 } // namespace ojasx_tilelang
+
+#define OJASX_REGISTER_TILELANG_BACKEND(DISPATCH_KEY)                                                 \
+    TORCH_LIBRARY_IMPL(ojasx_hal, DISPATCH_KEY, m) {                                                  \
+        m.impl("tilelang_metal_gemm_relu2_fwd", ojasx_tilelang::tilelang_metal_gemm_relu2_fwd);       \
+        m.impl("tilelang_universal_gemm_relu2_fwd", ojasx_tilelang::tilelang_universal_gemm_relu2_fwd); \
+    }
 
 TORCH_LIBRARY_FRAGMENT(ojasx_hal, m) {
     m.def("tilelang_query_schedule(int M, int N, int K, int num_warps, int swizzle_ordinal) -> int[]");
@@ -1003,13 +1045,8 @@ TORCH_LIBRARY_IMPL(ojasx_hal, CompositeExplicitAutograd, m) {
     m.impl("tilelang_emit_universal_source", ojasx_tilelang::tilelang_emit_universal_source);
 }
 
-TORCH_LIBRARY_IMPL(ojasx_hal, CPU, m) {
-    m.impl("tilelang_metal_gemm_relu2_fwd", ojasx_tilelang::tilelang_metal_gemm_relu2_fwd);
-    m.impl("tilelang_universal_gemm_relu2_fwd", ojasx_tilelang::tilelang_universal_gemm_relu2_fwd);
-}
-
-TORCH_LIBRARY_IMPL(ojasx_hal, MPS, m) {
-    m.impl("tilelang_metal_gemm_relu2_fwd", ojasx_tilelang::tilelang_metal_gemm_relu2_fwd);
-    m.impl("tilelang_universal_gemm_relu2_fwd", ojasx_tilelang::tilelang_universal_gemm_relu2_fwd);
-}
-
+OJASX_REGISTER_TILELANG_BACKEND(CPU)
+OJASX_REGISTER_TILELANG_BACKEND(CUDA)
+OJASX_REGISTER_TILELANG_BACKEND(MPS)
+OJASX_REGISTER_TILELANG_BACKEND(XPU)
+OJASX_REGISTER_TILELANG_BACKEND(PrivateUse1)

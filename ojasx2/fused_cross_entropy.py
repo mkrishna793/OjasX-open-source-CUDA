@@ -34,8 +34,8 @@ def _streaming_fused_lce_forward(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Dual-pass streaming forward accumulation over token and vocabulary tiles."""
     d = h.shape[-1]
-    m = h.numel() // d
     v = w.shape[0]
+    m = (h.numel() // d) if d > 0 else 0
 
     if w.shape[1] != d:
         raise ValueError(f"Weight feature dimension {w.shape[1]} does not match hidden dimension {d}")
@@ -43,7 +43,7 @@ def _streaming_fused_lce_forward(
         raise ValueError(f"Bias dimension {bias.shape[0]} does not match vocabulary size {v}")
 
     # Zero-element handling
-    if m == 0:
+    if m == 0 or d == 0 or v == 0:
         loss = (
             torch.zeros((), dtype=h.dtype, device=h.device)
             if reduction != "none"
@@ -139,14 +139,14 @@ def _streaming_fused_lce_backward(
 ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], None, Optional[torch.Tensor], None, None, None]:
     """Streaming chunked pullback directly to dH and dW without materializing logits."""
     d = h.shape[-1]
-    m = h.numel() // d
     v = w.shape[0]
+    m = (h.numel() // d) if d > 0 else 0
 
     needs_dh = h.requires_grad
     needs_dw = w.requires_grad
     needs_db = bias is not None and bias.requires_grad
 
-    if m == 0:
+    if m == 0 or d == 0 or v == 0:
         dh = torch.zeros_like(h) if needs_dh else None
         dw = torch.zeros_like(w) if needs_dw else None
         db = torch.zeros_like(bias) if needs_db else None
@@ -207,8 +207,8 @@ def _streaming_fused_lce_backward(
     # Step 3: Softmax streaming accumulation
     for tok_s in range(0, m, tile_tok):
         tok_e = min(tok_s + tile_tok, m)
-        h_chunk = h_2d[tok_s:tok_e]
         alpha_chunk = alpha[tok_s:tok_e]
+        h_chunk = h_2d[tok_s:tok_e]
         lse_chunk = lse_1d[tok_s:tok_e]
 
         for v_s in range(0, v, tile_voc):

@@ -24,7 +24,7 @@ import time
 import types
 import math
 import gc
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pytest
 import torch

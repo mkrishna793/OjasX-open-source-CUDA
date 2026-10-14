@@ -54,7 +54,7 @@ class _HolonomicLayerNormFn(torch.autograd.Function):
         eps: float,
     ) -> torch.Tensor:
         dim_count = len(normalized_shape)
-        norm_dims = tuple(range(x.ndim - dim_count, x.ndim))
+        norm_dims = tuple(range(-dim_count, 0))
         m = 1
         for d in normalized_shape:
             m *= d
@@ -78,6 +78,7 @@ class _HolonomicLayerNormFn(torch.autograd.Function):
         ctx.norm_dims = norm_dims
         ctx.m = m
         ctx.has_bias = bias is not None
+        ctx.bias_dtype = bias.dtype if bias is not None else x.dtype
         ctx.x_dtype = x.dtype
 
         return y
@@ -101,7 +102,7 @@ class _HolonomicLayerNormFn(torch.autograd.Function):
 
         if ctx.has_bias and ctx.needs_input_grad[2]:
             leading_dims = tuple(range(x.ndim - len(ctx.normalized_shape)))
-            db = g_f32.sum(dim=leading_dims).to(x_dtype)
+            db = g_f32.sum(dim=leading_dims).to(ctx.bias_dtype)
 
         dx = None
         if ctx.needs_input_grad[0]:
@@ -209,6 +210,7 @@ class _HolonomicGroupNormFn(torch.autograd.Function):
         ctx.orig_shape = orig_shape
         ctx.m = m
         ctx.has_bias = bias is not None
+        ctx.bias_dtype = bias.dtype if bias is not None else x.dtype
         ctx.x_dtype = x.dtype
 
         return y
@@ -233,7 +235,7 @@ class _HolonomicGroupNormFn(torch.autograd.Function):
         if weight is not None and ctx.needs_input_grad[1]:
             dw = (g_f32 * x_hat).sum(dim=reduce_dims).to(weight.dtype)
         if ctx.has_bias and ctx.needs_input_grad[2]:
-            db = g_f32.sum(dim=reduce_dims).to(x_dtype)
+            db = g_f32.sum(dim=reduce_dims).to(ctx.bias_dtype)
 
         dx = None
         if ctx.needs_input_grad[0]:
@@ -338,7 +340,7 @@ class _FrozenConvZeroTapeFn(torch.autograd.Function):
                 if padding == "valid":
                     padding = (0,) * dim
                 elif padding == "same":
-                    padding = tuple((k - 1) // 2 for k in k_size)
+                    padding = tuple((d * (k - 1)) // 2 for d, k in zip(ctx.dilation, k_size))
             dx = grad_fn(
                 ctx.input_shape,
                 weight,

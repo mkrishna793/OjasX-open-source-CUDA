@@ -824,9 +824,6 @@ class HolonomicResidualFunction(torch.autograd.Function):
         is_frozen: bool = False,
     ) -> torch.Tensor:
         ctx.is_frozen = is_frozen
-        # If frozen, zero-tape policy applies: do not save x
-        if not is_frozen and (x.requires_grad or f_x.requires_grad):
-            ctx.save_for_backward(x)
         return x + f_x
 
     @staticmethod
@@ -862,7 +859,7 @@ try:
     if not hasattr(torch.ops.ojasx_fx, "gated_mlp"):
         _ojasx_fx_lib.define(
             "gated_mlp(Tensor x, Tensor w_gate, Tensor? b_gate, Tensor w_up, Tensor? b_up, "
-            "Tensor w_down, Tensor? b_down, str act='silu') -> Tensor"
+            "Tensor w_down, Tensor? b_down, str act='silu', float spectral_threshold=0.0) -> Tensor"
         )
         _ojasx_fx_lib.impl("gated_mlp", holonomic_gated_mlp, "CompositeExplicitAutograd")
 
@@ -1961,7 +1958,39 @@ def prune_dead_channels_fx(
                 keep_mask = out_saliency >= threshold
                 num_pruned = int((~keep_mask).sum().item())
 
-                if 0 < num_pruned < weight.size(0):
+                # Verify all downstream paths terminate at Linear in_features (never graph output or residual add)
+                can_prune = False
+                check_visited = set()
+                check_queue = list(node.users.keys())
+                has_linear_consumer = False
+                safe_consumers = True
+                while check_queue:
+                    u = check_queue.pop(0)
+                    if u in check_visited:
+                        continue
+                    check_visited.add(u)
+                    if u.op == "output":
+                        safe_consumers = False
+                        break
+                    elif u.op == "call_module":
+                        u_mod = getattr(gm, u.target, None)
+                        if isinstance(u_mod, nn.Linear):
+                            has_linear_consumer = True
+                        elif isinstance(u_mod, (nn.ReLU, nn.GELU, nn.SiLU, nn.LayerNorm)):
+                            check_queue.extend(u.users.keys())
+                        else:
+                            safe_consumers = False
+                            break
+                    elif u.op == "call_function" and u.target in (
+                        F.relu, F.gelu, F.silu, torch.relu, torch.sigmoid, torch.tanh
+                    ):
+                        check_queue.extend(u.users.keys())
+                    else:
+                        safe_consumers = False
+                        break
+                can_prune = safe_consumers and has_linear_consumer
+
+                if can_prune and 0 < num_pruned < weight.size(0):
                     # Prune output channels of this layer
                     submod.weight = nn.Parameter(weight[keep_mask, :])
                     if submod.bias is not None:

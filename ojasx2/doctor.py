@@ -20,7 +20,7 @@ import platform
 import subprocess
 import sys
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -49,6 +49,12 @@ def audit_silicon_and_runtime() -> Dict[str, Any]:
             total_ram_gb = int(out) / (1024 ** 3)
         except Exception:
             total_ram_gb = 16.0
+    else:
+        try:
+            if hasattr(os, "sysconf") and "SC_PAGE_SIZE" in os.sysconf_names and "SC_PHYS_PAGES" in os.sysconf_names:
+                total_ram_gb = (os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")) / (1024 ** 3)
+        except Exception:
+            total_ram_gb = 0.0
     info["total_ram_gb"] = round(total_ram_gb, 1)
 
     # Hardware profile & Apple Silicon acceleration

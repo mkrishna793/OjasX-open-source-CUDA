@@ -37,6 +37,7 @@ class AOTCompilationLedger:
     zero_tape_savings_bytes: int = 0
     fw_custom_ops: List[str] = field(default_factory=list)
     bw_ops_sample: List[str] = field(default_factory=list)
+    mlir_artifacts: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -50,6 +51,7 @@ class AOTCompilationLedger:
             "zero_tape_savings_bytes": self.zero_tape_savings_bytes,
             "fw_custom_ops": list(self.fw_custom_ops),
             "bw_ops_sample": list(self.bw_ops_sample),
+            "mlir_artifacts": dict(self.mlir_artifacts),
         }
 
 
@@ -98,6 +100,16 @@ def _rewrite_fx_for_aot(gm: torch.fx.GraphModule, ledger: Optional[AOTCompilatio
     graph.eliminate_dead_code()
     graph.lint()
     gm.recompile()
+
+    # 3. Lower rewritten FX graph through the 3-dialect MLIR pipeline & verify SSA invariants
+    try:
+        from .mlir_dialects import lower_fx_to_mlir_artifacts
+        artifacts = lower_fx_to_mlir_artifacts(gm, target="auto", name="aot_holonomic_fx")
+        target_ledger.mlir_artifacts = artifacts.to_dict()
+        gm._ojasx_mlir_artifacts = artifacts
+    except Exception:
+        pass
+
     return gm
 
 

@@ -15,7 +15,7 @@ Automatically inspects any PyTorch `nn.Module` and decides per-layer:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -96,6 +96,7 @@ class SmartWorkloadReport:
     trainable_params: int
     frozen_params: int
     decisions: List[SmartLayerDecision] = field(default_factory=list)
+    mlir_pipeline: Optional[Dict[str, object]] = None
 
     @property
     def action_counts(self) -> Dict[str, int]:
@@ -287,6 +288,8 @@ class SmartWorkloadRouter:
         batch_tokens: int = 512,
         prefer_1bit_relu2_for_relu: bool = False,
         prefer_unified_mlp: Optional[bool] = None,
+        compile_mlir: bool = False,
+        mlir_target: str = "auto",
     ) -> Tuple[nn.Module, SmartWorkloadReport]:
         if prefer_unified_mlp is not None:
             self.prefer_unified_mlp = prefer_unified_mlp
@@ -332,6 +335,14 @@ class SmartWorkloadRouter:
             effective_tiny_threshold=effective_tiny_threshold,
             report=report,
         )
+        if compile_mlir:
+            try:
+                from .mlir_dialects import compile_mlir_executable
+                exec_mod = compile_mlir_executable(model, target=mlir_target)
+                report.mlir_pipeline = exec_mod.mlir_artifacts.to_dict()
+                model._ojasx_mlir_artifacts = exec_mod.mlir_artifacts
+            except Exception:
+                pass
         return model, report
 
     def _rewrite_children(
@@ -606,6 +617,14 @@ class SmartWorkloadRouter:
         if not (isinstance(gate_proj, nn.Linear) and isinstance(up_proj, nn.Linear) and isinstance(down_proj, nn.Linear)):
             return False, None
 
+        # Ensure module does not contain unrelated Linear/Conv/Attention layers that would be dropped
+        allowed_linears = {id(gate_proj), id(up_proj), id(down_proj)}
+        for _, sub in module.named_children():
+            if isinstance(sub, nn.Linear) and id(sub) not in allowed_linears:
+                return False, None
+            if isinstance(sub, (nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.MultiheadAttention, HolonomicDaggerAttention)):
+                return False, None
+
         act_name, neg_slope = _extract_glu_activation(module)
         total_p = sum(p.numel() for p in module.parameters())
         trainable_p = sum(p.numel() for p in module.parameters() if p.requires_grad)
@@ -678,6 +697,30 @@ class SmartWorkloadRouter:
         if not isinstance(in_proj, nn.Linear):
             return False, None
 
+        # Verify module is genuinely a chunked GLU block and not an ordinary MLP
+        has_explicit_chunk_attr = (
+            getattr(module, "gate_up_proj", None) is not None
+            or getattr(module, "w12", None) is not None
+            or any(isinstance(m, (nn.GLU, HolonomicGLU)) for m in module.children())
+            or "glu" in module.__class__.__name__.lower()
+            or "chunk" in module.__class__.__name__.lower()
+        )
+        if not has_explicit_chunk_attr:
+            try:
+                import inspect
+                fwd_src = inspect.getsource(module.__class__.forward)
+                has_explicit_chunk_attr = (".chunk(" in fwd_src or "torch.chunk(" in fwd_src or "glu(" in fwd_src)
+            except Exception:
+                has_explicit_chunk_attr = False
+        if not has_explicit_chunk_attr:
+            return False, None
+
+        # Ensure no unrelated Linear layers exist on module
+        allowed_linears = {id(in_proj)} | ({id(out_proj)} if isinstance(out_proj, nn.Linear) else set())
+        for _, sub in module.named_children():
+            if isinstance(sub, nn.Linear) and id(sub) not in allowed_linears:
+                return False, None
+
         # Chunked GLU requires out_features of in_proj to be 2 * hidden
         if out_proj is not None and isinstance(out_proj, nn.Linear):
             if in_proj.out_features != 2 * out_proj.in_features:
@@ -722,6 +765,9 @@ class SmartWorkloadRouter:
             return False, None
 
         if isinstance(module, nn.MultiheadAttention):
+            first_p = next(module.parameters(), None)
+            dev = first_p.device if first_p is not None else None
+            dt = first_p.dtype if first_p is not None else None
             total_p = sum(p.numel() for p in module.parameters())
             trainable_p = sum(p.numel() for p in module.parameters() if p.requires_grad)
             rep = HolonomicDaggerAttention(
@@ -729,6 +775,8 @@ class SmartWorkloadRouter:
                 num_heads=module.num_heads,
                 bias=module.in_proj_bias is not None,
                 batch_first=module.batch_first,
+                device=dev,
+                dtype=dt,
             )
             if module.in_proj_weight is not None:
                 d = module.embed_dim
@@ -900,6 +948,19 @@ class SmartWorkloadRouter:
         if norm is None and not getattr(self, "prefer_unified_mlp", False):
             return False, None
 
+        allowed_linears = {id(gate_proj), id(up_proj), id(down_proj)}
+        for _, sub in module.named_children():
+            if isinstance(sub, nn.Linear) and id(sub) not in allowed_linears:
+                return False, None
+            if isinstance(sub, (nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.MultiheadAttention, HolonomicDaggerAttention)):
+                return False, None
+
+        if not getattr(self, "prefer_unified_mlp", False):
+            if isinstance(norm, nn.LayerNorm):
+                return False, None
+            if gate_proj.bias is not None or up_proj.bias is not None or down_proj.bias is not None:
+                return False, None
+
         dim = gate_proj.in_features
         intermediate_dim = gate_proj.out_features
         eps = float(getattr(norm, "eps", 1e-6)) if norm is not None else 1e-6
@@ -947,15 +1008,17 @@ class SmartWorkloadRouter:
             src = textwrap.dedent(inspect.getsource(forward_fn))
             tree = ast.parse(src)
 
-            # Count occurrences of self.<name_b>
+            # Count occurrences of self.<name_a> and self.<name_b>
+            a_refs = 0
             b_refs = 0
             for node in ast.walk(tree):
                 if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self":
-                    if node.attr == name_b:
+                    if node.attr == name_a:
+                        a_refs += 1
+                    elif node.attr == name_b:
                         b_refs += 1
 
-            # If self.<name_b> is referenced only once, it is safe to replace with Identity
-            if b_refs == 1:
+            if a_refs == 1 and b_refs == 1:
                 return True
 
             return False
@@ -1156,6 +1219,8 @@ def optimize_model(
     prefer_unified_mlp: bool = False,
     tiny_param_threshold: int = 1024,
     large_vocab_threshold: int = 8192,
+    compile_mlir: bool = False,
+    mlir_target: str = "auto",
     **router_kwargs,
 ) -> Tuple[nn.Module, SmartWorkloadReport]:
     """Top-level 3-line quickstart model optimizer.
@@ -1175,5 +1240,7 @@ def optimize_model(
         batch_tokens=batch_tokens,
         prefer_1bit_relu2_for_relu=prefer_1bit_relu2_for_relu,
         prefer_unified_mlp=prefer_unified_mlp,
+        compile_mlir=compile_mlir,
+        mlir_target=mlir_target,
     )
 

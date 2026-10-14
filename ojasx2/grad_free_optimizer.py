@@ -136,7 +136,7 @@ class HolonomicGradFreeOptimizer(Optimizer):
                     d_p = buf
 
                 if is_half:
-                    _p.add_(d_p.to(_p.dtype), alpha=-lr)
+                    _p.copy_((p_data - lr * d_p).to(_p.dtype))
                 else:
                     _p.add_(d_p, alpha=-lr)
 
@@ -147,7 +147,7 @@ class HolonomicGradFreeOptimizer(Optimizer):
 
                 if weight_decay != 0.0:
                     if is_half:
-                        _p.mul_(1.0 - lr * weight_decay)
+                        p_f32 = p_f32 * (1.0 - lr * weight_decay)
                     else:
                         _p.mul_(1.0 - lr * weight_decay)
 
@@ -161,6 +161,9 @@ class HolonomicGradFreeOptimizer(Optimizer):
                     exp_avg_sq = st["exp_avg_sq"] = torch.zeros_like(
                         p_f32, memory_format=torch.preserve_format
                     )
+                elif is_half and exp_avg.dtype != torch.float32:
+                    exp_avg = st["exp_avg"] = exp_avg.float()
+                    exp_avg_sq = st["exp_avg_sq"] = exp_avg_sq.float()
 
                 exp_avg.mul_(beta1).add_(g_f32, alpha=1.0 - beta1)
                 exp_avg_sq.mul_(beta2).addcmul_(g_f32, g_f32, value=1.0 - beta2)
@@ -172,7 +175,7 @@ class HolonomicGradFreeOptimizer(Optimizer):
 
                 delta = -step_size * (exp_avg / denom)
                 if is_half:
-                    _p.add_(delta.to(_p.dtype))
+                    _p.copy_((p_f32 + delta).to(_p.dtype))
                 else:
                     _p.add_(delta)
 
@@ -224,6 +227,11 @@ class HolonomicGradFreeOptimizer(Optimizer):
 
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
         super().load_state_dict(state_dict)
+        for p, st in self.state.items():
+            if p.dtype in (torch.float16, torch.bfloat16):
+                for k in ("exp_avg", "exp_avg_sq", "momentum_buffer"):
+                    if k in st and isinstance(st[k], torch.Tensor) and st[k].dtype != torch.float32:
+                        st[k] = st[k].float()
         self._refresh_param_groups_and_hooks()
 
     @property

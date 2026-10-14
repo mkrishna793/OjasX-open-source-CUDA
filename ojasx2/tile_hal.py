@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import sys
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -120,9 +120,21 @@ def probe_hardware_profile() -> SiliconCapabilityProfile:
     else:
         l1d, l2, line, cores, amx = 65536, 4194304, 128, os.cpu_count() or 8, 1 if sys.platform == "darwin" else 0
     has_mps = bool(hasattr(torch.backends, "mps") and torch.backends.mps.is_available())
-    chip_class = "Apple_Silicon_Unified_GPU_AMX_ANE" if (amx and has_mps) else (
-        "Discrete_GPU" if torch.cuda.is_available() else "CPU_AMX"
-    )
+    has_cuda = bool(torch.cuda.is_available())
+    has_rocm = bool(has_cuda and getattr(torch.version, "hip", None))
+    has_xpu = bool(hasattr(torch, "xpu") and torch.xpu.is_available())
+    if amx and has_mps:
+        chip_class = "Apple_Silicon_Unified_GPU_AMX_ANE"
+    elif has_rocm:
+        chip_class = "AMD_ROCm_CDNA_RDNA_GPU"
+    elif has_cuda:
+        chip_class = "NVIDIA_CUDA_TensorCore_GPU"
+    elif has_xpu:
+        chip_class = "Intel_oneAPI_XPU_SYCL_GPU"
+    elif amx:
+        chip_class = "Apple_CPU_AMX"
+    else:
+        chip_class = "Universal_MultiCore_SIMD_CPU"
     return SiliconCapabilityProfile(
         l1d_cache_bytes=l1d,
         l2_cache_bytes=l2,
@@ -156,6 +168,12 @@ class TileSchedulePlanner:
             stages = 1
             if device_type == "mps":
                 engine = "Apple_Metal_SIMDGroup_Matrix_8x32x16_Decode"
+            elif device_type in ("cuda", "nvvm"):
+                engine = "NVIDIA_CUDA_TensorCore_MMA_Decode"
+            elif device_type in ("rocm", "hip"):
+                engine = "AMD_ROCm_MFMA_Wave64_Decode"
+            elif device_type in ("xpu", "sycl"):
+                engine = "Intel_SYCL_SubGroup_Matrix_Decode"
             elif self.profile.has_apple_amx:
                 engine = "Apple_AMX_Decode_2D_Tile"
             else:
@@ -182,6 +200,12 @@ class TileSchedulePlanner:
             stages = 2
             if device_type == "mps":
                 engine = "Apple_Metal_SIMDGroup_Matrix_32x32x8_Prefill"
+            elif device_type in ("cuda", "nvvm"):
+                engine = "NVIDIA_CUDA_TensorCore_MMA_128x128x32_Prefill"
+            elif device_type in ("rocm", "hip"):
+                engine = "AMD_ROCm_MFMA_128x128x32_Prefill"
+            elif device_type in ("xpu", "sycl"):
+                engine = "Intel_SYCL_JointMatrix_64x64x16_Prefill"
             elif self.profile.has_apple_amx:
                 engine = "Apple_AMX_Prefill_Throughput"
             else:
@@ -457,10 +481,8 @@ def fused_glu(
     act_mode: Union[int, str] = "swiglu",
 ) -> torch.Tensor:
     """Universal L1-tiled fused Gated Linear Unit forward and autograd engine."""
+    ensure_tile_kernels_loaded()
     mode_int = resolve_glu_mode(act_mode)
-    if os.environ.get("OJASX_DISABLE_NATIVE") == "1" or not _LOADED_TILE_DYLIB:
-        from .tile_fallback import _glu_forward
-        return _glu_forward(gate, up, mode_int)
     return torch.ops.ojasx_hal.fused_l1_glu_fwd(gate, up, mode_int)
 
 
@@ -491,9 +513,7 @@ def amx_linear_relu2(
     weight: torch.Tensor,
     bias: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    if os.environ.get("OJASX_DISABLE_NATIVE") == "1" or not _LOADED_TILE_DYLIB:
-        from .tile_fallback import _linear_forward
-        return _linear_forward(x, weight, bias)
+    ensure_tile_kernels_loaded()
     return torch.ops.ojasx_hal.fused_amx_linear_relu2_fwd(x, weight, bias)
 
 
@@ -502,9 +522,7 @@ def l1_rmsnorm(
     weight: torch.Tensor,
     eps: float = 1e-6,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    if os.environ.get("OJASX_DISABLE_NATIVE") == "1" or not _LOADED_TILE_DYLIB:
-        from .tile_fallback import _rms_forward
-        return _rms_forward(x, weight, eps)
+    ensure_tile_kernels_loaded()
     return torch.ops.ojasx_hal.fused_l1_rmsnorm_fwd(x, weight, eps)
 
 
@@ -563,9 +581,7 @@ def tilelang_metal_gemm_relu2(
     bias: Optional[torch.Tensor] = None,
     panel_size: int = 4,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    if os.environ.get("OJASX_DISABLE_NATIVE") == "1" or not _LOADED_TILE_DYLIB:
-        from .tile_fallback import _linear_forward
-        return _linear_forward(x, weight, bias)
+    ensure_tile_kernels_loaded()
     return torch.ops.ojasx_hal.tilelang_metal_gemm_relu2_fwd(x, weight, bias, panel_size)
 
 
@@ -627,9 +643,7 @@ def tilelang_universal_gemm_relu2(
     target_arch: str = "auto",
     panel_size: int = 4,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    if os.environ.get("OJASX_DISABLE_NATIVE") == "1" or not _LOADED_TILE_DYLIB:
-        from .tile_fallback import _linear_forward
-        return _linear_forward(x, weight, bias)
+    ensure_tile_kernels_loaded()
     return torch.ops.ojasx_hal.tilelang_universal_gemm_relu2_fwd(
         x, weight, bias, target_arch, panel_size
     )
@@ -670,7 +684,6 @@ def tilelang_emit_universal_source(
     return torch.ops.ojasx_hal.tilelang_emit_universal_source(
         target_arch, block_m, block_n, block_k, panel_size
     )
-
 
 
 # ============================================================================
@@ -900,5 +913,3 @@ class HolonomicUnifiedTransformerMLP(nn.Module):
         return HolonomicUnifiedTransformerMLPFunction.apply(
             x, self.norm_weight, self.gate_weight, self.up_weight, self.down_weight, self.eps
         )
-
-

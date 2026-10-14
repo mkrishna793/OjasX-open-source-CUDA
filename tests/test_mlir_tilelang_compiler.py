@@ -232,3 +232,26 @@ def test_dram_intermediate_memory_audit():
         if op.op_name == "alloc_dram" or (op.results and any("score_matrix" in r.name for r in op.results))
     ]
     assert len(dram_intermediate_allocs) == 0, "Intermediate score matrix must NEVER be allocated in global DRAM!"
+
+
+def test_compile_mlir_executable_and_artifacts():
+    """Verifies live MLIRCompiledExecutable execution, autograd backward, and 3-dialect SSA verification."""
+    from ojasx2.mlir_dialects import compile_mlir_executable, lower_fx_to_mlir_artifacts
+
+    model = SimpleMLP()
+    exec_mod = compile_mlir_executable(model, target="nvvm")
+    assert exec_mod.mlir_artifacts.ssa_verified
+    assert exec_mod.mlir_artifacts.holonomic_op_count > 0
+    assert exec_mod.mlir_artifacts.subgraph_op_count > 0
+    assert exec_mod.mlir_artifacts.tile_op_count > 0
+    assert ".target sm_80" in exec_mod.target_code
+
+    x = torch.randn(4, 128, requires_grad=True)
+    x_ref = x.detach().clone().requires_grad_(True)
+    y_ref = model(x_ref)
+    y_ref.sum().backward()
+
+    y_mlir = exec_mod(x)
+    y_mlir.sum().backward()
+    assert torch.allclose(y_mlir, y_ref, atol=1e-4, rtol=1e-4)
+    assert torch.allclose(x.grad, x_ref.grad, atol=1e-4, rtol=1e-4)

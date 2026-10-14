@@ -127,12 +127,14 @@ out.sum().backward()
 from ojasx2.mesh_hal import pack_tensor_for_wire,unpack_tensor_from_wire
 p,_,_=pack_tensor_for_wire(torch.randn(5,50))
 assert unpack_tensor_from_wire(p,torch.device('cpu'),torch.float32).shape==(5,50)
+cuda_src = ojasx2.tilelang_emit_universal_source('cuda')
+assert 'cuda' in cuda_src.lower() or '__ballot_sync' in cuda_src
 try:
-    ojasx2.tilelang_emit_universal_source('cuda')
+    ojasx2.tilelang_emit_universal_source('unsupported_arch')
 except RuntimeError as e:
-    assert 'source generation' in str(e)
+    assert 'Unsupported TileLang target_arch' in str(e)
 else:
-    raise AssertionError('Fallback must not claim native codegen')
+    raise AssertionError('Unknown arch must be rejected')
 '''
     result = subprocess.run([sys.executable, "-c", script], env={**os.environ, "OJASX_DISABLE_NATIVE": "1"}, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr

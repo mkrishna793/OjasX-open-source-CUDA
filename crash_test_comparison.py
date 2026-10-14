@@ -10,7 +10,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-sys.path.insert(0, "/content/ojasx_remote")
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ojasx2
 from ojasx2.smart_router import optimize_model
 from benchmark_1_25b_fp32_t4 import ModernLLAMA1_25B
