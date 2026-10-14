@@ -1107,11 +1107,13 @@ at::Tensor fused_transformer_mlp_fwd(
     at::ScalarType compute_type = (x.scalar_type() == at::kHalf || x.scalar_type() == at::kBFloat16)
                                 ? at::kFloat : x.scalar_type();
 
-    at::Tensor x_2d = x_contig.reshape({rows, dim}).to(compute_type);
-    at::Tensor nw = nw_contig.reshape({dim}).to(compute_type);
-    at::Tensor gw = gw_contig.to(compute_type);
-    at::Tensor uw = uw_contig.to(compute_type);
-    at::Tensor dw = dw_contig.to(compute_type);
+    at::Tensor x_2d_raw = x_contig.reshape({rows, dim});
+    at::Tensor x_2d = (x_2d_raw.scalar_type() == compute_type) ? x_2d_raw : x_2d_raw.to(compute_type);
+    at::Tensor nw_raw = nw_contig.reshape({dim});
+    at::Tensor nw = (nw_raw.scalar_type() == compute_type) ? nw_raw : nw_raw.to(compute_type);
+    at::Tensor gw = (gw_contig.scalar_type() == compute_type) ? gw_contig : gw_contig.to(compute_type);
+    at::Tensor uw = (uw_contig.scalar_type() == compute_type) ? uw_contig : uw_contig.to(compute_type);
+    at::Tensor dw = (dw_contig.scalar_type() == compute_type) ? dw_contig : dw_contig.to(compute_type);
 
     at::Tensor var = x_2d.pow(2).mean(-1, true);
     at::Tensor rstd = at::rsqrt(var + eps);
@@ -1158,12 +1160,15 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor> fused_tra
     at::ScalarType compute_type = (x.scalar_type() == at::kHalf || x.scalar_type() == at::kBFloat16)
                                 ? at::kFloat : x.scalar_type();
 
-    at::Tensor x_2d = x_contig.reshape({rows, dim}).to(compute_type);
-    at::Tensor dy_2d = dy_contig.reshape({rows, dim}).to(compute_type);
-    at::Tensor nw = nw_contig.reshape({dim}).to(compute_type);
-    at::Tensor gw = gw_contig.to(compute_type);
-    at::Tensor uw = uw_contig.to(compute_type);
-    at::Tensor dw = dw_contig.to(compute_type);
+    at::Tensor x_2d_raw = x_contig.reshape({rows, dim});
+    at::Tensor x_2d = (x_2d_raw.scalar_type() == compute_type) ? x_2d_raw : x_2d_raw.to(compute_type);
+    at::Tensor dy_2d_raw = dy_contig.reshape({rows, dim});
+    at::Tensor dy_2d = (dy_2d_raw.scalar_type() == compute_type) ? dy_2d_raw : dy_2d_raw.to(compute_type);
+    at::Tensor nw_raw = nw_contig.reshape({dim});
+    at::Tensor nw = (nw_raw.scalar_type() == compute_type) ? nw_raw : nw_raw.to(compute_type);
+    at::Tensor gw = (gw_contig.scalar_type() == compute_type) ? gw_contig : gw_contig.to(compute_type);
+    at::Tensor uw = (uw_contig.scalar_type() == compute_type) ? uw_contig : uw_contig.to(compute_type);
+    at::Tensor dw = (dw_contig.scalar_type() == compute_type) ? dw_contig : dw_contig.to(compute_type);
 
     at::Tensor var = x_2d.pow(2).mean(-1, true);
     at::Tensor rstd = at::rsqrt(var + eps);

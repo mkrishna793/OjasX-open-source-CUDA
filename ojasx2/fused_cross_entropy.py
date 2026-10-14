@@ -21,6 +21,14 @@ import torch.nn as nn
 # Core Streaming Mathematical Kernels
 # =============================================================================
 
+def _is_concrete_eager_tensor(t: torch.Tensor) -> bool:
+    if type(t) is not torch.Tensor:
+        return False
+    if hasattr(torch, "compiler") and hasattr(torch.compiler, "is_compiling") and torch.compiler.is_compiling():
+        return False
+    return True
+
+
 def _streaming_fused_lce_forward(
     h: torch.Tensor,
     w: torch.Tensor,
@@ -29,7 +37,7 @@ def _streaming_fused_lce_forward(
     ignore_index: int = -100,
     label_smoothing: float = 0.0,
     reduction: str = "mean",
-    tile_tok: int = 128,
+    tile_tok: int = 512,
     tile_voc: int = 4096,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Dual-pass streaming forward accumulation over token and vocabulary tiles."""
@@ -54,6 +62,9 @@ def _streaming_fused_lce_forward(
 
     compute_dtype = torch.float32 if h.dtype in (torch.float16, torch.bfloat16) else h.dtype
     h_2d = h.reshape(m, d)
+    h_2d_comp = h_2d if h_2d.dtype == compute_dtype else h_2d.to(compute_dtype)
+    w_comp = w if w.dtype == compute_dtype else w.to(compute_dtype)
+    b_comp = (bias if bias.dtype == compute_dtype else bias.to(compute_dtype)) if bias is not None else None
     t_1d = targets.reshape(m)
 
     # Valid mask without data-dependent python branches
@@ -61,10 +72,10 @@ def _streaming_fused_lce_forward(
     clamped_t = torch.clamp(t_1d, 0, v - 1)
 
     # Target dot-product z_{m, y_m} computed in O(M x D) without logits tensor
-    w_target = w[clamped_t].to(compute_dtype)
-    z_target = (h_2d.to(compute_dtype) * w_target).sum(dim=-1)
-    if bias is not None:
-        z_target = z_target + bias[clamped_t].to(compute_dtype)
+    w_target = w_comp[clamped_t]
+    z_target = (h_2d_comp * w_target).sum(dim=-1)
+    if b_comp is not None:
+        z_target = z_target + b_comp[clamped_t]
     z_target = torch.where(mask, z_target, torch.zeros_like(z_target))
 
     lse = torch.zeros(m, dtype=compute_dtype, device=h.device)
@@ -73,7 +84,7 @@ def _streaming_fused_lce_forward(
     # Dual-pass tile streaming loop: transient memory <= O(tile_tok x tile_voc)
     for tok_s in range(0, m, tile_tok):
         tok_e = min(tok_s + tile_tok, m)
-        h_chunk = h_2d[tok_s:tok_e].to(compute_dtype)
+        h_chunk = h_2d_comp[tok_s:tok_e]
         m_chunk = torch.full((tok_e - tok_s,), -float("inf"), dtype=compute_dtype, device=h.device)
         s_chunk = torch.zeros(tok_e - tok_s, dtype=compute_dtype, device=h.device)
         sum_z_chunk = (
@@ -84,10 +95,10 @@ def _streaming_fused_lce_forward(
 
         for v_s in range(0, v, tile_voc):
             v_e = min(v_s + tile_voc, v)
-            w_chunk = w[v_s:v_e].to(compute_dtype)
+            w_chunk = w_comp[v_s:v_e]
             z_tile = torch.matmul(h_chunk, w_chunk.t())
-            if bias is not None:
-                z_tile = z_tile + bias[v_s:v_e].to(compute_dtype)
+            if b_comp is not None:
+                z_tile = z_tile + b_comp[v_s:v_e]
 
             m_tile = z_tile.amax(dim=-1)
             m_new = torch.maximum(m_chunk, m_tile)
@@ -134,28 +145,38 @@ def _streaming_fused_lce_backward(
     ignore_index: int = -100,
     label_smoothing: float = 0.0,
     reduction: str = "mean",
-    tile_tok: int = 128,
+    tile_tok: int = 512,
     tile_voc: int = 4096,
+    needs_dh: Optional[bool] = None,
+    needs_dw: Optional[bool] = None,
+    needs_db: Optional[bool] = None,
 ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], None, Optional[torch.Tensor], None, None, None]:
     """Streaming chunked pullback directly to dH and dW without materializing logits."""
     d = h.shape[-1]
     v = w.shape[0]
     m = (h.numel() // d) if d > 0 else 0
 
-    needs_dh = h.requires_grad
-    needs_dw = w.requires_grad
-    needs_db = bias is not None and bias.requires_grad
+    if needs_dh is None:
+        needs_dh = bool(h.requires_grad)
+    if needs_dw is None:
+        needs_dw = bool(w.requires_grad)
+    if needs_db is None:
+        needs_db = bool(bias is not None and bias.requires_grad)
 
     if m == 0 or d == 0 or v == 0:
         dh = torch.zeros_like(h) if needs_dh else None
         dw = torch.zeros_like(w) if needs_dw else None
-        db = torch.zeros_like(bias) if needs_db else None
+        db = torch.zeros_like(bias) if (needs_db and bias is not None) else None
         return dh, dw, None, db, None, None, None
 
     compute_dtype = torch.float32 if h.dtype in (torch.float16, torch.bfloat16) else h.dtype
-    h_2d = h.reshape(m, d).to(compute_dtype)
+    h_2d = h.reshape(m, d)
+    h_2d = h_2d if h_2d.dtype == compute_dtype else h_2d.to(compute_dtype)
+    w_comp = w if w.dtype == compute_dtype else w.to(compute_dtype)
+    b_comp = (bias if bias.dtype == compute_dtype else bias.to(compute_dtype)) if bias is not None else None
     t_1d = targets.reshape(m)
-    lse_1d = lse.reshape(m).to(compute_dtype)
+    lse_1d = lse.reshape(m)
+    lse_1d = lse_1d if lse_1d.dtype == compute_dtype else lse_1d.to(compute_dtype)
 
     mask = (t_1d != ignore_index) & (t_1d >= 0) & (t_1d < v)
     clamped_t = torch.clamp(t_1d, 0, v - 1)
@@ -180,57 +201,60 @@ def _streaming_fused_lce_backward(
 
     dh_2d = torch.zeros((m, d), dtype=compute_dtype, device=h.device) if needs_dh else None
     dw = torch.zeros_like(w, dtype=compute_dtype) if needs_dw else None
-    db = torch.zeros_like(bias, dtype=compute_dtype) if needs_db else None
+    db = torch.zeros_like(bias, dtype=compute_dtype) if (needs_db and bias is not None) else None
 
     # Step 1: Target subtraction term: - c_m (1 - eps) * 1[v = y_m]
     eps = label_smoothing
     target_scale = c * (1.0 - eps)
-    if needs_dh:
-        dh_2d -= target_scale.unsqueeze(-1) * w[clamped_t].to(compute_dtype)
-    if needs_dw:
+    if needs_dh and dh_2d is not None:
+        dh_2d -= target_scale.unsqueeze(-1) * w_comp[clamped_t]
+    if needs_dw and dw is not None:
         dw.index_add_(0, clamped_t, -(target_scale.unsqueeze(-1) * h_2d))
-    if needs_db:
+    if needs_db and db is not None:
         db.index_add_(0, clamped_t, -target_scale)
 
     # Step 2: Uniform label smoothing shift: - c_m * (eps / V)
     if eps > 0.0:
         c_sum = c.sum()
-        if needs_dh:
-            w_mean = w.to(compute_dtype).mean(dim=0)
+        if needs_dh and dh_2d is not None:
+            w_mean = w_comp.mean(dim=0)
             dh_2d -= (c * eps).unsqueeze(-1) * w_mean
-        if needs_dw:
+        if needs_dw and dw is not None:
             h_weighted = (c.unsqueeze(-1) * h_2d).sum(dim=0)
             dw -= (eps / float(v)) * h_weighted.unsqueeze(0).expand(v, d)
-        if needs_db:
+        if needs_db and db is not None:
             db -= (eps / float(v)) * c_sum
 
-    # Step 3: Softmax streaming accumulation
+    # Step 3: Softmax streaming accumulation (with FakeTensor-safe zero-cotangent chunk culling)
+    can_cull_chunks = _is_concrete_eager_tensor(alpha)
     for tok_s in range(0, m, tile_tok):
         tok_e = min(tok_s + tile_tok, m)
         alpha_chunk = alpha[tok_s:tok_e]
+        if can_cull_chunks and not bool(torch.any(alpha_chunk != 0)):
+            continue
         h_chunk = h_2d[tok_s:tok_e]
         lse_chunk = lse_1d[tok_s:tok_e]
 
         for v_s in range(0, v, tile_voc):
             v_e = min(v_s + tile_voc, v)
-            w_chunk = w[v_s:v_e].to(compute_dtype)
+            w_chunk = w_comp[v_s:v_e]
             z_tile = torch.matmul(h_chunk, w_chunk.t())
-            if bias is not None:
-                z_tile = z_tile + bias[v_s:v_e].to(compute_dtype)
+            if b_comp is not None:
+                z_tile = z_tile + b_comp[v_s:v_e]
 
             p_tile = torch.exp(z_tile - lse_chunk.unsqueeze(-1))
             p_scaled = alpha_chunk.unsqueeze(-1) * p_tile
 
-            if needs_dh:
+            if needs_dh and dh_2d is not None:
                 dh_2d[tok_s:tok_e] += torch.matmul(p_scaled, w_chunk)
-            if needs_dw:
+            if needs_dw and dw is not None:
                 dw[v_s:v_e] += torch.matmul(p_scaled.t(), h_chunk)
-            if needs_db:
+            if needs_db and db is not None:
                 db[v_s:v_e] += p_scaled.sum(dim=0)
 
-    dh = dh_2d.reshape(h.shape).to(h.dtype) if needs_dh else None
-    dw = dw.to(w.dtype) if needs_dw else None
-    db = db.to(bias.dtype) if needs_db else None
+    dh = dh_2d.reshape(h.shape).to(h.dtype) if (needs_dh and dh_2d is not None) else None
+    dw = dw.to(w.dtype) if (needs_dw and dw is not None) else None
+    db = db.to(bias.dtype) if (needs_db and db is not None and bias is not None) else None
 
     return dh, dw, None, db, None, None, None
 
@@ -304,6 +328,9 @@ def _fused_lce_backward(
         ignore_index=ctx.ignore_index,
         label_smoothing=ctx.label_smoothing,
         reduction=ctx.reduction,
+        needs_dh=bool(ctx.needs_input_grad[0]),
+        needs_dw=bool(ctx.needs_input_grad[1]),
+        needs_db=bool(bias is not None and ctx.needs_input_grad[3]),
     )
 
 
@@ -363,6 +390,9 @@ class _HolonomicFusedLinearCrossEntropyFunction(torch.autograd.Function):
             ignore_index=ctx.ignore_index,
             label_smoothing=ctx.label_smoothing,
             reduction=ctx.reduction,
+            needs_dh=bool(ctx.needs_input_grad[0]),
+            needs_dw=bool(ctx.needs_input_grad[1]),
+            needs_db=bool(bias is not None and ctx.needs_input_grad[3]),
         )
 
 

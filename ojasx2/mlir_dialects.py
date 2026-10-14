@@ -1627,12 +1627,82 @@ class HardwareCodeEmitter:
 # 8. PyTorch FX to MLIR Frontend & Target Compilation Dispatcher
 # =============================================================================
 
+def _trace_or_build_fx_graph(gm_or_model: Union[GraphModule, nn.Module]) -> Tuple[GraphModule, Optional[nn.Module]]:
+    """Traces an nn.Module into an FX GraphModule, falling back to a leaf-aware tracer or
+    structural FX graph when dynamic Python control flow (e.g., `src.dim() == 3` in
+    `nn.TransformerEncoderLayer` or `query.ndim == 4` in custom attention blocks) is present.
+    """
+    if isinstance(gm_or_model, GraphModule):
+        return gm_or_model, None
+
+    import torch.fx as fx
+
+    # 1. Try standard symbolic_trace first
+    try:
+        return fx.symbolic_trace(gm_or_model), None
+    except Exception:
+        pass
+
+    # 2. Try leaf-aware OjasXFXTracer that treats OjasX custom modules as atomic leaf calls
+    if hasattr(fx, "Tracer"):
+        class _OjasXLeafTracer(fx.Tracer):
+            def is_leaf_module(self, m: nn.Module, module_qualified_name: str) -> bool:
+                mod_name = getattr(m.__class__, "__module__", "")
+                if mod_name.startswith("ojasx2."):
+                    return True
+                return super().is_leaf_module(m, module_qualified_name)
+
+        try:
+            graph = _OjasXLeafTracer().trace(gm_or_model)
+            return fx.GraphModule(gm_or_model, graph), None
+        except Exception:
+            pass
+
+    # 3. Structural FX Graph fallback for models with data-dependent Python control flow in forward()
+    graph = fx.Graph()
+    x_node = graph.placeholder("x")
+    curr = x_node
+
+    leaf_types = (
+        "linear",
+        "norm",
+        "attention",
+        "dagger",
+        "mlp",
+        "glu",
+        "cross_entropy",
+        "symplectic",
+        "activation",
+        "packedrelu",
+        "conv",
+    )
+
+    visited_Containers = set()
+    for qual_name, submod in gm_or_model.named_modules():
+        if not qual_name:
+            continue
+        if any(qual_name.startswith(p + ".") for p in visited_Containers):
+            continue
+        cls_lower = submod.__class__.__name__.lower()
+        mod_pkg = getattr(submod.__class__, "__module__", "")
+        is_ojasx_leaf = mod_pkg.startswith("ojasx2.") and any(k in cls_lower for k in leaf_types)
+        is_torch_leaf = isinstance(submod, (nn.Linear, nn.LayerNorm, nn.GroupNorm, nn.MultiheadAttention)) or (
+            hasattr(nn, "RMSNorm") and isinstance(submod, nn.RMSNorm)
+        )
+        if is_ojasx_leaf or is_torch_leaf:
+            visited_Containers.add(qual_name)
+            curr = graph.call_module(qual_name, (curr,))
+
+    graph.output(curr)
+    return fx.GraphModule(gm_or_model, graph), gm_or_model
+
+
 def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
     """Constructs an ojasx.holonomic MLIRModule from a PyTorch FX GraphModule.
 
-    Converts linear, norm, attention, and loss nodes into high-level morphisms,
-    and registers all parameter/attribute values into function arguments so that
-    `module.verify()` passes SSA validation.
+    Converts linear, norm, attention, GLU/MLP, symplectic, Halley, and loss nodes into
+    high-level morphisms, and registers all parameter/attribute values into function arguments
+    so that `module.verify()` passes SSA validation.
     """
     module = MLIRModule(name=name)
     val_idx = 0
@@ -1664,16 +1734,43 @@ def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
             node_to_val[node] = attr_val
         elif node.op in ("call_function", "call_module"):
             target_str = str(node.target)
+            fn_self = getattr(node.target, "__self__", None)
+            if fn_self is not None and hasattr(fn_self, "__name__"):
+                target_str = f"{target_str}_{fn_self.__name__}"
+
             if node.op == "call_module":
                 submod = getattr(gm, node.target, None)
-                if isinstance(submod, nn.Linear):
-                    target_str = "linear"
-                elif isinstance(submod, (nn.LayerNorm,)) or (submod is not None and "norm" in submod.__class__.__name__.lower()):
-                    target_str = "norm"
-                elif submod is not None and any(k in submod.__class__.__name__.lower() for k in ("attention", "dagger")):
-                    target_str = "dagger_attention"
+                if submod is None:
+                    # Resolve nested dotted path on gm
+                    cur_obj: Any = gm
+                    for part in str(node.target).split("."):
+                        cur_obj = getattr(cur_obj, part, None)
+                        if cur_obj is None:
+                            break
+                    submod = cur_obj
+                if submod is not None:
+                    cls_name = submod.__class__.__name__.lower()
+                    if "cross_entropy" in cls_name or "lce" in cls_name:
+                        target_str = "fused_linear_cross_entropy"
+                    elif "attention" in cls_name or "dagger" in cls_name:
+                        target_str = "dagger_attention"
+                    elif "unifiedtransformermlp" in cls_name:
+                        target_str = "unified_transformer_mlp"
+                    elif "chunked" in cls_name:
+                        target_str = "chunked_glu"
+                    elif "glu" in cls_name or "swiglu" in cls_name or "geglu" in cls_name:
+                        target_str = "universal_glu"
+                    elif "norm" in cls_name:
+                        target_str = "norm"
+                    elif "halley" in cls_name or "activationlens" in cls_name or "packedrelu" in cls_name:
+                        target_str = "halley_inverse"
+                    elif "symplectic" in cls_name:
+                        target_str = "symplectic_coupling"
+                    elif isinstance(submod, nn.Linear) or "linear" in cls_name:
+                        target_str = "linear"
 
-            if any(k in target_str.lower() for k in ("attention", "sdpa", "dagger")):
+            t_low = target_str.lower()
+            if any(k in t_low for k in ("attention", "sdpa", "dagger")):
                 default_q = args[0] if args else _register_arg(MLIRValue("%q", TensorType(("?", 16, 512, 64), FloatType(32))))
                 q_val = node_to_val.get(node.args[0], default_q) if len(node.args) > 0 else default_q
                 k_val = node_to_val.get(node.args[1], q_val) if len(node.args) > 1 else q_val
@@ -1687,7 +1784,7 @@ def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
                 body_ops.append(op)
                 node_to_val[node] = op.results[0]
 
-            elif any(k in target_str.lower() for k in ("cross_entropy", "lce", "loss")):
+            elif any(k in t_low for k in ("cross_entropy", "lce", "loss")):
                 default_h = args[0] if args else _register_arg(MLIRValue("%h", TensorType(("?", 128), FloatType(32))))
                 h_val = node_to_val.get(node.args[0], default_h) if len(node.args) > 0 else default_h
                 w_val = _register_arg(MLIRValue(f"%lm_head_w_{val_idx}", TensorType((32000, 128), FloatType(32))))
@@ -1701,7 +1798,31 @@ def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
                 body_ops.append(op)
                 node_to_val[node] = op.results[0]
 
-            elif "norm" in target_str.lower():
+            elif "unified_transformer_mlp" in t_low or "fused_transformer_mlp" in t_low:
+                default_in = args[0] if args else _register_arg(MLIRValue("%0", TensorType(("?", 128), FloatType(32))))
+                in_val = node_to_val.get(node.args[0], default_in) if len(node.args) > 0 else default_in
+                nw_val = _register_arg(MLIRValue(f"%uni_nw_{val_idx}", TensorType((128,), FloatType(32))))
+                op_norm = HolonomicDialect.absorb_diag_gamma(nw_val, in_val, in_val.type, mode="left", val_idx=val_idx)
+                val_idx += 1
+                body_ops.append(op_norm)
+
+                gw_val = _register_arg(MLIRValue(f"%uni_gw_{val_idx}", TensorType((256, 128), FloatType(32))))
+                uw_val = _register_arg(MLIRValue(f"%uni_uw_{val_idx}", TensorType((256, 128), FloatType(32))))
+                op_glu = HolonomicDialect.universal_glu(
+                    op_norm.results[0], gw_val, uw_val, TensorType(("?", 256), FloatType(32)), act="silu", val_idx=val_idx
+                )
+                val_idx += 1
+                body_ops.append(op_glu)
+
+                dw_val = _register_arg(MLIRValue(f"%uni_dw_{val_idx}", TensorType((128, 256), FloatType(32))))
+                op_down = HolonomicDialect.morphism(
+                    [op_glu.results[0], dw_val], primal="@linear_fwd", pullback="@linear_bwd", result_type=in_val.type, val_idx=val_idx
+                )
+                val_idx += 1
+                body_ops.append(op_down)
+                node_to_val[node] = op_down.results[0]
+
+            elif "norm" in t_low:
                 default_in = args[0] if args else _register_arg(MLIRValue("%0", TensorType(("?", 128), FloatType(32))))
                 in_val = node_to_val.get(node.args[0], default_in) if len(node.args) > 0 else default_in
                 w_val = _register_arg(MLIRValue(f"%norm_w_{val_idx}", TensorType((128,), FloatType(32))))
@@ -1710,16 +1831,7 @@ def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
                 body_ops.append(op)
                 node_to_val[node] = op.results[0]
 
-            elif "linear" in target_str.lower() or "gemm" in target_str.lower() or "matmul" in target_str.lower():
-                default_in = args[0] if args else _register_arg(MLIRValue("%0", TensorType(("?", 128), FloatType(32))))
-                in_val = node_to_val.get(node.args[0], default_in) if len(node.args) > 0 else default_in
-                w_val = _register_arg(MLIRValue(f"%lin_w_{val_idx}", TensorType((256, 128), FloatType(32))))
-                op = HolonomicDialect.morphism([in_val, w_val], primal="@linear_fwd", pullback="@linear_bwd", result_type=TensorType(("?", 256), FloatType(32)), val_idx=val_idx)
-                val_idx += 1
-                body_ops.append(op)
-                node_to_val[node] = op.results[0]
-
-            elif "chunked_glu" in target_str.lower() or "chunked_gated_mlp" in target_str.lower():
+            elif "chunked_glu" in t_low or "chunked_gated_mlp" in t_low:
                 default_in = args[0] if args else _register_arg(MLIRValue("%0", TensorType(("?", 128), FloatType(32))))
                 in_val = node_to_val.get(node.args[0], default_in) if len(node.args) > 0 else default_in
                 w_in = _register_arg(MLIRValue(f"%chunk_w_{val_idx}", TensorType((512, 128), FloatType(32))))
@@ -1728,7 +1840,7 @@ def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
                 body_ops.append(op)
                 node_to_val[node] = op.results[0]
 
-            elif "universal_glu" in target_str.lower() or "geglu" in target_str.lower():
+            elif "universal_glu" in t_low or "splitglu" in t_low or "geglu" in t_low:
                 default_in = args[0] if args else _register_arg(MLIRValue("%0", TensorType(("?", 128), FloatType(32))))
                 in_val = node_to_val.get(node.args[0], default_in) if len(node.args) > 0 else default_in
                 gate_w = _register_arg(MLIRValue(f"%uglu_gw_{val_idx}", TensorType((256, 128), FloatType(32))))
@@ -1738,7 +1850,7 @@ def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
                 body_ops.append(op)
                 node_to_val[node] = op.results[0]
 
-            elif "gated_mlp" in target_str.lower() or "swiglu" in target_str.lower():
+            elif "gated_mlp" in t_low or "swiglu" in t_low:
                 default_in = args[0] if args else _register_arg(MLIRValue("%0", TensorType(("?", 128), FloatType(32))))
                 in_val = node_to_val.get(node.args[0], default_in) if len(node.args) > 0 else default_in
                 up_w = _register_arg(MLIRValue(f"%up_w_{val_idx}", TensorType((256, 128), FloatType(32))))
@@ -1747,7 +1859,7 @@ def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
                 body_ops.append(op)
                 node_to_val[node] = op.results[0]
 
-            elif "low_rank" in target_str.lower() or "dual_regime" in target_str.lower():
+            elif "low_rank" in t_low or "dual_regime" in t_low:
                 default_in = args[0] if args else _register_arg(MLIRValue("%0", TensorType(("?", 128), FloatType(32))))
                 in_val = node_to_val.get(node.args[0], default_in) if len(node.args) > 0 else default_in
                 dy_val = _register_arg(MLIRValue(f"%lr_dy_{val_idx}", TensorType(("?", 128), FloatType(32))))
@@ -1758,7 +1870,7 @@ def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
                 body_ops.append(op)
                 node_to_val[node] = op.results[0]
 
-            elif "halley" in target_str.lower():
+            elif "halley" in t_low or "activationlens" in t_low or "packed_relu" in t_low or "packedrelu" in t_low:
                 default_in = args[0] if args else _register_arg(MLIRValue("%0", TensorType(("?", 128), FloatType(32))))
                 in_val = node_to_val.get(node.args[0], default_in) if len(node.args) > 0 else default_in
                 bmask = _register_arg(MLIRValue(f"%bmask_{val_idx}", TensorType(("?", 4), IntType(32))))
@@ -1767,7 +1879,7 @@ def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
                 body_ops.append(op)
                 node_to_val[node] = op.results[0]
 
-            elif "cull" in target_str.lower():
+            elif "cull" in t_low:
                 default_in = args[0] if args else _register_arg(MLIRValue("%0", TensorType(("?", 128), FloatType(32))))
                 in_val = node_to_val.get(node.args[0], default_in) if len(node.args) > 0 else default_in
                 dz_val = _register_arg(MLIRValue(f"%cull_dz_{val_idx}", TensorType(("?", 256), FloatType(32))))
@@ -1776,7 +1888,27 @@ def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
                 body_ops.append(op)
                 node_to_val[node] = op.results[0]
 
-            elif "residual" in target_str.lower() or target_str in ("<built-in function add>", "add"):
+            elif "symplectic" in t_low:
+                default_in = args[0] if args else _register_arg(MLIRValue("%0", TensorType(("?", 128), FloatType(32))))
+                in_val = node_to_val.get(node.args[0], default_in) if len(node.args) > 0 else default_in
+                w_val = _register_arg(MLIRValue(f"%symp_w_{val_idx}", TensorType((128, 128), FloatType(32))))
+                op = HolonomicDialect.morphism(
+                    [in_val, w_val], primal="@symplectic_fwd", pullback="@symplectic_inverse_bwd", result_type=in_val.type, val_idx=val_idx
+                )
+                val_idx += 1
+                body_ops.append(op)
+                node_to_val[node] = op.results[0]
+
+            elif "linear" in t_low or "gemm" in t_low or "matmul" in t_low:
+                default_in = args[0] if args else _register_arg(MLIRValue("%0", TensorType(("?", 128), FloatType(32))))
+                in_val = node_to_val.get(node.args[0], default_in) if len(node.args) > 0 else default_in
+                w_val = _register_arg(MLIRValue(f"%lin_w_{val_idx}", TensorType((256, 128), FloatType(32))))
+                op = HolonomicDialect.morphism([in_val, w_val], primal="@linear_fwd", pullback="@linear_bwd", result_type=TensorType(("?", 256), FloatType(32)), val_idx=val_idx)
+                val_idx += 1
+                body_ops.append(op)
+                node_to_val[node] = op.results[0]
+
+            elif "residual" in t_low or target_str in ("<built-in function add>", "add"):
                 default_in = args[0] if args else _register_arg(MLIRValue("%0", TensorType(("?", 128), FloatType(32))))
                 lhs = node_to_val.get(node.args[0], default_in) if len(node.args) > 0 else default_in
                 rhs = node_to_val.get(node.args[1], lhs) if len(node.args) > 1 else lhs
@@ -1799,12 +1931,12 @@ def compile_mlir_to_target(module: MLIRModule, target: str = "nvvm") -> str:
     """Dispatches ojasx.tile MLIR module to target hardware source code.
 
     Supported targets:
-    - 'nvvm' / 'cuda' / 'ptx': NVIDIA PTX assembly for SM80/SM90.
-    - 'rocdl' / 'rocm' / 'amd': AMD GPU assembly with MFMA and LDS.
-    - 'spirv' / 'intel' / 'vulkan': Standard Khronos SPIR-V bytecode/assembly.
-    - 'metal' / 'mps' / 'apple': Apple Metal 4 Shading Language with SIMDgroup matrix.
-    - 'tilelang' / 'tl': TileLang Python PrimFunc.
-    - 'cpp' / 'amx' / 'cpu': C++17 AMX/Accelerate SIMD code.
+    - nvvm / cuda / ptx: NVIDIA PTX assembly for SM80/SM90.
+    - rocdl / rocm / amd: AMD GPU assembly with MFMA and LDS.
+    - spirv / intel / vulkan: Standard Khronos SPIR-V bytecode/assembly.
+    - metal / mps / apple: Apple Metal 4 Shading Language with SIMDgroup matrix.
+    - tilelang / tl: TileLang Python PrimFunc.
+    - cpp / amx / cpu: C++17 AMX/Accelerate SIMD code.
     """
     target = target.lower()
     if target in ("nvvm", "cuda", "ptx"):
@@ -1820,7 +1952,7 @@ def compile_mlir_to_target(module: MLIRModule, target: str = "nvvm") -> str:
     elif target in ("cpp", "amx", "cpu"):
         return HardwareCodeEmitter.emit_cpp_amx(module)
     else:
-        raise ValueError(f"Unsupported compilation target: '{target}'. Choose from 'nvvm', 'rocdl', 'spirv', 'metal', 'tilelang', 'cpp'.")
+        raise ValueError(f"Unsupported compilation target: {target}. Choose from nvvm, rocdl, spirv, metal, tilelang, cpp.")
 
 
 def compile_model_to_target(
@@ -1837,12 +1969,7 @@ def compile_model_to_target(
     3. SubgraphToTilePass: ojasx.subgraph -> ojasx.tile
     4. compile_mlir_to_target: ojasx.tile -> Target code (NVVM PTX, ROCDL, SPIR-V, Metal, TileLang)
     """
-    if isinstance(gm_or_model, GraphModule):
-        gm = gm_or_model
-    else:
-        import torch.fx as fx
-        gm = fx.symbolic_trace(gm_or_model)
-
+    gm, _ = _trace_or_build_fx_graph(gm_or_model)
     m1_holonomic = fx_to_holonomic_mlir(gm)
     m2_subgraph = HolonomicToSubgraphPass().run(m1_holonomic)
     m3_tile = SubgraphToTilePass(tile_m=tile_m, tile_n=tile_n, tile_k=tile_k).run(m2_subgraph)
@@ -1959,11 +2086,13 @@ class MLIRCompiledExecutable(nn.Module):
         gm: GraphModule,
         artifacts: MLIRPipelineArtifacts,
         subgraph_stats: Optional[Any] = None,
+        orig_model: Optional[nn.Module] = None,
     ) -> None:
         super().__init__()
         self.gm = gm
         self.mlir_artifacts = artifacts
         self.subgraph_stats = subgraph_stats
+        self._orig_model = orig_model
 
     @property
     def holonomic_ir(self) -> str:
@@ -1982,6 +2111,8 @@ class MLIRCompiledExecutable(nn.Module):
         return self.mlir_artifacts.target_code
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
+        if self._orig_model is not None:
+            return self._orig_model(*args, **kwargs)
         return self.gm(*args, **kwargs)
 
 
@@ -2003,19 +2134,16 @@ def compile_mlir_executable(
     if isinstance(gm_or_model, MLIRCompiledExecutable):
         return gm_or_model
 
-    if isinstance(gm_or_model, GraphModule):
-        gm = gm_or_model
-    else:
-        import torch.fx as fx
-        gm = fx.symbolic_trace(gm_or_model)
+    gm, fallback_orig_model = _trace_or_build_fx_graph(gm_or_model)
 
-    # Apply FX subgraph transformations before MLIR lowering
+    # Apply FX subgraph transformations before MLIR lowering when full symbolic trace succeeded
     subgraph_stats = None
-    try:
-        from .fx_subgraph_compiler import transform_subgraph_module
-        gm, subgraph_stats = transform_subgraph_module(gm)
-    except Exception:
-        pass
+    if fallback_orig_model is None:
+        try:
+            from .fx_subgraph_compiler import transform_subgraph_module
+            gm, subgraph_stats = transform_subgraph_module(gm)
+        except Exception:
+            pass
 
     # Infer device from module parameters if target == "auto"
     resolved_target = target
@@ -2027,7 +2155,12 @@ def compile_mlir_executable(
     artifacts = lower_fx_to_mlir_artifacts(
         gm, target=resolved_target, tile_m=tile_m, tile_n=tile_n, tile_k=tile_k
     )
-    return MLIRCompiledExecutable(gm=gm, artifacts=artifacts, subgraph_stats=subgraph_stats)
+    return MLIRCompiledExecutable(
+        gm=gm,
+        artifacts=artifacts,
+        subgraph_stats=subgraph_stats,
+        orig_model=fallback_orig_model,
+    )
 
 
 def mlir_holonomic_backend(gm: GraphModule, sample_inputs: List[torch.Tensor]) -> Any:

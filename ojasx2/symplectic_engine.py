@@ -84,14 +84,17 @@ class SymplecticCouplingFunction(torch.autograd.Function):
                 g_out = g_fn(q1_next)
                 g_trainable = [p for p in g_params if p.requires_grad]
                 g_inputs: List[torch.Tensor] = [q1_next] + g_trainable
-                g_grads = torch.autograd.grad(
-                    outputs=g_out,
-                    inputs=g_inputs,
-                    grad_outputs=g2,
-                    retain_graph=False,
-                    create_graph=False,
-                    allow_unused=True,
-                )
+                if isinstance(g_out, torch.Tensor) and g_out.requires_grad:
+                    g_grads = torch.autograd.grad(
+                        outputs=g_out,
+                        inputs=g_inputs,
+                        grad_outputs=g2,
+                        retain_graph=False,
+                        create_graph=False,
+                        allow_unused=True,
+                    )
+                else:
+                    g_grads = tuple([None] * len(g_inputs))
 
             dq1_from_g = g_grads[0] if g_grads[0] is not None else torch.zeros_like(curr1)
             g1_total = g1 + dq1_from_g
@@ -115,14 +118,17 @@ class SymplecticCouplingFunction(torch.autograd.Function):
                 f_out = f_fn(q2_in)
                 f_trainable = [p for p in f_params if p.requires_grad]
                 f_inputs: List[torch.Tensor] = [q2_in] + f_trainable
-                f_grads = torch.autograd.grad(
-                    outputs=f_out,
-                    inputs=f_inputs,
-                    grad_outputs=g1_total,
-                    retain_graph=False,
-                    create_graph=False,
-                    allow_unused=True,
-                )
+                if isinstance(f_out, torch.Tensor) and f_out.requires_grad:
+                    f_grads = torch.autograd.grad(
+                        outputs=f_out,
+                        inputs=f_inputs,
+                        grad_outputs=g1_total,
+                        retain_graph=False,
+                        create_graph=False,
+                        allow_unused=True,
+                    )
+                else:
+                    f_grads = tuple([None] * len(f_inputs))
 
             dq2_from_f = f_grads[0] if f_grads[0] is not None else torch.zeros_like(curr2)
             g2_prev = g2 + dq2_from_f
@@ -196,8 +202,11 @@ class SymplecticCoupling(nn.Module):
         dim_or_f: Union[int, nn.Module],
         hidden_dim_or_g: Optional[Union[int, nn.Module]] = None,
         bias: bool = True,
+        device: Any = None,
+        dtype: Any = None,
     ) -> None:
         super().__init__()
+        factory_kwargs = {"device": device, "dtype": dtype}
         if isinstance(dim_or_f, nn.Module) and isinstance(hidden_dim_or_g, nn.Module):
             self.f: nn.Module = dim_or_f
             self.g: nn.Module = hidden_dim_or_g
@@ -209,25 +218,44 @@ class SymplecticCoupling(nn.Module):
             self.dim = dim
             self.hidden_dim = hidden_dim
             self.f = nn.Sequential(
-                nn.Linear(dim, hidden_dim, bias=bias),
+                nn.Linear(dim, hidden_dim, bias=bias, **factory_kwargs),
                 nn.SiLU(),
-                nn.Linear(hidden_dim, dim, bias=bias),
+                nn.Linear(hidden_dim, dim, bias=bias, **factory_kwargs),
             )
             self.g = nn.Sequential(
-                nn.Linear(dim, hidden_dim, bias=bias),
+                nn.Linear(dim, hidden_dim, bias=bias, **factory_kwargs),
                 nn.SiLU(),
-                nn.Linear(hidden_dim, dim, bias=bias),
+                nn.Linear(hidden_dim, dim, bias=bias, **factory_kwargs),
             )
         else:
             raise ValueError(
                 "SymplecticCoupling requires either (dim: int, hidden_dim: int) or (f: nn.Module, g: nn.Module)."
             )
 
-    def forward(self, q1: torch.Tensor, q2: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        q1: torch.Tensor,
+        q2: Optional[torch.Tensor] = None,
+    ) -> Union[Tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
+        if q2 is None:
+            half = q1.shape[-1] // 2
+            a, b = q1[..., :half], q1[..., half:]
+            y1, y2 = symplectic_coupling_chain(a, b, [self])
+            return torch.cat([y1, y2], dim=-1)
         return symplectic_coupling_chain(q1, q2, [self])
 
     @torch.no_grad()
-    def inverse(self, y1: torch.Tensor, y2: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def inverse(
+        self,
+        y1: torch.Tensor,
+        y2: Optional[torch.Tensor] = None,
+    ) -> Union[Tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
+        if y2 is None:
+            half = y1.shape[-1] // 2
+            a, b = y1[..., :half], y1[..., half:]
+            q2 = b - self.g(a)
+            q1 = a - self.f(q2)
+            return torch.cat([q1, q2], dim=-1)
         q2 = y2 - self.g(y1)
         q1 = y1 - self.f(q2)
         return q1, q2
@@ -245,6 +273,8 @@ class SymplecticTransformerBlock(nn.Module):
         num_heads: int = 4,
         hidden_dim: Optional[int] = None,
         split_dim: bool = True,
+        device: Any = None,
+        dtype: Any = None,
     ) -> None:
         super().__init__()
         self.dim = dim
@@ -254,17 +284,18 @@ class SymplecticTransformerBlock(nn.Module):
         self.branch_dim = b_dim
         self.hidden_dim = hidden_dim or (b_dim * 4)
 
+        factory_kwargs = {"device": device, "dtype": dtype}
         self.f = nn.Sequential(
-            nn.LayerNorm(b_dim),
-            nn.Linear(b_dim, b_dim),
+            nn.LayerNorm(b_dim, **factory_kwargs),
+            nn.Linear(b_dim, b_dim, **factory_kwargs),
             nn.SiLU(),
-            nn.Linear(b_dim, b_dim),
+            nn.Linear(b_dim, b_dim, **factory_kwargs),
         )
         self.g = nn.Sequential(
-            nn.LayerNorm(b_dim),
-            nn.Linear(b_dim, self.hidden_dim),
+            nn.LayerNorm(b_dim, **factory_kwargs),
+            nn.Linear(b_dim, self.hidden_dim, **factory_kwargs),
             nn.SiLU(),
-            nn.Linear(self.hidden_dim, b_dim),
+            nn.Linear(self.hidden_dim, b_dim, **factory_kwargs),
         )
 
     def forward(
@@ -280,7 +311,17 @@ class SymplecticTransformerBlock(nn.Module):
         return symplectic_coupling_chain(q1, q2, [self])
 
     @torch.no_grad()
-    def inverse(self, y1: torch.Tensor, y2: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def inverse(
+        self,
+        y1: torch.Tensor,
+        y2: Optional[torch.Tensor] = None,
+    ) -> Union[Tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
+        if y2 is None:
+            half = self.branch_dim if y1.shape[-1] == 2 * self.branch_dim else y1.shape[-1] // 2
+            a, b = y1[..., :half], y1[..., half:]
+            q2 = b - self.g(a)
+            q1 = a - self.f(q2)
+            return torch.cat([q1, q2], dim=-1)
         q2 = y2 - self.g(y1)
         q1 = y1 - self.f(q2)
         return q1, q2
@@ -315,17 +356,30 @@ def symplectic_coupling_chain(
 @torch.no_grad()
 def audit_symplectic_reversibility(
     q1: torch.Tensor,
-    q2: torch.Tensor,
-    couplings: Iterable[Any],
+    q2: Optional[torch.Tensor] = None,
+    couplings: Optional[Iterable[Any]] = None,
     tol: float = 1e-5,
 ) -> Dict[str, Any]:
     """
     Empirically verify exact invertibility of a symplectic coupling chain by running
     forward to (y1, y2) and reconstructing (q1_rec, q2_rec) via reverse steps.
     """
-    coupling_list = list(couplings)
-    curr1 = q1.detach().clone()
-    curr2 = q2.detach().clone()
+    if couplings is None and q2 is not None and not isinstance(q2, torch.Tensor):
+        # Called as audit_symplectic_reversibility(x, blocks)
+        couplings = q2
+        q2 = None
+
+    if q2 is None:
+        half = q1.shape[-1] // 2
+        curr1_init = q1[..., :half].detach().clone()
+        curr2_init = q1[..., half:].detach().clone()
+    else:
+        curr1_init = q1.detach().clone()
+        curr2_init = q2.detach().clone()
+
+    coupling_list = list(couplings or [])
+    curr1 = curr1_init.clone()
+    curr2 = curr2_init.clone()
 
     for layer in coupling_list:
         f_fn, g_fn = _extract_fg(layer)
@@ -339,8 +393,8 @@ def audit_symplectic_reversibility(
         rec2 = rec2 - g_fn(rec1)
         rec1 = rec1 - f_fn(rec2)
 
-    err_q1 = float((rec1 - q1.detach()).abs().max().item())
-    err_q2 = float((rec2 - q2.detach()).abs().max().item())
+    err_q1 = float((rec1 - curr1_init).abs().max().item())
+    err_q2 = float((rec2 - curr2_init).abs().max().item())
     max_err = max(err_q1, err_q2)
 
     return {

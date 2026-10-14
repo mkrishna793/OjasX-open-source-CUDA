@@ -1,4 +1,4 @@
-"""Universal Training Recipe Verification Script for OjasX v0.5.1.
+"""Universal Training Recipe Verification Script for OjasX v0.6.0.
 
 Validates the exact user-specified recipe across CPU and MPS:
 1. optimize_model with compile_mlir=True and mlir_target="auto".
@@ -41,10 +41,13 @@ class RecipeTransformer(nn.Module):
         for layer in self.layers:
             x = layer(x)
         x = self.norm(x)
-        logits = self.lm_head(x)
         if targets is not None:
-            return F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
-        return logits
+            try:
+                return self.lm_head(x, targets)
+            except TypeError:
+                logits = self.lm_head(x)
+                return F.cross_entropy(logits.reshape(-1, logits.size(-1)), targets.reshape(-1))
+        return self.lm_head(x)
 
 
 def test_recipe_on_device(device_str: str):
@@ -104,7 +107,15 @@ def test_recipe_on_device(device_str: str):
 
     assert losses[-1] < losses[0], f"Loss did not decrease: {losses[0]} -> {losses[-1]}"
     assert not torch.equal(model.lm_head.weight, initial_param), "Parameters did not update!"
-    print(f"\n[PASS] Device {device_str}: Loss decreased from {losses[0]:.4f} to {losses[-1]:.4f}. Gradients & optimizer verified.")
+
+    # 5. Verify eval() mode and no_grad inference compatibility on TransformerEncoderLayer + HolonomicDaggerAttention
+    model.eval()
+    with torch.no_grad():
+        eval_logits = model(inputs)
+        assert eval_logits.shape == (batch_size, seq_len, 1000)
+    model.train()
+
+    print(f"\n[PASS] Device {device_str}: Loss decreased from {losses[0]:.4f} to {losses[-1]:.4f}. Gradients, eval mode & optimizer verified.")
 
 
 if __name__ == "__main__":

@@ -59,8 +59,9 @@ class _HolonomicLayerNormFn(torch.autograd.Function):
         for d in normalized_shape:
             m *= d
 
-        # Compute mean and variance in float32 for high numerical stability
-        x_f32 = x.float()
+        # Compute mean and variance in >=float32 (preserving float64 precision)
+        compute_dtype = torch.float32 if x.dtype in (torch.float16, torch.bfloat16) else x.dtype
+        x_f32 = x.to(compute_dtype)
         mean = x_f32.mean(dim=norm_dims, keepdim=True)
         var = ((x_f32 - mean) ** 2).mean(dim=norm_dims, keepdim=True)
         rstd = torch.rsqrt(var + eps)
@@ -90,24 +91,25 @@ class _HolonomicLayerNormFn(torch.autograd.Function):
         m = ctx.m
         x_dtype = ctx.x_dtype
 
-        g_f32 = grad_out.float()
-        x_f32 = x.float()
+        compute_dtype = torch.float32 if x_dtype in (torch.float16, torch.bfloat16) else x_dtype
+        g_f32 = grad_out.to(compute_dtype)
+        x_f32 = x.to(compute_dtype)
         x_hat = (x_f32 - mean) * rstd
 
+        leading_dims = tuple(range(x.ndim - len(ctx.normalized_shape)))
         dw = None
         db = None
         if weight is not None and ctx.needs_input_grad[1]:
-            leading_dims = tuple(range(x.ndim - len(ctx.normalized_shape)))
-            dw = (g_f32 * x_hat).sum(dim=leading_dims).to(weight.dtype)
+            prod = g_f32 * x_hat
+            dw = (prod.sum(dim=leading_dims) if leading_dims else prod).to(weight.dtype)
 
         if ctx.has_bias and ctx.needs_input_grad[2]:
-            leading_dims = tuple(range(x.ndim - len(ctx.normalized_shape)))
-            db = g_f32.sum(dim=leading_dims).to(ctx.bias_dtype)
+            db = (g_f32.sum(dim=leading_dims) if leading_dims else g_f32).to(ctx.bias_dtype)
 
         dx = None
         if ctx.needs_input_grad[0]:
             if weight is not None:
-                g_prime = g_f32 * weight.float()
+                g_prime = g_f32 * weight.to(compute_dtype)
             else:
                 g_prime = g_f32
 
@@ -187,7 +189,8 @@ class _HolonomicGroupNormFn(torch.autograd.Function):
         c = x.size(1)
         orig_shape = x.shape
 
-        x_reshaped = x.float().reshape(n, num_groups, -1)
+        compute_dtype = torch.float32 if x.dtype in (torch.float16, torch.bfloat16) else x.dtype
+        x_reshaped = x.to(compute_dtype).reshape(n, num_groups, -1)
         m = x_reshaped.size(-1)
 
         mean = x_reshaped.mean(dim=-1, keepdim=True)
@@ -224,8 +227,9 @@ class _HolonomicGroupNormFn(torch.autograd.Function):
         m = ctx.m
         x_dtype = ctx.x_dtype
 
-        g_f32 = grad_out.float()
-        x_reshaped = x.float().reshape(n, g, -1)
+        compute_dtype = torch.float32 if x_dtype in (torch.float16, torch.bfloat16) else x_dtype
+        g_f32 = grad_out.to(compute_dtype)
+        x_reshaped = x.to(compute_dtype).reshape(n, g, -1)
         x_hat_reshaped = (x_reshaped - mean) * rstd
         x_hat = x_hat_reshaped.reshape(x.shape)
 
@@ -241,7 +245,7 @@ class _HolonomicGroupNormFn(torch.autograd.Function):
         if ctx.needs_input_grad[0]:
             if weight is not None:
                 w_shape = (1, c) + (1,) * (x.ndim - 2)
-                g_prime = g_f32 * weight.float().reshape(w_shape)
+                g_prime = g_f32 * weight.to(compute_dtype).reshape(w_shape)
             else:
                 g_prime = g_f32
 

@@ -550,3 +550,12 @@ def test_stress_symplectic_with_smart_router_optimize_model():
     assert x.grad is not None and not torch.isnan(x.grad).any()
     optimizer.step()
     optimizer.zero_grad()
+
+    # Verify single-tensor inverse(y) and audit_symplectic_reversibility(x, blocks)
+    with torch.no_grad():
+        blk0 = optimized_model.blocks[0]
+        y_blk = blk0(x)
+        x_rec = blk0.inverse(y_blk)
+        assert torch.allclose(x, x_rec, atol=1e-5, rtol=1e-5)
+        rev_audit = audit_symplectic_reversibility(x, optimized_model.blocks)
+        assert rev_audit["is_reversible"]

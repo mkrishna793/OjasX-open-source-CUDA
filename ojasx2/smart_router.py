@@ -193,6 +193,15 @@ def _extract_glu_activation(module: nn.Module) -> Tuple[str, float]:
         elif "tanh" in act_str:
             return "tanhglu", neg_slope
 
+    for child in module.children():
+        if isinstance(child, HolonomicGLU):
+            c_act = str(getattr(child, "act", "sigmoid")).lower()
+            if c_act in ("sigmoid", "glu", "sigmoidglu"):
+                return "sigmoidglu", float(getattr(child, "negative_slope", neg_slope))
+            return c_act, float(getattr(child, "negative_slope", neg_slope))
+        if isinstance(child, nn.GLU):
+            return "sigmoidglu", neg_slope
+
     mod_name = module.__class__.__name__.lower()
     if "geglu" in mod_name:
         return "geglu", neg_slope
@@ -202,6 +211,8 @@ def _extract_glu_activation(module: nn.Module) -> Tuple[str, float]:
         return "mishglu", neg_slope
     elif "tanh" in mod_name:
         return "tanhglu", neg_slope
+    elif "sigmoid" in mod_name:
+        return "sigmoidglu", neg_slope
 
     # Default for modern LLMs (LLaMA, Mistral, Qwen) is SwiGLU
     return "swiglu", neg_slope
@@ -308,27 +319,38 @@ class SmartWorkloadRouter:
 
         effective_tiny_threshold = 64 if profile_name == "TABULAR_CLASSICAL_ML" else self.tiny_param_threshold
 
+        def _finalize(mod: nn.Module) -> Tuple[nn.Module, SmartWorkloadReport]:
+            if compile_mlir:
+                try:
+                    from .mlir_dialects import compile_mlir_executable
+                    exec_mod = compile_mlir_executable(mod, target=mlir_target)
+                    report.mlir_pipeline = exec_mod.mlir_artifacts.to_dict()
+                    mod._ojasx_mlir_artifacts = exec_mod.mlir_artifacts
+                except Exception:
+                    pass
+            return mod, report
+
         # Check if root model itself is attention, lm_head, unified mlp, or split/chunked GLU MLP
         attn_detected, attn_lens = self._detect_and_fuse_attention(model, "root_attn", batch_tokens, report)
         if attn_detected and attn_lens is not None:
-            return attn_lens, report
+            return _finalize(attn_lens)
 
         if isinstance(model, nn.Linear) and (getattr(model, "out_features", 0) >= self.large_vocab_threshold):
             lm_detected, lm_lens = self._detect_and_fuse_lm_head(model, "root_lm_head", batch_tokens, report)
             if lm_detected and lm_lens is not None:
-                return lm_lens, report
+                return _finalize(lm_lens)
 
         unified_detected, unified_lens = self._detect_and_fuse_unified_mlp(model, "root_unified_mlp", batch_tokens, report)
         if unified_detected and unified_lens is not None:
-            return unified_lens, report
+            return _finalize(unified_lens)
 
         mlp_detected, mlp_lens = self._detect_and_fuse_llm_mlp(model, "root_mlp", batch_tokens, report)
         if mlp_detected and mlp_lens is not None:
-            return mlp_lens, report
+            return _finalize(mlp_lens)
 
         chunked_detected, chunked_lens = self._detect_and_fuse_chunked_mlp(model, "root_chunked_mlp", batch_tokens, report)
         if chunked_detected and chunked_lens is not None:
-            return chunked_lens, report
+            return _finalize(chunked_lens)
 
         self._rewrite_children(
             model,
@@ -338,15 +360,7 @@ class SmartWorkloadRouter:
             effective_tiny_threshold=effective_tiny_threshold,
             report=report,
         )
-        if compile_mlir:
-            try:
-                from .mlir_dialects import compile_mlir_executable
-                exec_mod = compile_mlir_executable(model, target=mlir_target)
-                report.mlir_pipeline = exec_mod.mlir_artifacts.to_dict()
-                model._ojasx_mlir_artifacts = exec_mod.mlir_artifacts
-            except Exception:
-                pass
-        return model, report
+        return _finalize(model)
 
     def _rewrite_children(
         self,
@@ -735,11 +749,18 @@ class SmartWorkloadRouter:
                 return False, None
 
         act_name, neg_slope = _extract_glu_activation(module)
+        uses_nn_glu = any(isinstance(m, (nn.GLU, HolonomicGLU)) for m in module.children())
+        gate_first = bool(getattr(module, "gate_first", not uses_nn_glu))
         total_p = sum(p.numel() for p in module.parameters())
         trainable_p = sum(p.numel() for p in module.parameters() if p.requires_grad)
 
         lens = HolonomicFusedChunkedGLUMLP(
-            in_proj, out_proj=out_proj, act=act_name, negative_slope=neg_slope, dim=-1
+            in_proj,
+            out_proj=out_proj,
+            act=act_name,
+            negative_slope=neg_slope,
+            dim=-1,
+            gate_first=gate_first,
         )
         decision_label = f"OJASX_HOLONOMIC_CHUNKED_{act_name.upper()}_MLP"
 
@@ -778,8 +799,12 @@ class SmartWorkloadRouter:
             rep = HolonomicDaggerAttention(
                 embed_dim=module.embed_dim,
                 num_heads=module.num_heads,
+                dropout=float(getattr(module, "dropout", 0.0)),
                 bias=module.in_proj_bias is not None,
                 batch_first=module.batch_first,
+                return_tuple=True,
+                kdim=getattr(module, "kdim", module.embed_dim),
+                vdim=getattr(module, "vdim", module.embed_dim),
                 device=dev,
                 dtype=dt,
             )
@@ -788,14 +813,40 @@ class SmartWorkloadRouter:
                 rep.q_proj.weight.data.copy_(module.in_proj_weight[:d])
                 rep.k_proj.weight.data.copy_(module.in_proj_weight[d : 2 * d])
                 rep.v_proj.weight.data.copy_(module.in_proj_weight[2 * d : 3 * d])
-                if module.in_proj_bias is not None:
-                    rep.q_proj.bias.data.copy_(module.in_proj_bias[:d])
-                    rep.k_proj.bias.data.copy_(module.in_proj_bias[d : 2 * d])
-                    rep.v_proj.bias.data.copy_(module.in_proj_bias[2 * d : 3 * d])
+                req_g = module.in_proj_weight.requires_grad
+                rep.q_proj.weight.requires_grad_(req_g)
+                rep.k_proj.weight.requires_grad_(req_g)
+                rep.v_proj.weight.requires_grad_(req_g)
+            else:
+                q_w = getattr(module, "q_proj_weight", None)
+                k_w = getattr(module, "k_proj_weight", None)
+                v_w = getattr(module, "v_proj_weight", None)
+                if q_w is not None:
+                    rep.q_proj.weight.data.copy_(q_w)
+                    rep.q_proj.weight.requires_grad_(q_w.requires_grad)
+                if k_w is not None:
+                    rep.k_proj.weight.data.copy_(k_w)
+                    rep.k_proj.weight.requires_grad_(k_w.requires_grad)
+                if v_w is not None:
+                    rep.v_proj.weight.data.copy_(v_w)
+                    rep.v_proj.weight.requires_grad_(v_w.requires_grad)
+
+            if module.in_proj_bias is not None and rep.q_proj.bias is not None:
+                d = module.embed_dim
+                rep.q_proj.bias.data.copy_(module.in_proj_bias[:d])
+                rep.k_proj.bias.data.copy_(module.in_proj_bias[d : 2 * d])
+                rep.v_proj.bias.data.copy_(module.in_proj_bias[2 * d : 3 * d])
+                req_b = module.in_proj_bias.requires_grad
+                rep.q_proj.bias.requires_grad_(req_b)
+                rep.k_proj.bias.requires_grad_(req_b)
+                rep.v_proj.bias.requires_grad_(req_b)
+
             if module.out_proj is not None and hasattr(module.out_proj, "weight"):
                 rep.o_proj.weight.data.copy_(module.out_proj.weight)
+                rep.o_proj.weight.requires_grad_(module.out_proj.weight.requires_grad)
                 if module.out_proj.bias is not None and rep.o_proj.bias is not None:
                     rep.o_proj.bias.data.copy_(module.out_proj.bias)
+                    rep.o_proj.bias.requires_grad_(module.out_proj.bias.requires_grad)
 
             report.decisions.append(
                 SmartLayerDecision(
@@ -818,9 +869,36 @@ class SmartWorkloadRouter:
         v_proj = getattr(module, "v_proj", getattr(module, "v", None))
         o_proj = getattr(module, "o_proj", getattr(module, "out_proj", getattr(module, "c_proj", None)))
 
-        is_attn_class = "attention" in module.__class__.__name__.lower()
+        allowed_attn_children = {id(q_proj), id(k_proj), id(v_proj)}
+        if o_proj is not None:
+            allowed_attn_children.add(id(o_proj))
+        has_unrelated_children = any(
+            id(sub) not in allowed_attn_children
+            and (
+                isinstance(
+                    sub,
+                    (
+                        nn.Linear,
+                        nn.Conv1d,
+                        nn.Conv2d,
+                        nn.Conv3d,
+                        nn.LayerNorm,
+                        nn.GroupNorm,
+                        nn.RMSNorm,
+                        HolonomicLayerNorm,
+                        HolonomicGroupNorm,
+                        HolonomicNativeRMSNorm,
+                        HolonomicRMSNorm,
+                    ),
+                )
+                or any( True for _ in sub.parameters() )
+            )
+            for _, sub in module.named_children()
+        )
+
         if (
-            q_proj is not None
+            not has_unrelated_children
+            and q_proj is not None
             and k_proj is not None
             and v_proj is not None
             and isinstance(q_proj, nn.Linear)

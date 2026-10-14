@@ -473,8 +473,14 @@ def _emit_universal_source_fallback(target_arch: str, block_m: int, block_n: int
 
 def register_tile_fallbacks():
     """Fill only missing schemas, never colliding with an already loaded native library."""
-    if hasattr(torch.ops, "ojasx_hal") and hasattr(torch.ops.ojasx_hal, "probe_silicon_info"):
-        return
+    composite_only_ops = {
+        "probe_silicon_info",
+        "xor_swizzle_offset",
+        "tilelang_query_schedule",
+        "tilelang_query_chip_schedule",
+        "tilelang_emit_metal_gemm_source",
+        "tilelang_emit_universal_source",
+    }
     definitions = {
         "probe_silicon_info": ("probe_silicon_info() -> int[]", lambda: [65536, 4194304, 128, os.cpu_count() or 8, 1 if sys.platform == "darwin" else 0]),
         "xor_swizzle_offset": ("xor_swizzle_offset(int row, int col, int stride, int num_banks) -> int", lambda row, col, stride, num_banks: row * stride + ((col & ~(num_banks - 1)) | ((col ^ row) & (num_banks - 1)))),
@@ -498,10 +504,17 @@ def register_tile_fallbacks():
         "tilelang_emit_universal_source": ("tilelang_emit_universal_source(str target_arch, int block_m, int block_n, int block_k, int panel_size) -> str", _emit_universal_source_fallback),
     }
     library = torch.library.Library("ojasx_hal", "FRAGMENT")
+    registered_any = False
     for name, (schema, implementation) in definitions.items():
-        if not hasattr(torch.ops.ojasx_hal, name):
+        if not hasattr(torch.ops, "ojasx_hal") or not hasattr(torch.ops.ojasx_hal, name):
             library.define(schema)
-            library.impl(name, implementation, "CompositeExplicitAutograd")
-    _LIBRARIES.append(library)
+            if name in composite_only_ops:
+                library.impl(name, implementation, "CompositeExplicitAutograd")
+            else:
+                for dispatch_key in ("CPU", "CUDA", "MPS", "XPU", "PrivateUse1"):
+                    library.impl(name, implementation, dispatch_key)
+            registered_any = True
+    if registered_any:
+        _LIBRARIES.append(library)
     global _FALLBACKS_REGISTERED
     _FALLBACKS_REGISTERED = True
