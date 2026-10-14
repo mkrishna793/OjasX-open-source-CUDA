@@ -52,7 +52,7 @@ from .tile_hal import (
     probe_hardware_profile,
 )
 from .dagger_attention import HolonomicDaggerAttention
-from .fused_cross_entropy import HolonomicFusedLinearCrossEntropy
+from .fused_cross_entropy import FusedLinearCrossEntropy, HolonomicFusedLinearCrossEntropy
 from .symplectic_engine import SymplecticCoupling, SymplecticTransformerBlock
 
 
@@ -104,6 +104,9 @@ class SmartWorkloadReport:
         counts: Dict[str, int] = {}
         for d in self.decisions:
             counts[d.decision] = counts.get(d.decision, 0) + 1
+        extra = getattr(self, "_extra_action_counts", None)
+        if extra:
+            counts.update(extra)
         return counts
 
     def format_table(self) -> str:
@@ -1295,30 +1298,187 @@ class SmartWorkloadRouter:
         )
 
 
+from .dagger_attention import DaggerAttention
+from .compiler import MLIRCompiledExecutable, CompilationArtifact
+from torch.utils.checkpoint import checkpoint
+
+
+class _CheckpointedDecoderLayer(nn.Module):
+    """
+    Wraps a single-stream Transformer decoder block in non-reentrant activation
+    checkpointing so fine-tuning (full FT or LoRA) achieves O(sqrt(L)) or O(1)
+    layer activation memory without altering pretrained single-stream weights.
+    """
+
+    def __init__(self, block: nn.Module) -> None:
+        super().__init__()
+        self.block = block
+
+    def __getitem__(self, key: Any) -> Any:
+        return self.block[key]
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.block, name)
+
+    def forward(self, *args: Any, **kwargs: Any) -> Any:
+        if self.training and any(
+            isinstance(a, torch.Tensor) and a.requires_grad for a in args
+        ):
+            return checkpoint(
+                lambda *a: self.block(*a, **kwargs),
+                *args,
+                use_reentrant=False,
+            )
+        return self.block(*args, **kwargs)
+
+
+@dataclass
+class OptimizationReport:
+    mode: str = "finetune"
+    replaced_attention_layers: int = 0
+    replaced_loss_modules: int = 0
+    symplectic_blocks_configured: int = 0
+    checkpointed_blocks: int = 0
+    mlir_compiled: bool = False
+    mlir_artifact: Optional[CompilationArtifact] = None
+    notes: List[str] = field(default_factory=list)
+
+    @property
+    def action_counts(self) -> Dict[str, int]:
+        return {
+            "replaced_attention_layers": self.replaced_attention_layers,
+            "replaced_loss_modules": self.replaced_loss_modules,
+            "symplectic_blocks_configured": self.symplectic_blocks_configured,
+            "checkpointed_blocks": self.checkpointed_blocks,
+        }
+
+    def format_table(self) -> str:
+        lines = [
+            f"OjasX Optimization Report (mode={self.mode})",
+            f"  - Replaced Attention Layers: {self.replaced_attention_layers}",
+            f"  - Replaced Loss Modules:     {self.replaced_loss_modules}",
+            f"  - Symplectic Blocks:         {self.symplectic_blocks_configured}",
+            f"  - Checkpointed Blocks:       {self.checkpointed_blocks}",
+            f"  - MLIR Compiled:             {self.mlir_compiled}",
+        ]
+        return "\n".join(lines)
+
+
 def optimize_model(
     model: nn.Module,
     batch_tokens: int = 512,
-    prefer_1bit_relu2_for_relu: bool = False,
+    prefer_1bit_relu2_for_relu: bool = True,
     prefer_unified_mlp: bool = False,
     tiny_param_threshold: int = 1024,
     large_vocab_threshold: int = 8192,
     compile_mlir: bool = False,
     mlir_target: str = "auto",
+    mode: str = "auto",
+    recompute_mode: str = "single_grad",
+    enable_checkpointing: bool = True,
+    target: Optional[str] = None,
+    example_inputs: Optional[Sequence[torch.Tensor]] = None,
     **router_kwargs,
-) -> Tuple[nn.Module, SmartWorkloadReport]:
-    """Top-level 3-line quickstart model optimizer.
+) -> Tuple[nn.Module, Any]:
+    """Top-level model optimizer for both pre-training and fine-tuning.
 
-    Usage:
-        import ojasx2
-        model, report = ojasx2.optimize_model(model)
+    Modes:
+      - 'finetune': Preserves single-stream pretrained weights and LoRA adapters,
+        upgrades Attention -> DaggerAttention in-place, upgrades CrossEntropy ->
+        FusedLinearCrossEntropy, and wraps decoder layers in activation checkpointing.
+      - 'pretrain': Configures Symplectic O(1) activation tape with single-pass
+        backward reconstruction.
+      - 'auto': Automatically chooses 'pretrain' if Symplectic blocks are present,
+        otherwise 'finetune'.
     """
+    if target is not None:
+        mlir_target = target
+
+    has_symplectic = any(
+        isinstance(m, (SymplecticTransformerBlock, SymplecticCoupling))
+        for m in model.modules()
+    )
+    resolved_mode = (
+        ("pretrain" if has_symplectic else "finetune")
+        if mode == "auto"
+        else mode
+    )
+
+    # 1. Configure Symplectic blocks if present
+    symp_count = 0
+    for mod in model.modules():
+        if isinstance(mod, (SymplecticTransformerBlock, SymplecticCoupling)):
+            if hasattr(mod, "recompute_mode"):
+                mod.recompute_mode = recompute_mode
+            symp_count += 1
+
+    # 2. In-place fine-tuning upgrades
+    replaced_attn = 0
+    replaced_loss = 0
+    checkpointed = 0
+
+    if resolved_mode == "finetune":
+        for parent_name, parent_mod in list(model.named_modules()):
+            for child_name, child_mod in list(parent_mod.named_children()):
+                # Upgrade Q/K/V attention modules to DaggerAttention
+                if (
+                    not isinstance(child_mod, DaggerAttention)
+                    and hasattr(child_mod, "q_proj")
+                    and hasattr(child_mod, "k_proj")
+                    and hasattr(child_mod, "v_proj")
+                    and (hasattr(child_mod, "o_proj") or hasattr(child_mod, "out_proj"))
+                ):
+                    try:
+                        upgraded = DaggerAttention.from_pretrained_attention(child_mod)
+                        setattr(parent_mod, child_name, upgraded)
+                        replaced_attn += 1
+                    except Exception:
+                        pass
+                # Upgrade CrossEntropyLoss to FusedLinearCrossEntropy
+                elif isinstance(child_mod, nn.CrossEntropyLoss):
+                    fused_ce = FusedLinearCrossEntropy(
+                        ignore_index=child_mod.ignore_index,
+                        label_smoothing=child_mod.label_smoothing,
+                        reduction=child_mod.reduction,
+                    )
+                    setattr(parent_mod, child_name, fused_ce)
+                    replaced_loss += 1
+
+        # Wrap decoder layers in activation checkpointing (skipping container dictionaries / lists)
+        if enable_checkpointing and not has_symplectic:
+            if hasattr(model, "enable_input_require_grads"):
+                try:
+                    model.enable_input_require_grads()
+                except Exception:
+                    pass
+
+            for parent_name, parent_mod in list(model.named_modules()):
+                if isinstance(parent_mod, nn.ModuleList) and len(parent_mod) > 1:
+                    for idx in range(len(parent_mod)):
+                        blk = parent_mod[idx]
+                        if not isinstance(
+                            blk,
+                            (
+                                SymplecticTransformerBlock,
+                                _CheckpointedDecoderLayer,
+                                nn.ModuleDict,
+                                nn.ModuleList,
+                            ),
+                        ):
+                            parent_mod[idx] = _CheckpointedDecoderLayer(blk)
+                            checkpointed += 1
+
+    # 3. Standard workload routing passes (SwiGLU, RMSNorm, LayerNorm, Frozen Convs, etc.)
     router = SmartWorkloadRouter(
         tiny_param_threshold=tiny_param_threshold,
         large_vocab_threshold=large_vocab_threshold,
         prefer_unified_mlp=prefer_unified_mlp,
         **router_kwargs,
     )
-    return router.optimize_model(
+    model, report = router.optimize_model(
         model,
         batch_tokens=batch_tokens,
         prefer_1bit_relu2_for_relu=prefer_1bit_relu2_for_relu,
@@ -1326,4 +1486,14 @@ def optimize_model(
         compile_mlir=compile_mlir,
         mlir_target=mlir_target,
     )
+
+    # Attach fine-tuning counts to report
+    report._extra_action_counts = {
+        "replaced_attention_layers": replaced_attn,
+        "replaced_loss_modules": replaced_loss,
+        "checkpointed_blocks": checkpointed,
+        "symplectic_blocks_configured": symp_count,
+    }
+
+    return model, report
 

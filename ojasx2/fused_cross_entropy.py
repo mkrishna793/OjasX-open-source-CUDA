@@ -15,6 +15,7 @@ from typing import Any, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 # =============================================================================
@@ -341,6 +342,197 @@ _fused_linear_cross_entropy_op.register_autograd(_fused_lce_backward, setup_cont
 # Explicit Autograd Function
 # =============================================================================
 
+class _FusedLinearCrossEntropyFunction(torch.autograd.Function):
+    """
+    Chunks over the token dimension (N = B * S) so the full [N, V] logit tensor
+    is never materialized in GPU memory. Computes exact gradients dL/dx, dL/dW,
+    and dL/db in forward/backward streaming tiles.
+    """
+
+    @staticmethod
+    def forward(
+        ctx: Any,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        bias: Optional[torch.Tensor],
+        targets: torch.Tensor,
+        ignore_index: int = -100,
+        label_smoothing: float = 0.0,
+        reduction: str = "mean",
+        chunk_size: int = 1024,
+    ) -> torch.Tensor:
+        orig_shape = targets.shape
+        N = targets.numel()
+        D = x.shape[-1]
+        V = weight.shape[0]
+
+        x_2d = x.contiguous().view(N, D)
+        targets_1d = targets.contiguous().view(N)
+
+        valid_mask = (targets_1d != ignore_index) & (targets_1d >= 0) & (targets_1d < V)
+        valid_count = int(valid_mask.sum().item())
+
+        ctx.ignore_index = ignore_index
+        ctx.label_smoothing = label_smoothing
+        ctx.reduction = reduction
+        ctx.chunk_size = chunk_size
+        ctx.valid_count = valid_count
+        ctx.orig_shape = orig_shape
+
+        # If all tokens are masked (e.g., empty SFT batch), return zero loss safely
+        if valid_count == 0:
+            ctx.save_for_backward(x_2d, weight, bias, targets_1d)
+            if reduction == "none":
+                return torch.zeros(orig_shape, device=x.device, dtype=x.dtype)
+            return torch.zeros((), device=x.device, dtype=x.dtype)
+
+        losses = torch.zeros(N, device=x.device, dtype=torch.float32)
+
+        with torch.no_grad():
+            for start in range(0, N, chunk_size):
+                end = min(start + chunk_size, N)
+                x_chunk = x_2d[start:end]
+                t_chunk = targets_1d[start:end]
+                mask_chunk = (t_chunk != ignore_index) & (t_chunk >= 0) & (t_chunk < V)
+
+                if not mask_chunk.any():
+                    continue
+
+                # Compute chunk logits in FP32 for numerical stability of logsumexp
+                logits_chunk = F.linear(x_chunk, weight, bias).to(torch.float32)
+                lse = torch.logsumexp(logits_chunk, dim=-1)  # (chunk,)
+
+                safe_targets = torch.where(mask_chunk, t_chunk, torch.zeros_like(t_chunk))
+                target_logits = logits_chunk.gather(dim=-1, index=safe_targets.unsqueeze(-1)).squeeze(-1)
+
+                nll = lse - target_logits
+                if label_smoothing > 0.0:
+                    smooth_loss = lse - logits_chunk.mean(dim=-1)
+                    chunk_loss = (1.0 - label_smoothing) * nll + label_smoothing * smooth_loss
+                else:
+                    chunk_loss = nll
+
+                losses[start:end] = torch.where(mask_chunk, chunk_loss, torch.zeros_like(chunk_loss))
+
+        ctx.save_for_backward(x_2d, weight, bias, targets_1d)
+
+        if reduction == "none":
+            return losses.view(orig_shape).to(x.dtype)
+        elif reduction == "sum":
+            return losses.sum().to(x.dtype)
+        else:  # "mean"
+            return (losses.sum() / max(1, valid_count)).to(x.dtype)
+
+    @staticmethod
+    def backward(
+        ctx: Any,
+        grad_output: torch.Tensor,
+    ) -> Tuple[Optional[torch.Tensor], ...]:
+        x_2d, weight, bias, targets_1d = ctx.saved_tensors
+        ignore_index: int = ctx.ignore_index
+        label_smoothing: float = ctx.label_smoothing
+        reduction: str = ctx.reduction
+        chunk_size: int = ctx.chunk_size
+        valid_count: int = ctx.valid_count
+
+        N, D = x_2d.shape
+        V = weight.shape[0]
+
+        grad_x = torch.zeros_like(x_2d) if ctx.needs_input_grad[0] else None
+        grad_w = torch.zeros_like(weight, dtype=torch.float32) if ctx.needs_input_grad[1] else None
+        grad_b = (
+            torch.zeros_like(bias, dtype=torch.float32)
+            if (bias is not None and ctx.needs_input_grad[2])
+            else None
+        )
+
+        if valid_count == 0:
+            return (
+                grad_x.view(*ctx.orig_shape, D) if grad_x is not None else None,
+                grad_w.to(weight.dtype) if grad_w is not None else None,
+                grad_b.to(bias.dtype) if grad_b is not None else None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+
+        if reduction == "none":
+            grad_out_1d = grad_output.contiguous().view(N).to(torch.float32)
+        elif reduction == "sum":
+            grad_out_1d = None
+            scale_factor = grad_output.to(torch.float32)
+        else:  # "mean"
+            grad_out_1d = None
+            scale_factor = grad_output.to(torch.float32) / float(max(1, valid_count))
+
+        with torch.no_grad():
+            for start in range(0, N, chunk_size):
+                end = min(start + chunk_size, N)
+                x_chunk = x_2d[start:end]
+                t_chunk = targets_1d[start:end]
+                mask_chunk = (t_chunk != ignore_index) & (t_chunk >= 0) & (t_chunk < V)
+
+                if not mask_chunk.any():
+                    continue
+
+                logits_chunk = F.linear(x_chunk, weight, bias).to(torch.float32)
+                probs = torch.softmax(logits_chunk, dim=-1)  # (chunk, V)
+
+                safe_targets = torch.where(mask_chunk, t_chunk, torch.zeros_like(t_chunk))
+                if label_smoothing > 0.0:
+                    probs.scatter_add_(
+                        dim=-1,
+                        index=safe_targets.unsqueeze(-1),
+                        src=torch.full(
+                            (end - start, 1),
+                            -(1.0 - label_smoothing),
+                            device=probs.device,
+                            dtype=torch.float32,
+                        ),
+                    )
+                    probs.sub_(label_smoothing / float(V))
+                else:
+                    probs.scatter_add_(
+                        dim=-1,
+                        index=safe_targets.unsqueeze(-1),
+                        src=torch.full(
+                            (end - start, 1),
+                            -1.0,
+                            device=probs.device,
+                            dtype=torch.float32,
+                        ),
+                    )
+
+                # Zero out rows where target == ignore_index
+                probs.mul_(mask_chunk.unsqueeze(-1).to(torch.float32))
+
+                if grad_out_1d is not None:
+                    probs.mul_(grad_out_1d[start:end].unsqueeze(-1))
+                else:
+                    probs.mul_(scale_factor)
+
+                probs_cast = probs.to(x_chunk.dtype)
+                if grad_x is not None:
+                    grad_x[start:end] = torch.matmul(probs_cast, weight)
+                if grad_w is not None:
+                    grad_w.add_(torch.matmul(probs.transpose(0, 1), x_chunk.to(torch.float32)))
+                if grad_b is not None:
+                    grad_b.add_(probs.sum(dim=0))
+
+        return (
+            grad_x.view(*ctx.orig_shape, D) if grad_x is not None else None,
+            grad_w.to(weight.dtype) if grad_w is not None else None,
+            grad_b.to(bias.dtype) if grad_b is not None else None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+
+
 class _HolonomicFusedLinearCrossEntropyFunction(torch.autograd.Function):
     """
     Autograd Function implementing Fused Linear Cross-Entropy:
@@ -400,6 +592,22 @@ class _HolonomicFusedLinearCrossEntropyFunction(torch.autograd.Function):
 # Functional and Module Interfaces
 # =============================================================================
 
+def fused_linear_cross_entropy(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    targets: torch.Tensor,
+    bias: Optional[torch.Tensor] = None,
+    ignore_index: int = -100,
+    label_smoothing: float = 0.0,
+    reduction: str = "mean",
+    chunk_size: int = 1024,
+) -> torch.Tensor:
+    """Functional entrypoint for O(1) memory fused linear + cross-entropy."""
+    return _FusedLinearCrossEntropyFunction.apply(
+        x, weight, bias, targets, ignore_index, label_smoothing, reduction, chunk_size
+    )
+
+
 def holonomic_fused_linear_cross_entropy(
     h: torch.Tensor,
     w: torch.Tensor,
@@ -411,7 +619,6 @@ def holonomic_fused_linear_cross_entropy(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Computes cross-entropy loss directly from hidden representations H and weights W.
-
     Returns (loss, lse).
     """
     return torch.ops.ojasx_holonomic.fused_linear_cross_entropy(
@@ -419,23 +626,22 @@ def holonomic_fused_linear_cross_entropy(
     )
 
 
-class HolonomicFusedLinearCrossEntropy(nn.Module):
+class FusedLinearCrossEntropy(nn.Module):
     """
-    Drop-in replacement for `nn.Linear + nn.CrossEntropyLoss`.
-
-    Eliminates DRAM materialization of the full [B, S, V] vocabulary logits tensor
-    by fusing linear projection and cross-entropy loss into a dual-pass streaming
-    token-and-vocabulary accumulation kernel.
+    Drop-in module for LLM LM-Head + CrossEntropyLoss OR standalone chunked
+    CrossEntropyLoss when called on pre-computed logits.
     """
 
     def __init__(
         self,
-        in_features: int,
-        vocab_size: int,
+        in_features: Optional[int] = None,
+        vocab_size: Optional[int] = None,
         bias: bool = False,
         ignore_index: int = -100,
         label_smoothing: float = 0.0,
         reduction: str = "mean",
+        chunk_size: int = 1024,
+        weight: Optional[nn.Parameter] = None,
         device: Any = None,
         dtype: Any = None,
     ) -> None:
@@ -445,49 +651,62 @@ class HolonomicFusedLinearCrossEntropy(nn.Module):
         self.ignore_index = ignore_index
         self.label_smoothing = label_smoothing
         self.reduction = reduction
+        self.chunk_size = chunk_size
 
-        self.weight = nn.Parameter(torch.empty((vocab_size, in_features), device=device, dtype=dtype))
-        if bias:
-            self.bias = nn.Parameter(torch.empty(vocab_size, device=device, dtype=dtype))
+        if weight is not None:
+            self.weight = weight
+            self.bias = None
+        elif in_features is not None and vocab_size is not None:
+            self.weight = nn.Parameter(torch.empty(vocab_size, in_features, device=device, dtype=dtype))
+            nn.init.normal_(self.weight, mean=0.0, std=0.02)
+            self.bias = nn.Parameter(torch.zeros(vocab_size, device=device, dtype=dtype)) if bias else None
         else:
+            self.register_parameter("weight", None)
             self.register_parameter("bias", None)
-        self.reset_parameters()
-
-    def reset_parameters(self) -> None:
-        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
-        if self.bias is not None:
-            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight)
-            bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
-            nn.init.uniform_(self.bias, -bound, bound)
 
     def forward(
         self,
-        h: torch.Tensor,
-        targets: torch.Tensor,
+        x_or_logits: torch.Tensor,
+        targets: Optional[torch.Tensor] = None,
+        weight: Optional[torch.Tensor] = None,
+        bias: Optional[torch.Tensor] = None,
         return_lse: bool = False,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        """
-        Forward computation taking hidden representations H and integer targets.
+        w = weight if weight is not None else self.weight
+        b = bias if bias is not None else self.bias
 
-        If `return_lse=True`, returns `(loss, lse)`.
-        Otherwise, returns `loss`.
-        """
-        loss, lse = torch.ops.ojasx_holonomic.fused_linear_cross_entropy(
-            h,
-            self.weight,
+        # If targets is None, acts as standard LM-Head projection (generation mode)
+        if targets is None:
+            return F.linear(x_or_logits, w, b)
+
+        if w is not None:
+            if return_lse:
+                return torch.ops.ojasx_holonomic.fused_linear_cross_entropy(
+                    x_or_logits, w, targets, b, self.ignore_index, self.label_smoothing, self.reduction
+                )
+            return fused_linear_cross_entropy(
+                x=x_or_logits,
+                weight=w,
+                targets=targets,
+                bias=b,
+                ignore_index=self.ignore_index,
+                label_smoothing=self.label_smoothing,
+                reduction=self.reduction,
+                chunk_size=self.chunk_size,
+            )
+        # Fallback if user passed pre-computed logits (B, S, V) or (N, V) directly
+        if x_or_logits.dim() == 3:
+            x_or_logits = x_or_logits.view(-1, x_or_logits.size(-1))
+            targets = targets.view(-1)
+        return F.cross_entropy(
+            x_or_logits,
             targets,
-            self.bias,
-            self.ignore_index,
-            self.label_smoothing,
-            self.reduction,
+            ignore_index=self.ignore_index,
+            label_smoothing=self.label_smoothing,
+            reduction=self.reduction,
         )
-        if return_lse:
-            return loss, lse
-        return loss
 
-    def extra_repr(self) -> str:
-        return (
-            f"in_features={self.in_features}, vocab_size={self.vocab_size}, "
-            f"bias={self.bias is not None}, ignore_index={self.ignore_index}, "
-            f"label_smoothing={self.label_smoothing}, reduction='{self.reduction}'"
-        )
+
+class HolonomicFusedLinearCrossEntropy(FusedLinearCrossEntropy):
+    """Backwards compatibility alias for HolonomicFusedLinearCrossEntropy."""
+    pass

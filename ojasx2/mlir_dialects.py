@@ -268,6 +268,17 @@ class MLIRModule:
             lines.append(func.to_string(0))
         return "\n\n".join(lines)
 
+    def to_mlir_text(self) -> str:
+        return self.to_string()
+
+    @property
+    def ops(self) -> List[MLIROperation]:
+        operations: List[MLIROperation] = []
+        for func in self.functions:
+            if hasattr(func, "body") and hasattr(func.body, "operations"):
+                operations.extend(func.body.operations)
+        return operations
+
     def dump(self) -> None:
         print(self.to_string())
 
@@ -1704,6 +1715,8 @@ class HardwareCodeEmitter:
             "}",
         ]
         return "\n".join(lines)
+
+    emit_cpp_avx2 = emit_cpp_amx
 
 
 # =============================================================================

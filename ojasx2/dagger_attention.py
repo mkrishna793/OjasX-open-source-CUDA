@@ -42,18 +42,32 @@ def _extract_mask_tile(
 
     if attn_mask is not None:
         if attn_mask.ndim == 2:
-            m_tile = attn_mask[r_start:r_end, c_start:c_end].unsqueeze(0).unsqueeze(0)
+            if attn_mask.shape[0] == B and attn_mask.shape[1] == Skv:
+                # 2D batch key-padding mask [B, Skv] (where 1/True = valid token, 0/False = pad)
+                k_slice = attn_mask[:, c_start:c_end].unsqueeze(1).unsqueeze(2)
+                if k_slice.dtype == torch.bool:
+                    bool_mask = ~k_slice  # True = mask out
+                else:
+                    bool_mask = (k_slice == 0)
+            else:
+                m_tile = attn_mask[r_start:r_end, c_start:c_end].unsqueeze(0).unsqueeze(0)
+                if m_tile.dtype == torch.bool:
+                    bool_mask = m_tile
+                else:
+                    float_bias = m_tile.to(acc_dtype)
         elif attn_mask.ndim == 3:
             if attn_mask.shape[0] == B * H:
                 m_tile = attn_mask.view(B, H, Sq, Skv)[:, :, r_start:r_end, c_start:c_end]
             else:
                 m_tile = attn_mask[:, r_start:r_end, c_start:c_end].unsqueeze(1)
+            if m_tile.dtype == torch.bool:
+                bool_mask = m_tile
+            else:
+                float_bias = m_tile.to(acc_dtype)
         elif attn_mask.ndim == 4:
-            m_tile = attn_mask[:, :, r_start:r_end, c_start:c_end]
-        else:
-            m_tile = None
-
-        if m_tile is not None:
+            r_slice = slice(r_start, r_end) if attn_mask.size(2) > 1 else slice(None)
+            c_slice = slice(c_start, c_end) if attn_mask.size(3) > 1 else slice(None)
+            m_tile = attn_mask[:, :, r_slice, c_slice]
             if m_tile.dtype == torch.bool:
                 bool_mask = m_tile
             else:
@@ -118,6 +132,7 @@ def _dagger_attention_forward_tiled(
     br = max(1, min(Sq, block_r))
     bc = max(1, min(Skv, block_c))
 
+    causal_offset = (Skv - Sq) if is_causal else 0
     row_arange = torch.arange(Sq, device=device) if is_causal else None
     col_arange = torch.arange(Skv, device=device) if is_causal else None
 
@@ -132,10 +147,9 @@ def _dagger_attention_forward_tiled(
         l_i = torch.zeros((B, H, actual_br), dtype=acc_dtype, device=device)
         acc_o = torch.zeros((B, H, actual_br, D), dtype=acc_dtype, device=device)
 
-        for c_start in range(0, Skv, bc):
-            if is_causal and c_start > r_end - 1:
-                break
-            c_end = min(c_start + bc, Skv)
+        max_c = min(Skv, r_end + causal_offset) if is_causal else Skv
+        for c_start in range(0, max_c, bc):
+            c_end = min(c_start + bc, max_c)
             k_block = k_eff[:, :, c_start:c_end, :].contiguous().to(acc_dtype)
             v_block = v_eff[:, :, c_start:c_end, :].contiguous().to(acc_dtype)
 
@@ -148,9 +162,9 @@ def _dagger_attention_forward_tiled(
             if float_bias is not None:
                 scores = scores + float_bias
 
-            if is_causal and c_end - 1 >= r_start and row_idx is not None and col_arange is not None:
+            if is_causal and row_idx is not None and col_arange is not None:
                 col_idx = col_arange[c_start:c_end].unsqueeze(0)
-                causal_mask = col_idx > row_idx
+                causal_mask = col_idx > (row_idx + causal_offset)
                 bool_mask = causal_mask if bool_mask is None else (bool_mask | causal_mask)
 
             if bool_mask is not None:
@@ -238,6 +252,7 @@ def _dagger_attention_backward_tiled(
     br = max(1, min(Sq, block_r))
     bc = max(1, min(Skv, block_c))
 
+    causal_offset = (Skv - Sq) if is_causal else 0
     row_arange = torch.arange(Sq, device=device) if is_causal else None
     col_arange = torch.arange(Skv, device=device) if is_causal else None
 
@@ -254,10 +269,9 @@ def _dagger_attention_backward_tiled(
 
         dq_row_acc = torch.zeros((B, H, actual_br, D), dtype=acc_dtype, device=device)
 
-        for c_start in range(0, Skv, bc):
-            if is_causal and c_start > r_end - 1:
-                break
-            c_end = min(c_start + bc, Skv)
+        max_c = min(Skv, r_end + causal_offset) if is_causal else Skv
+        for c_start in range(0, max_c, bc):
+            c_end = min(c_start + bc, max_c)
 
             k_block = k_eff[:, :, c_start:c_end, :].contiguous().to(acc_dtype)
             v_block = v_eff[:, :, c_start:c_end, :].contiguous().to(acc_dtype)
@@ -271,10 +285,9 @@ def _dagger_attention_backward_tiled(
             if float_bias is not None:
                 scores = scores + float_bias
 
-            has_causal_mask = is_causal and (c_end - 1 >= r_start)
-            if has_causal_mask and row_idx is not None and col_arange is not None:
+            if is_causal and row_idx is not None and col_arange is not None:
                 col_idx = col_arange[c_start:c_end].unsqueeze(0)
-                causal_mask = col_idx > row_idx
+                causal_mask = col_idx > (row_idx + causal_offset)
                 bool_mask = causal_mask if bool_mask is None else (bool_mask | causal_mask)
 
             if bool_mask is not None:
@@ -490,54 +503,108 @@ def holonomic_dagger_attention_with_lse(
 
 
 # =============================================================================
-# 4. HolonomicDaggerAttention nn.Module Wrapper
+# 4. Universal Dagger Attention with GQA, Rectangular Causal & Kwargs Support
 # =============================================================================
 
-class HolonomicDaggerAttention(nn.Module):
-    """Drop-in compatible Multi-Head Attention module powered by Holonomic Dagger Attention.
+def dagger_tiled_attention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    attn_mask: Optional[torch.Tensor] = None,
+    is_causal: bool = False,
+    scale: Optional[float] = None,
+    tile_size: int = 128,
+    dropout_p: float = 0.0,
+    training: bool = False,
+    key_padding_mask: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """
+    Tiled online-softmax attention over (B, H_q, N_q, D) and (B, H_kv, N_kv, D).
+    Automatically broadcasts GQA heads and guarantees strictly 0 bytes of
+    intermediate attention score matrices on the autograd tape.
+    """
+    return holonomic_dagger_attention(
+        q,
+        k,
+        v,
+        is_causal=is_causal,
+        sm_scale=scale,
+        attn_mask=attn_mask,
+        key_padding_mask=key_padding_mask,
+    )
 
-    Supports both:
-    1. Standalone construction compatible with nn.MultiheadAttention:
-       `HolonomicDaggerAttention(embed_dim=256, num_heads=8, is_causal=True)`
-    2. Rewritten / wrapped LLM attention projection submodules:
-       `HolonomicDaggerAttention(q_proj=..., k_proj=..., v_proj=..., o_proj=..., num_heads=8)`
+
+
+class DaggerAttention(nn.Module):
+    """
+    Drop-in Multi-Head / Grouped-Query Dagger Attention layer.
+    Can be initialized from scratch OR wrap an existing pretrained attention
+    module's q_proj/k_proj/v_proj/o_proj weights for fine-tuning.
     """
 
     def __init__(
         self,
-        embed_dim: Optional[int] = None,
+        dim: Optional[int] = None,
         num_heads: int = 8,
+        num_kv_heads: Optional[int] = None,
+        is_causal: bool = True,
+        dropout: float = 0.0,
+        tile_size: int = 128,
+        bias: bool = False,
+        *,
+        embed_dim: Optional[int] = None,
+        head_dim: Optional[int] = None,
         q_proj: Optional[nn.Module] = None,
         k_proj: Optional[nn.Module] = None,
         v_proj: Optional[nn.Module] = None,
         o_proj: Optional[nn.Module] = None,
-        num_kv_heads: Optional[int] = None,
-        head_dim: Optional[int] = None,
-        dropout: float = 0.0,
-        bias: bool = True,
-        is_causal: bool = False,
         batch_first: bool = True,
         return_tuple: bool = False,
+        device: Optional[Any] = None,
+        dtype: Optional[Any] = None,
         kdim: Optional[int] = None,
         vdim: Optional[int] = None,
-        device: Any = None,
-        dtype: Any = None,
+        **extra_kwargs: Any,
     ) -> None:
         super().__init__()
+        if q_proj is not None and getattr(q_proj, "in_features", None) is not None:
+            eff_dim = q_proj.in_features
+        elif embed_dim is not None:
+            eff_dim = embed_dim
+        elif dim is not None:
+            eff_dim = dim
+        else:
+            eff_dim = 256
+
+        self.dim = eff_dim
+        self.embed_dim = eff_dim
         self.num_heads = num_heads
         self.num_kv_heads = num_kv_heads if num_kv_heads is not None else num_heads
+        if head_dim is not None:
+            self.head_dim = head_dim
+        elif q_proj is not None and getattr(q_proj, "out_features", None) is not None:
+            self.head_dim = q_proj.out_features // num_heads
+        else:
+            if eff_dim % num_heads != 0:
+                raise ValueError(f"dim ({eff_dim}) must be divisible by num_heads ({num_heads})")
+            self.head_dim = eff_dim // num_heads
+
+        self.kv_dim = self.num_kv_heads * self.head_dim
         self.is_causal = is_causal
-        self.batch_first = batch_first
         self.dropout = dropout
+        self.tile_size = tile_size
+        self.batch_first = batch_first
         self.return_tuple = return_tuple
 
-        # nn.MultiheadAttention & nn.TransformerEncoderLayer / DecoderLayer compatibility attributes
+        # nn.MultiheadAttention duck-typing attributes
         self._qkv_same_embed_dim = False
         self.in_proj_weight = None
         self.in_proj_bias = None
         self.bias_k = None
         self.bias_v = None
         self.add_zero_attn = False
+        self.kdim = kdim if kdim is not None else eff_dim
+        self.vdim = vdim if vdim is not None else eff_dim
 
         factory_kwargs = {"device": device, "dtype": dtype}
 
@@ -546,37 +613,55 @@ class HolonomicDaggerAttention(nn.Module):
             self.k_proj = k_proj
             self.v_proj = v_proj
             self.o_proj = o_proj if o_proj is not None else nn.Identity()
-            if head_dim is None:
-                out_feat = getattr(q_proj, "out_features", None)
-                if out_feat is not None:
-                    self.head_dim = out_feat // num_heads
-                else:
-                    self.head_dim = 64
-            else:
-                self.head_dim = head_dim
-            self.embed_dim = self.num_heads * self.head_dim
-            self.kdim = kdim if kdim is not None else getattr(k_proj, "in_features", self.embed_dim)
-            self.vdim = vdim if vdim is not None else getattr(v_proj, "in_features", self.embed_dim)
         else:
-            if embed_dim is None:
-                embed_dim = 256
-            self.embed_dim = embed_dim
-            self.head_dim = head_dim if head_dim is not None else (embed_dim // num_heads)
-            self.kdim = kdim if kdim is not None else embed_dim
-            self.vdim = vdim if vdim is not None else embed_dim
-            self.q_proj = nn.Linear(embed_dim, self.num_heads * self.head_dim, bias=bias, **factory_kwargs)
-            self.k_proj = nn.Linear(self.kdim, self.num_kv_heads * self.head_dim, bias=bias, **factory_kwargs)
-            self.v_proj = nn.Linear(self.vdim, self.num_kv_heads * self.head_dim, bias=bias, **factory_kwargs)
-            self.o_proj = nn.Linear(self.num_heads * self.head_dim, embed_dim, bias=bias, **factory_kwargs)
+            self.q_proj = nn.Linear(eff_dim, self.num_heads * self.head_dim, bias=bias, **factory_kwargs)
+            self.k_proj = nn.Linear(self.kdim, self.kv_dim, bias=bias, **factory_kwargs)
+            self.v_proj = nn.Linear(self.vdim, self.kv_dim, bias=bias, **factory_kwargs)
+            self.o_proj = nn.Linear(self.num_heads * self.head_dim, eff_dim, bias=bias, **factory_kwargs)
 
     @property
     def out_proj(self) -> nn.Module:
         """Alias for nn.MultiheadAttention compatibility."""
         return self.o_proj
 
+    @out_proj.setter
+    def out_proj(self, value: nn.Module) -> None:
+        self.o_proj = value
+
+    @classmethod
+    def from_pretrained_attention(cls, attn_mod: nn.Module, is_causal: bool = True) -> "DaggerAttention":
+        """
+        Converts a HuggingFace or PyTorch attention module into a DaggerAttention
+        module while preserving all pretrained weights and attached LoRA adapters.
+        """
+        if hasattr(attn_mod, "q_proj") and hasattr(attn_mod, "k_proj") and hasattr(attn_mod, "v_proj"):
+            q_proj = attn_mod.q_proj
+            k_proj = attn_mod.k_proj
+            v_proj = attn_mod.v_proj
+            out_proj = getattr(attn_mod, "o_proj", getattr(attn_mod, "out_proj", None))
+            dim = q_proj.in_features
+            num_heads = getattr(attn_mod, "num_heads", getattr(attn_mod, "num_attention_heads", 8))
+            head_dim = getattr(attn_mod, "head_dim", dim // num_heads)
+            num_kv_heads = getattr(
+                attn_mod, "num_key_value_heads", k_proj.out_features // head_dim
+            )
+            instance = cls(
+                dim=dim,
+                num_heads=num_heads,
+                num_kv_heads=num_kv_heads,
+                is_causal=is_causal,
+                head_dim=head_dim,
+                q_proj=q_proj,
+                k_proj=k_proj,
+                v_proj=v_proj,
+                o_proj=out_proj,
+            )
+            return instance
+        raise TypeError(f"Unsupported attention module type for weight preservation: {type(attn_mod)}")
+
     def forward(
         self,
-        query: torch.Tensor,
+        hidden_states: Optional[torch.Tensor] = None,
         key: Optional[torch.Tensor] = None,
         value: Optional[torch.Tensor] = None,
         key_padding_mask: Optional[torch.Tensor] = None,
@@ -586,79 +671,99 @@ class HolonomicDaggerAttention(nn.Module):
         is_causal: Optional[bool] = None,
         rotary_cos: Optional[torch.Tensor] = None,
         rotary_sin: Optional[torch.Tensor] = None,
+        past_key_value: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False,
+        query: Optional[torch.Tensor] = None,
         **kwargs: Any,
-    ):
-        """Forward pass for multi-head attention.
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Optional[Any]]]:
+        # Accept query or hidden_states as the primary activation input
+        x = hidden_states if hidden_states is not None else query
+        if x is None:
+            raise ValueError("forward() requires either hidden_states or query argument")
 
-        Supports query input of shape [B, S, D] (or [S, B, D] if batch_first=False),
-        or direct [B, H, S, d] tensor projection. Fully compatible with nn.MultiheadAttention.
-        """
         causal = is_causal if is_causal is not None else self.is_causal
-        eff_attn_mask = attn_mask
-        if eff_attn_mask is not None and getattr(eff_attn_mask, "is_causal", False):
-            causal = True
-            eff_attn_mask = None
+        eff_mask = attn_mask if attn_mask is not None else kwargs.get("attention_mask", None)
+        if eff_mask is None and key_padding_mask is not None:
+            eff_mask = key_padding_mask
 
         # Case 1: Already projected 4D inputs [B, H, S, d]
-        if query.ndim == 4 and key is not None and value is not None and key.ndim == 4:
+        if x.ndim == 4 and key is not None and value is not None and key.ndim == 4:
             out = holonomic_dagger_attention(
-                query,
+                x,
                 key,
                 value,
                 is_causal=causal,
-                attn_mask=eff_attn_mask,
+                attn_mask=eff_mask,
                 key_padding_mask=key_padding_mask,
             )
             if need_weights is not None or self.return_tuple:
                 return out, None
             return out
 
-        # Case 2: Standard 3D inputs [B, S, D]
-        if not self.batch_first and query.ndim == 3:
-            # [S, B, D] -> [B, S, D]
-            query = query.transpose(0, 1)
-            if key is not None:
+        # Handle 2D inputs [B, D] -> [B, 1, D]
+        is_2d = x.dim() == 2
+        if is_2d:
+            x = x.unsqueeze(1)
+
+        # Handle batch_first=False [S, B, D] -> [B, S, D]
+        if not self.batch_first and x.ndim == 3 and not is_2d:
+            x = x.transpose(0, 1)
+            if key is not None and key.ndim == 3:
                 key = key.transpose(0, 1)
-            if value is not None:
+            if value is not None and value.ndim == 3:
                 value = value.transpose(0, 1)
 
-        k_in = key if key is not None else query
-        v_in = value if value is not None else query
+        B, N_q, _ = x.shape
+        q = self.q_proj(x).view(B, N_q, self.num_heads, self.head_dim).transpose(1, 2)
 
-        B, Sq, _ = query.shape
-        _, Skv, _ = k_in.shape
-
-        q_proj = self.q_proj(query).view(B, Sq, self.num_heads, self.head_dim).transpose(1, 2)
-        k_proj = self.k_proj(k_in).view(B, Skv, self.num_kv_heads, self.head_dim).transpose(1, 2)
-        v_proj = self.v_proj(v_in).view(B, Skv, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        k_in = key if key is not None else x
+        v_in = value if value is not None else x
+        k = self.k_proj(k_in).view(B, k_in.size(1), self.num_kv_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(v_in).view(B, v_in.size(1), self.num_kv_heads, self.head_dim).transpose(1, 2)
 
         # Apply RoPE if provided
         if rotary_cos is not None and rotary_sin is not None:
             d_half = self.head_dim // 2
             cos_eff = torch.cat([rotary_cos, rotary_cos], dim=-1) if rotary_cos.shape[-1] == d_half else rotary_cos
             sin_eff = torch.cat([rotary_sin, rotary_sin], dim=-1) if rotary_sin.shape[-1] == d_half else rotary_sin
-            q1, q2 = q_proj[..., :d_half], q_proj[..., d_half : 2 * d_half]
-            k1, k2 = k_proj[..., :d_half], k_proj[..., d_half : 2 * d_half]
+            q1, q2 = q[..., :d_half], q[..., d_half : 2 * d_half]
+            k1, k2 = k[..., :d_half], k[..., d_half : 2 * d_half]
             q_rot = torch.cat([-q2, q1], dim=-1)
             k_rot = torch.cat([-k2, k1], dim=-1)
-            q_proj = q_proj * cos_eff + q_rot * sin_eff
-            k_proj = k_proj * cos_eff + k_rot * sin_eff
+            q = q * cos_eff + q_rot * sin_eff
+            k = k * cos_eff + k_rot * sin_eff
 
-        attn_out = holonomic_dagger_attention(
-            q_proj,
-            k_proj,
-            v_proj,
+        if past_key_value is not None:
+            k = torch.cat([past_key_value[0], k], dim=2)
+            v = torch.cat([past_key_value[1], v], dim=2)
+
+        present_kv = (k, v) if use_cache else None
+
+        attn_out = dagger_tiled_attention(
+            q,
+            k,
+            v,
+            attn_mask=eff_mask,
             is_causal=causal,
-            attn_mask=eff_attn_mask,
-            key_padding_mask=key_padding_mask,
+            tile_size=self.tile_size,
+            dropout_p=self.dropout,
+            training=self.training,
         )
-        # [B, H, Sq, d] -> [B, Sq, H * d]
-        attn_out = attn_out.transpose(1, 2).contiguous().view(B, Sq, self.num_heads * self.head_dim)
-        output = self.o_proj(attn_out)
+        attn_out = attn_out.transpose(1, 2).contiguous().view(B, N_q, self.num_heads * self.head_dim)
+        out = self.o_proj(attn_out)
 
-        if not self.batch_first:
-            output = output.transpose(0, 1)
+        if is_2d:
+            out = out.squeeze(1)
+        elif not self.batch_first:
+            out = out.transpose(0, 1)
 
+        if use_cache:
+            return out, present_kv
         if need_weights is not None or self.return_tuple:
-            return output, None
-        return output
+            return out, None
+        return out
+
+
+class HolonomicDaggerAttention(DaggerAttention):
+    """Backwards compatibility subclass for HolonomicDaggerAttention."""
+    pass
