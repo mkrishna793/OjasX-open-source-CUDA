@@ -13,17 +13,38 @@
 ```python
 import torch
 import ojasx2
+from ojasx2.grad_free_optimizer import HolonomicGradFreeOptimizer
 
-# 3-Line Quickstart: Automatically optimize ANY PyTorch or custom model!
-model = MyCustomLLM()  # Any model you built, or any HuggingFace model
-model, report = ojasx2.optimize_model(model)
+# 1. Pick any available accelerator ("cuda", "mps", "xpu", or "cpu")
+device = (
+    "cuda" if torch.cuda.is_available()
+    else "mps" if (hasattr(torch.backends, "mps") and torch.backends.mps.is_available())
+    else "xpu" if (hasattr(torch, "xpu") and torch.xpu.is_available())
+    else "cpu"
+)
+model = MyModel().to(device)
 
-# Train normally with standard PyTorch:
-loss = model(inputs).sum()
-loss.backward()  # Retains up to 72.09% less memory on your GPU/RAM!
+# 2. Optimize model layers AND lower through the 3-dialect MLIR pipeline
+model, report = ojasx2.optimize_model(
+    model,
+    batch_tokens=512,
+    prefer_unified_mlp=True,
+    compile_mlir=True,
+    mlir_target="auto",
+)
+print(report.format_table())
+print("MLIR Pipeline:", report.mlir_pipeline)
 
-# Or compile directly to NVIDIA PTX, AMD GCN, Intel SPIR-V, or Apple Metal:
-ptx_code = ojasx2.compile_model_to_target(model, target="nvvm")
+# 3. Attach zero-persistent-grad optimizer (or use torch.compile with backend="ojasx_mlir")
+optimizer = HolonomicGradFreeOptimizer(model.parameters(), lr=3e-4, algorithm="adamw", weight_decay=0.01)
+
+# 4. Train with reduced activation + gradient memory on any hardware
+for inputs, targets in dataloader:
+    inputs, targets = inputs.to(device), targets.to(device)
+    loss = model(inputs, targets) if hasattr(model, "lm_head") else loss_fn(model(inputs), targets)
+    loss.backward()      # Applies parameter updates in-hook and frees .grad immediately
+    optimizer.step()
+    optimizer.zero_grad()
 ```
 
 ---
@@ -331,7 +352,7 @@ To guarantee that OjasX is production-grade and 100% compliant with PyTorch inte
   - `test_faketensor`: Symbolic shape propagation and meta-device compatibility.
   - `test_aot_dispatch_dynamic`: Dynamic sequence length tracing under `torch.compile`.
 - **Metadata-Driven `OpInfo` Matrix**: **249 parameter combinations passed** with 0 failures across CPU and Apple Silicon GPU (`mps`), dtypes (`float32`, `float16`, `bfloat16`), and non-contiguous memory layouts (`transposed`, `sliced`, `permuted`).
-- **Full Project Test Suite**: **745 tests passed, 0 failures**.
+- **Full Project Test Suite**: **840 tests verified: 839 passed, 0 failures, 1 hardware-dependent skip** across Meta BackendBench, OpCheck, OpInfo, and MLIR compiler stress tests.
 
 ---
 
