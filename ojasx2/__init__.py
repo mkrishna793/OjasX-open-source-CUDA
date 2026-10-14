@@ -105,12 +105,16 @@ from .mesh_hal import (
 )
 from .dagger_attention import (
     dagger_attention,
+    dagger_tiled_attention,
     holonomic_dagger_attention,
     holonomic_dagger_attention_with_lse,
+    DaggerAttention,
     HolonomicDaggerAttention,
 )
 from .fused_cross_entropy import (
+    fused_linear_cross_entropy,
     holonomic_fused_linear_cross_entropy,
+    FusedLinearCrossEntropy,
     HolonomicFusedLinearCrossEntropy,
 )
 from .mlir_dialects import (

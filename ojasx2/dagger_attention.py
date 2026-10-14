@@ -18,6 +18,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+__all__ = [
+    "dagger_attention",
+    "dagger_attention_fake",
+    "dagger_tiled_attention",
+    "holonomic_dagger_attention",
+    "holonomic_dagger_attention_with_lse",
+    "_HolonomicDaggerAttentionFunction",
+    "_dagger_attention_forward_tiled",
+    "_dagger_attention_backward_tiled",
+    "DaggerAttention",
+    "HolonomicDaggerAttention",
+]
+
 
 # =============================================================================
 # 1. Tiled Online Softmax Forward & Backward Kernels

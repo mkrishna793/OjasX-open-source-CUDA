@@ -16,7 +16,7 @@ import platform
 import subprocess
 import sys
 from pathlib import Path
-from setuptools import setup
+from setuptools import find_packages, setup
 from setuptools.command.build_py import build_py
 from setuptools.dist import Distribution
 
@@ -173,4 +173,12 @@ class OjasXDistribution(Distribution):
 
 
 if __name__ == "__main__":
-    setup(cmdclass={"build_py": BuildPyWithNativeKernels}, distclass=OjasXDistribution)
+    setup(
+        packages=find_packages(
+            where=".",
+            include=["ojasx2", "ojasx2.*"],
+            exclude=["third_party*", "tests*", "reports*", "rocq*", "lean*"],
+        ),
+        cmdclass={"build_py": BuildPyWithNativeKernels},
+        distclass=OjasXDistribution,
+    )

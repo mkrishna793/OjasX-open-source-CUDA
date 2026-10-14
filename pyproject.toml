@@ -41,7 +41,9 @@ holonomic = "ojasx2.holonomic_math_compiler:holonomic_backend"
 holonomic_aot = "ojasx2.aot_holonomic_compiler:holonomic_aot_backend"
 
 [tool.setuptools.packages.find]
-include = ["ojasx2*"]
+where = ["."]
+include = ["ojasx2", "ojasx2.*"]
+exclude = ["third_party*", "tests*", "reports*", "rocq*", "lean*"]
 
 [tool.setuptools.package-data]
 ojasx2 = [

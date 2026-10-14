@@ -17,6 +17,17 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+__all__ = [
+    "fused_linear_cross_entropy",
+    "holonomic_fused_linear_cross_entropy",
+    "FusedLinearCrossEntropy",
+    "HolonomicFusedLinearCrossEntropy",
+    "_FusedLinearCrossEntropyFunction",
+    "_HolonomicFusedLinearCrossEntropyFunction",
+    "_streaming_fused_lce_forward",
+    "_streaming_fused_lce_backward",
+]
+
 
 # =============================================================================
 # Core Streaming Mathematical Kernels
