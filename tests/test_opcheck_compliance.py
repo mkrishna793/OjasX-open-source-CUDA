@@ -194,6 +194,17 @@ def _fx_cases(device: str):
     gamma = torch.randn(32, device=device)
     cases.append(("absorb_diag_gamma", torch.ops.ojasx_fx.absorb_diag_gamma, (gamma, wg, "left"), {}, False))
 
+    # 9. symplectic_subgraph (Mode A)
+    q1 = torch.randn(2, 4, 16, device=device)
+    q2 = torch.randn(2, 4, 16, device=device)
+    w_qkv = torch.randn(48, 16, device=device)
+    w_out = torch.randn(16, 16, device=device)
+    cases.append(("symplectic_subgraph", torch.ops.ojasx_fx.symplectic_subgraph, (q1, q2, w_qkv, None, w_out, None, wg, None, wu, None, wd, None, "silu", 4), {}, False))
+
+    # 10. holonomic_residual_subgraph (Mode B)
+    x_3d = torch.randn(2, 4, 16, device=device)
+    cases.append(("holonomic_residual_subgraph", torch.ops.ojasx_fx.holonomic_residual_subgraph, (x_3d, nw, None, 1e-5, w_qkv, None, w_out, None, 4, nw, None, 1e-5, wg, None, wu, None, wd, None, "silu"), {}, False))
+
     return cases
 
 

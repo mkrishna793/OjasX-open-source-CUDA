@@ -836,6 +836,74 @@ class SubgraphDialect:
         res.defining_op = op
         return op
 
+    @staticmethod
+    def symplectic_subgraph(
+        q1: MLIRValue,
+        q2: MLIRValue,
+        w_attn_qkv: MLIRValue,
+        w_attn_out: MLIRValue,
+        w_mlp_gate: MLIRValue,
+        w_mlp_up: MLIRValue,
+        w_mlp_down: MLIRValue,
+        result_type: MLIRType,
+        act: str = "silu",
+        num_heads: int = 4,
+        val_idx: int = 0,
+    ) -> MLIROperation:
+        res1 = MLIRValue(f"%sg_symp_q1_{val_idx}", result_type)
+        res2 = MLIRValue(f"%sg_symp_q2_{val_idx}", result_type)
+        op = MLIROperation(
+            dialect=SubgraphDialect.NAME,
+            op_name="symplectic_subgraph",
+            operands=[q1, q2, w_attn_qkv, w_attn_out, w_mlp_gate, w_mlp_up, w_mlp_down],
+            results=[res1, res2],
+            attributes={
+                "mode": StringAttr("mode_a_bipartite_symplectic"),
+                "reversibility": StringAttr("exact_hamiltonian_volume_preserving"),
+                "act": StringAttr(act),
+                "num_heads": IntegerAttr(num_heads),
+            },
+        )
+        res1.defining_op = op
+        res2.defining_op = op
+        return op
+
+    @staticmethod
+    def holonomic_residual_subgraph(
+        x: MLIRValue,
+        w_attn_qkv: MLIRValue,
+        w_attn_out: MLIRValue,
+        w_mlp_gate: MLIRValue,
+        w_mlp_up: MLIRValue,
+        w_mlp_down: MLIRValue,
+        result_type: MLIRType,
+        norm1_w: Optional[MLIRValue] = None,
+        norm2_w: Optional[MLIRValue] = None,
+        act: str = "silu",
+        num_heads: int = 4,
+        val_idx: int = 0,
+    ) -> MLIROperation:
+        res = MLIRValue(f"%sg_holo_res_{val_idx}", result_type)
+        operands = [x, w_attn_qkv, w_attn_out, w_mlp_gate, w_mlp_up, w_mlp_down]
+        if norm1_w is not None:
+            operands.append(norm1_w)
+        if norm2_w is not None:
+            operands.append(norm2_w)
+        op = MLIROperation(
+            dialect=SubgraphDialect.NAME,
+            op_name="holonomic_residual_subgraph",
+            operands=operands,
+            results=[res],
+            attributes={
+                "mode": StringAttr("mode_b_zero_tape_residual"),
+                "recomputation": StringAttr("on_the_fly_sram"),
+                "act": StringAttr(act),
+                "num_heads": IntegerAttr(num_heads),
+            },
+        )
+        res.defining_op = op
+        return op
+
 
 # =============================================================================
 # 5. Dialect 3: ojasx.tile

@@ -841,6 +841,416 @@ def holonomic_residual(
     return HolonomicResidualFunction.apply(x, f_x, is_frozen)
 
 
+def _eval_mlp(
+    x: torch.Tensor,
+    w_gate: torch.Tensor,
+    b_gate: Optional[torch.Tensor],
+    w_up: torch.Tensor,
+    b_up: Optional[torch.Tensor],
+    w_down: torch.Tensor,
+    b_down: Optional[torch.Tensor],
+    act: str = "silu",
+) -> torch.Tensor:
+    h_gate = F.linear(x, w_gate, b_gate)
+    h_up = F.linear(x, w_up, b_up)
+    h_act = _eval_act_fn(h_gate, act) * h_up
+    return F.linear(h_act, w_down, b_down)
+
+
+class HolonomicSymplecticSubgraphFunction(torch.autograd.Function):
+    """
+    Mode A: Dual-Stream Symplectic Subgraph with Exact Inverse State Reconstruction.
+    Operates on bipartite state (q1, q2).
+    Forward:
+        q1_{next} = q1 + Attn(q2)
+        q2_{next} = q2 + MLP(q1_{next})
+    Backward:
+        q2 = q2_{next} - MLP(q1_{next})
+        q1 = q1_{next} - Attn(q2)
+    Zero Intermediate Memory:
+        Saves ONLY final boundary outputs (q1_{next}, q2_{next}) and parameter weights.
+        Evaluates MLP and Attn in torch.enable_grad() during backward for simultaneous
+        exact state reconstruction and parameter gradient accumulation in a single pass.
+    """
+    @staticmethod
+    def forward(
+        ctx: Any,
+        q1: torch.Tensor,
+        q2: torch.Tensor,
+        w_attn_qkv: torch.Tensor,
+        b_attn_qkv: Optional[torch.Tensor],
+        w_attn_out: torch.Tensor,
+        b_attn_out: Optional[torch.Tensor],
+        w_mlp_gate: torch.Tensor,
+        b_mlp_gate: Optional[torch.Tensor],
+        w_mlp_up: torch.Tensor,
+        b_mlp_up: Optional[torch.Tensor],
+        w_mlp_down: torch.Tensor,
+        b_mlp_down: Optional[torch.Tensor],
+        act: str = "silu",
+        num_heads: int = 4,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        ctx.act = act
+        ctx.num_heads = num_heads
+
+        acc_dtype = torch.float32 if q1.dtype in (torch.float16, torch.bfloat16) else q1.dtype
+        with torch.no_grad():
+            b_sz, s_len, dim = q2.shape
+            hd = dim // num_heads
+            qkv = F.linear(q2, w_attn_qkv, b_attn_qkv).reshape(b_sz, s_len, 3, num_heads, hd).permute(2, 0, 3, 1, 4)
+            q, k, v = qkv[0], qkv[1], qkv[2]
+            attn = F.scaled_dot_product_attention(q, k, v)
+            attn = attn.permute(0, 2, 1, 3).reshape(b_sz, s_len, dim)
+            f_val = F.linear(attn, w_attn_out, b_attn_out)
+            q1_next = (q1.to(acc_dtype) + f_val.to(acc_dtype)).to(q1.dtype)
+
+            g_val = _eval_mlp(q1_next, w_mlp_gate, b_mlp_gate, w_mlp_up, b_mlp_up, w_mlp_down, b_mlp_down, act)
+            q2_next = (q2.to(acc_dtype) + g_val.to(acc_dtype)).to(q2.dtype)
+
+        ctx.save_for_backward(
+            q1_next, q2_next,
+            w_attn_qkv, b_attn_qkv,
+            w_attn_out, b_attn_out,
+            w_mlp_gate, b_mlp_gate,
+            w_mlp_up, b_mlp_up,
+            w_mlp_down, b_mlp_down,
+        )
+        return q1_next, q2_next
+
+    @staticmethod
+    def backward(ctx: Any, grad_q1: torch.Tensor, grad_q2: torch.Tensor) -> Tuple[Optional[torch.Tensor], ...]:
+        (
+            q1_next, q2_next,
+            w_attn_qkv, b_attn_qkv,
+            w_attn_out, b_attn_out,
+            w_mlp_gate, b_mlp_gate,
+            w_mlp_up, b_mlp_up,
+            w_mlp_down, b_mlp_down,
+        ) = ctx.saved_tensors
+
+        act = ctx.act
+        num_heads = ctx.num_heads
+        acc_dtype = torch.float32 if q1_next.dtype in (torch.float16, torch.bfloat16) else q1_next.dtype
+
+        # 1. Reconstruct q2 and differentiate g_mlp from q1_next
+        q1_in = q1_next.detach().requires_grad_(True)
+        mlp_params = [p for p in (w_mlp_gate, b_mlp_gate, w_mlp_up, b_mlp_up, w_mlp_down, b_mlp_down) if p is not None and p.requires_grad]
+        with torch.enable_grad():
+            g_val = _eval_mlp(q1_in, w_mlp_gate, b_mlp_gate, w_mlp_up, b_mlp_up, w_mlp_down, b_mlp_down, act)
+
+        with torch.no_grad():
+            q2_reconstructed = (q2_next.to(acc_dtype) - g_val.detach().to(acc_dtype)).to(q2_next.dtype)
+
+        inputs_g = [q1_in] + mlp_params
+        grads_g = torch.autograd.grad(
+            outputs=g_val,
+            inputs=inputs_g,
+            grad_outputs=grad_q2,
+            retain_graph=False,
+            create_graph=False,
+            allow_unused=True,
+        )
+        dq1_from_g = grads_g[0] if grads_g[0] is not None else torch.zeros_like(q1_in)
+        total_grad_q1 = grad_q1 + dq1_from_g
+
+        mlp_param_grads = {}
+        idx = 1
+        for p in (w_mlp_gate, b_mlp_gate, w_mlp_up, b_mlp_up, w_mlp_down, b_mlp_down):
+            if p is not None and p.requires_grad:
+                mlp_param_grads[id(p)] = grads_g[idx]
+                idx += 1
+            else:
+                mlp_param_grads[id(p)] = None
+
+        # 2. Reconstruct q1 and differentiate f_attn from q2_reconstructed
+        q2_in = q2_reconstructed.detach().requires_grad_(True)
+        attn_params = [p for p in (w_attn_qkv, b_attn_qkv, w_attn_out, b_attn_out) if p is not None and p.requires_grad]
+        with torch.enable_grad():
+            b_sz, s_len, dim = q2_in.shape
+            hd = dim // num_heads
+            qkv = F.linear(q2_in, w_attn_qkv, b_attn_qkv).reshape(b_sz, s_len, 3, num_heads, hd).permute(2, 0, 3, 1, 4)
+            q, k, v = qkv[0], qkv[1], qkv[2]
+            attn = F.scaled_dot_product_attention(q, k, v)
+            attn = attn.permute(0, 2, 1, 3).reshape(b_sz, s_len, dim)
+            f_val = F.linear(attn, w_attn_out, b_attn_out)
+
+        with torch.no_grad():
+            q1_reconstructed = (q1_next.to(acc_dtype) - f_val.detach().to(acc_dtype)).to(q1_next.dtype)
+
+        inputs_f = [q2_in] + attn_params
+        grads_f = torch.autograd.grad(
+            outputs=f_val,
+            inputs=inputs_f,
+            grad_outputs=total_grad_q1,
+            retain_graph=False,
+            create_graph=False,
+            allow_unused=True,
+        )
+        dq2_from_f = grads_f[0] if grads_f[0] is not None else torch.zeros_like(q2_in)
+        total_grad_q2 = grad_q2 + dq2_from_f
+
+        attn_param_grads = {}
+        idx = 1
+        for p in (w_attn_qkv, b_attn_qkv, w_attn_out, b_attn_out):
+            if p is not None and p.requires_grad:
+                attn_param_grads[id(p)] = grads_f[idx]
+                idx += 1
+            else:
+                attn_param_grads[id(p)] = None
+
+        return (
+            total_grad_q1 if ctx.needs_input_grad[0] else None,
+            total_grad_q2 if ctx.needs_input_grad[1] else None,
+            attn_param_grads.get(id(w_attn_qkv)),
+            attn_param_grads.get(id(b_attn_qkv)),
+            attn_param_grads.get(id(w_attn_out)),
+            attn_param_grads.get(id(b_attn_out)),
+            mlp_param_grads.get(id(w_mlp_gate)),
+            mlp_param_grads.get(id(b_mlp_gate)),
+            mlp_param_grads.get(id(w_mlp_up)),
+            mlp_param_grads.get(id(b_mlp_up)),
+            mlp_param_grads.get(id(w_mlp_down)),
+            mlp_param_grads.get(id(b_mlp_down)),
+            None,
+            None,
+        )
+
+
+def holonomic_symplectic_subgraph(
+    q1: torch.Tensor,
+    q2: torch.Tensor,
+    w_attn_qkv: torch.Tensor,
+    b_attn_qkv: Optional[torch.Tensor],
+    w_attn_out: torch.Tensor,
+    b_attn_out: Optional[torch.Tensor],
+    w_mlp_gate: torch.Tensor,
+    b_mlp_gate: Optional[torch.Tensor],
+    w_mlp_up: torch.Tensor,
+    b_mlp_up: Optional[torch.Tensor],
+    w_mlp_down: torch.Tensor,
+    b_mlp_down: Optional[torch.Tensor],
+    act: str = "silu",
+    num_heads: int = 4,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    return HolonomicSymplecticSubgraphFunction.apply(
+        q1, q2,
+        w_attn_qkv, b_attn_qkv,
+        w_attn_out, b_attn_out,
+        w_mlp_gate, b_mlp_gate,
+        w_mlp_up, b_mlp_up,
+        w_mlp_down, b_mlp_down,
+        act,
+        num_heads,
+    )
+
+
+class HolonomicResidualSubgraphFunction(torch.autograd.Function):
+    """
+    Mode B: Holonomic Zero-Tape Residual Subgraph.
+    Fuses consecutive residual blocks:
+        x1 = x + Attn(Norm1(x))
+        x2 = x1 + MLP(Norm2(x1))
+    Tape Elimination:
+        Saves ONLY input x (and weights).
+        Zero intermediate activations (Norm1(x), QKV, Attention, x1, Norm2(x1), MLP)
+        are materialized on the autograd tape.
+        In backward, x1 is recomputed on-the-fly and cotangents are accumulated directly.
+    """
+    @staticmethod
+    def forward(
+        ctx: Any,
+        x: torch.Tensor,
+        norm1_w: Optional[torch.Tensor],
+        norm1_b: Optional[torch.Tensor],
+        norm1_eps: float,
+        w_attn_qkv: torch.Tensor,
+        b_attn_qkv: Optional[torch.Tensor],
+        w_attn_out: torch.Tensor,
+        b_attn_out: Optional[torch.Tensor],
+        num_heads: int,
+        norm2_w: Optional[torch.Tensor],
+        norm2_b: Optional[torch.Tensor],
+        norm2_eps: float,
+        w_mlp_gate: torch.Tensor,
+        b_mlp_gate: Optional[torch.Tensor],
+        w_mlp_up: torch.Tensor,
+        b_mlp_up: Optional[torch.Tensor],
+        w_mlp_down: torch.Tensor,
+        b_mlp_down: Optional[torch.Tensor],
+        act: str = "silu",
+    ) -> torch.Tensor:
+        ctx.norm1_eps = norm1_eps
+        ctx.norm2_eps = norm2_eps
+        ctx.num_heads = num_heads
+        ctx.act = act
+
+        with torch.no_grad():
+            h1 = F.rms_norm(x, (x.size(-1),), norm1_w, norm1_eps) if norm1_w is not None else x
+            b_sz, s_len, dim = h1.shape
+            hd = dim // num_heads
+            qkv = F.linear(h1, w_attn_qkv, b_attn_qkv).reshape(b_sz, s_len, 3, num_heads, hd).permute(2, 0, 3, 1, 4)
+            q, k, v = qkv[0], qkv[1], qkv[2]
+            attn = F.scaled_dot_product_attention(q, k, v)
+            attn = attn.permute(0, 2, 1, 3).reshape(b_sz, s_len, dim)
+            f_val = F.linear(attn, w_attn_out, b_attn_out)
+            x1 = x + f_val
+
+            h2 = F.rms_norm(x1, (x1.size(-1),), norm2_w, norm2_eps) if norm2_w is not None else x1
+            g_val = _eval_mlp(h2, w_mlp_gate, b_mlp_gate, w_mlp_up, b_mlp_up, w_mlp_down, b_mlp_down, act)
+            x2 = x1 + g_val
+
+        ctx.save_for_backward(
+            x,
+            norm1_w, norm1_b,
+            w_attn_qkv, b_attn_qkv,
+            w_attn_out, b_attn_out,
+            norm2_w, norm2_b,
+            w_mlp_gate, b_mlp_gate,
+            w_mlp_up, b_mlp_up,
+            w_mlp_down, b_mlp_down,
+        )
+        return x2
+
+    @staticmethod
+    def backward(ctx: Any, grad_output: torch.Tensor) -> Tuple[Optional[torch.Tensor], ...]:
+        (
+            x,
+            norm1_w, norm1_b,
+            w_attn_qkv, b_attn_qkv,
+            w_attn_out, b_attn_out,
+            norm2_w, norm2_b,
+            w_mlp_gate, b_mlp_gate,
+            w_mlp_up, b_mlp_up,
+            w_mlp_down, b_mlp_down,
+        ) = ctx.saved_tensors
+
+        norm1_eps = ctx.norm1_eps
+        norm2_eps = ctx.norm2_eps
+        num_heads = ctx.num_heads
+        act = ctx.act
+
+        # 1. Recompute x1 on-the-fly from input x
+        x_in = x.detach().requires_grad_(True)
+        attn_params = [p for p in (norm1_w, norm1_b, w_attn_qkv, b_attn_qkv, w_attn_out, b_attn_out) if p is not None and p.requires_grad]
+        with torch.enable_grad():
+            h1 = F.rms_norm(x_in, (x_in.size(-1),), norm1_w, norm1_eps) if norm1_w is not None else x_in
+            b_sz, s_len, dim = h1.shape
+            hd = dim // num_heads
+            qkv = F.linear(h1, w_attn_qkv, b_attn_qkv).reshape(b_sz, s_len, 3, num_heads, hd).permute(2, 0, 3, 1, 4)
+            q, k, v = qkv[0], qkv[1], qkv[2]
+            attn = F.scaled_dot_product_attention(q, k, v)
+            attn = attn.permute(0, 2, 1, 3).reshape(b_sz, s_len, dim)
+            f_val = F.linear(attn, w_attn_out, b_attn_out)
+            x1 = x_in + f_val
+
+        # 2. Backpropagate through sub-layer 2 (x1 -> x2)
+        x1_in = x1.detach().requires_grad_(True)
+        mlp_params = [p for p in (norm2_w, norm2_b, w_mlp_gate, b_mlp_gate, w_mlp_up, b_mlp_up, w_mlp_down, b_mlp_down) if p is not None and p.requires_grad]
+        with torch.enable_grad():
+            h2 = F.rms_norm(x1_in, (x1_in.size(-1),), norm2_w, norm2_eps) if norm2_w is not None else x1_in
+            g_val = _eval_mlp(h2, w_mlp_gate, b_mlp_gate, w_mlp_up, b_mlp_up, w_mlp_down, b_mlp_down, act)
+            x2 = x1_in + g_val
+
+        inputs_g = [x1_in] + mlp_params
+        grads_g = torch.autograd.grad(
+            outputs=x2,
+            inputs=inputs_g,
+            grad_outputs=grad_output,
+            retain_graph=False,
+            create_graph=False,
+            allow_unused=True,
+        )
+        dx1 = grads_g[0] if grads_g[0] is not None else grad_output
+
+        mlp_param_grads = {}
+        idx = 1
+        for p in (norm2_w, norm2_b, w_mlp_gate, b_mlp_gate, w_mlp_up, b_mlp_up, w_mlp_down, b_mlp_down):
+            if p is not None and p.requires_grad:
+                mlp_param_grads[id(p)] = grads_g[idx]
+                idx += 1
+            else:
+                mlp_param_grads[id(p)] = None
+
+        # 3. Backpropagate dx1 through sub-layer 1 (x -> x1)
+        inputs_f = [x_in] + attn_params
+        grads_f = torch.autograd.grad(
+            outputs=x1,
+            inputs=inputs_f,
+            grad_outputs=dx1,
+            retain_graph=False,
+            create_graph=False,
+            allow_unused=True,
+        )
+        dx = grads_f[0] if grads_f[0] is not None else dx1
+
+        attn_param_grads = {}
+        idx = 1
+        for p in (norm1_w, norm1_b, w_attn_qkv, b_attn_qkv, w_attn_out, b_attn_out):
+            if p is not None and p.requires_grad:
+                attn_param_grads[id(p)] = grads_f[idx]
+                idx += 1
+            else:
+                attn_param_grads[id(p)] = None
+
+        return (
+            dx if ctx.needs_input_grad[0] else None,
+            attn_param_grads.get(id(norm1_w)),
+            attn_param_grads.get(id(norm1_b)),
+            None,
+            attn_param_grads.get(id(w_attn_qkv)),
+            attn_param_grads.get(id(b_attn_qkv)),
+            attn_param_grads.get(id(w_attn_out)),
+            attn_param_grads.get(id(b_attn_out)),
+            None,
+            mlp_param_grads.get(id(norm2_w)),
+            mlp_param_grads.get(id(norm2_b)),
+            None,
+            mlp_param_grads.get(id(w_mlp_gate)),
+            mlp_param_grads.get(id(b_mlp_gate)),
+            mlp_param_grads.get(id(w_mlp_up)),
+            mlp_param_grads.get(id(b_mlp_up)),
+            mlp_param_grads.get(id(w_mlp_down)),
+            mlp_param_grads.get(id(b_mlp_down)),
+            None,
+        )
+
+
+def holonomic_residual_subgraph(
+    x: torch.Tensor,
+    norm1_w: Optional[torch.Tensor],
+    norm1_b: Optional[torch.Tensor],
+    norm1_eps: float,
+    w_attn_qkv: torch.Tensor,
+    b_attn_qkv: Optional[torch.Tensor],
+    w_attn_out: torch.Tensor,
+    b_attn_out: Optional[torch.Tensor],
+    num_heads: int,
+    norm2_w: Optional[torch.Tensor],
+    norm2_b: Optional[torch.Tensor],
+    norm2_eps: float,
+    w_mlp_gate: torch.Tensor,
+    b_mlp_gate: Optional[torch.Tensor],
+    w_mlp_up: torch.Tensor,
+    b_mlp_up: Optional[torch.Tensor],
+    w_mlp_down: torch.Tensor,
+    b_mlp_down: Optional[torch.Tensor],
+    act: str = "silu",
+) -> torch.Tensor:
+    return HolonomicResidualSubgraphFunction.apply(
+        x,
+        norm1_w, norm1_b, norm1_eps,
+        w_attn_qkv, b_attn_qkv,
+        w_attn_out, b_attn_out,
+        num_heads,
+        norm2_w, norm2_b, norm2_eps,
+        w_mlp_gate, b_mlp_gate,
+        w_mlp_up, b_mlp_up,
+        w_mlp_down, b_mlp_down,
+        act,
+    )
+
+
+
 # =============================================================================
 # 2. PyTorch Custom Op Registration & Dynamic FakeTensor Kernels
 # =============================================================================
@@ -900,6 +1310,24 @@ try:
             "str act='silu', float spectral_threshold=0.0) -> Tensor"
         )
         _ojasx_fx_lib.impl("chunked_gated_mlp", holonomic_chunked_gated_mlp, "CompositeExplicitAutograd")
+
+    if not hasattr(torch.ops.ojasx_fx, "symplectic_subgraph"):
+        _ojasx_fx_lib.define(
+            "symplectic_subgraph(Tensor q1, Tensor q2, Tensor w_attn_qkv, Tensor? b_attn_qkv, "
+            "Tensor w_attn_out, Tensor? b_attn_out, Tensor w_mlp_gate, Tensor? b_mlp_gate, "
+            "Tensor w_mlp_up, Tensor? b_mlp_up, Tensor w_mlp_down, Tensor? b_mlp_down, "
+            "str act='silu', int num_heads=4) -> (Tensor, Tensor)"
+        )
+        _ojasx_fx_lib.impl("symplectic_subgraph", holonomic_symplectic_subgraph, "CompositeExplicitAutograd")
+
+    if not hasattr(torch.ops.ojasx_fx, "holonomic_residual_subgraph"):
+        _ojasx_fx_lib.define(
+            "holonomic_residual_subgraph(Tensor x, Tensor? norm1_w, Tensor? norm1_b, float norm1_eps, "
+            "Tensor w_attn_qkv, Tensor? b_attn_qkv, Tensor w_attn_out, Tensor? b_attn_out, int num_heads, "
+            "Tensor? norm2_w, Tensor? norm2_b, float norm2_eps, Tensor w_mlp_gate, Tensor? b_mlp_gate, "
+            "Tensor w_mlp_up, Tensor? b_mlp_up, Tensor w_mlp_down, Tensor? b_mlp_down, str act='silu') -> Tensor"
+        )
+        _ojasx_fx_lib.impl("holonomic_residual_subgraph", holonomic_residual_subgraph, "CompositeExplicitAutograd")
 
 except Exception:
     # Library already registered or non-fatal
@@ -1009,6 +1437,50 @@ try:
         mode: str = "right",
     ) -> torch.Tensor:
         return weight.new_empty(weight.shape)
+
+    @torch.library.register_fake("ojasx_fx::symplectic_subgraph")
+    def _fake_symplectic_subgraph(
+        q1: torch.Tensor,
+        q2: torch.Tensor,
+        w_attn_qkv: torch.Tensor,
+        b_attn_qkv: Optional[torch.Tensor],
+        w_attn_out: torch.Tensor,
+        b_attn_out: Optional[torch.Tensor],
+        w_mlp_gate: torch.Tensor,
+        b_mlp_gate: Optional[torch.Tensor],
+        w_mlp_up: torch.Tensor,
+        b_mlp_up: Optional[torch.Tensor],
+        w_mlp_down: torch.Tensor,
+        b_mlp_down: Optional[torch.Tensor],
+        act: str = "silu",
+        num_heads: int = 4,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        return q1.new_empty(q1.shape), q2.new_empty(q2.shape)
+
+    @torch.library.register_fake("ojasx_fx::holonomic_residual_subgraph")
+    def _fake_holonomic_residual_subgraph(
+        x: torch.Tensor,
+        norm1_w: Optional[torch.Tensor],
+        norm1_b: Optional[torch.Tensor],
+        norm1_eps: float,
+        w_attn_qkv: torch.Tensor,
+        b_attn_qkv: Optional[torch.Tensor],
+        w_attn_out: torch.Tensor,
+        b_attn_out: Optional[torch.Tensor],
+        num_heads: int,
+        norm2_w: Optional[torch.Tensor],
+        norm2_b: Optional[torch.Tensor],
+        norm2_eps: float,
+        w_mlp_gate: torch.Tensor,
+        b_mlp_gate: Optional[torch.Tensor],
+        w_mlp_up: torch.Tensor,
+        b_mlp_up: Optional[torch.Tensor],
+        w_mlp_down: torch.Tensor,
+        b_mlp_down: Optional[torch.Tensor],
+        act: str = "silu",
+    ) -> torch.Tensor:
+        return x.new_empty(x.shape)
+
 except Exception:
     pass
 
@@ -1028,6 +1500,8 @@ class TransformationStats:
     residual_chain_count: int = 0
     attention_count: int = 0
     linear_cross_entropy_count: int = 0
+    symplectic_subgraph_count: int = 0
+    holonomic_residual_subgraph_count: int = 0
     nodes_before: int = 0
     nodes_after: int = 0
 
@@ -1041,6 +1515,8 @@ class TransformationStats:
             + self.residual_chain_count
             + self.attention_count
             + self.linear_cross_entropy_count
+            + self.symplectic_subgraph_count
+            + self.holonomic_residual_subgraph_count
         )
 
 
@@ -1053,12 +1529,14 @@ class HolonomicSubgraphTransformer(Transformer):
     2. gate_proj + up_proj + act + mul + down_proj (SwiGLU / GeGLU)
     3. Low-Rank Bottlenecks
     4. Residual Chains
+    5. Symplectic (Mode A) & Holonomic Residual (Mode B) Subgraphs
     Supports both functional (torch.export/dynamo) and module-based (symbolic_trace) graphs.
     """
 
-    def __init__(self, module: GraphModule) -> None:
+    def __init__(self, module: GraphModule, mode: str = "auto") -> None:
         super().__init__(module)
         self.stats = TransformationStats()
+        self.mode = mode
 
     @staticmethod
     def _get_or_create_attr(graph: Graph, target: str) -> Node:
@@ -1217,6 +1695,9 @@ class HolonomicSubgraphTransformer(Transformer):
 
         # Pass 5: Low-Rank Bottlenecks
         self._rewrite_low_rank(gm)
+
+        # Pass 5.5: Paired Symplectic (Mode A) & Holonomic Residual (Mode B) Subgraphs
+        self._rewrite_paired_residual_subgraphs(gm)
 
         # Pass 6: Residual Chains
         self._rewrite_residual_chains(gm)
@@ -1526,7 +2007,175 @@ class HolonomicSubgraphTransformer(Transformer):
                         args=(x_in, w_down, b_down, w_up, b_up),
                     )
                     node.replace_all_uses_with(new_node)
-                self.stats.low_rank_bottleneck_count += 1
+    def _rewrite_paired_residual_subgraphs(self, gm: GraphModule) -> None:
+        """
+        Detects paired consecutive residual chains and rewrites them into:
+        - Mode B: Holonomic Residual Subgraph (Norm1 -> Attn -> Residual -> Norm2 -> MLP -> Residual)
+        - Mode A: Symplectic Subgraph (q1_next = q1 + Attn(q2), q2_next = q2 + MLP(q1_next))
+        """
+        graph = gm.graph
+        add_targets = (
+            operator.add,
+            torch.add,
+            getattr(torch.ops.aten, "add", None),
+            getattr(torch.ops.aten.add, "Tensor", None),
+        )
+
+        for node in list(graph.nodes):
+            if node.op != "call_function" or node.target not in add_targets or len(node.args) < 2:
+                continue
+
+            arg0, arg1 = node.args[0], node.args[1]
+            add1_cand = None
+            mlp_cand = None
+
+            if isinstance(arg0, Node) and arg0.op == "call_function" and arg0.target in add_targets:
+                add1_cand = arg0
+                mlp_cand = arg1
+            elif isinstance(arg1, Node) and arg1.op == "call_function" and arg1.target in add_targets:
+                add1_cand = arg1
+                mlp_cand = arg0
+
+            if add1_cand is None or not isinstance(mlp_cand, Node) or len(add1_cand.args) < 2:
+                continue
+
+            add1_arg0, add1_arg1 = add1_cand.args[0], add1_cand.args[1]
+            x_in = None
+            attn_cand = None
+
+            lin_attn = self._get_linear_details(gm, add1_arg1)
+            if lin_attn is not None:
+                x_in = add1_arg0
+                attn_cand = add1_arg1
+            else:
+                lin_attn = self._get_linear_details(gm, add1_arg0)
+                if lin_attn is not None:
+                    x_in = add1_arg1
+                    attn_cand = add1_arg0
+
+            if x_in is None or attn_cand is None or lin_attn is None:
+                continue
+
+            w_mlp_gate, b_mlp_gate = None, None
+            w_mlp_up, b_mlp_up = None, None
+            w_mlp_down, b_mlp_down = None, None
+            act_name = "silu"
+            norm2_node = None
+
+            # Case A: mlp_cand is already a fused holonomic_gated_mlp
+            if (
+                mlp_cand.op == "call_function"
+                and (mlp_cand.target is holonomic_gated_mlp or "gated_mlp" in str(mlp_cand.target))
+                and len(mlp_cand.args) >= 7
+            ):
+                norm2_node = mlp_cand.args[0]
+                w_mlp_gate = mlp_cand.args[1]
+                b_mlp_gate = mlp_cand.args[2]
+                w_mlp_up = mlp_cand.args[3]
+                b_mlp_up = mlp_cand.args[4]
+                w_mlp_down = mlp_cand.args[5]
+                b_mlp_down = mlp_cand.args[6]
+                if len(mlp_cand.args) > 7:
+                    act_name = str(mlp_cand.args[7])
+
+            # Case B: mlp_cand is a raw linear down_proj(mul(act(gate), up))
+            else:
+                lin_mlp = self._get_linear_details(gm, mlp_cand)
+                if lin_mlp is not None:
+                    act_in, w_mlp_down, b_mlp_down = lin_mlp
+                    if isinstance(act_in, Node) and act_in.op == "call_function" and act_in.target in (
+                        operator.mul, torch.mul, getattr(torch.ops.aten, "mul", None), getattr(torch.ops.aten.mul, "Tensor", None)
+                    ) and len(act_in.args) >= 2:
+                        m0, m1 = act_in.args[0], act_in.args[1]
+                        is_act0, act0_name, _ = self._get_act_details(gm, m0)
+                        is_act1, act1_name, _ = self._get_act_details(gm, m1)
+
+                        gate_node, up_node = None, None
+                        if is_act0:
+                            act_name = act0_name
+                            gate_node = m0.args[0] if len(m0.args) > 0 else None
+                            up_node = m1
+                        elif is_act1:
+                            act_name = act1_name
+                            gate_node = m1.args[0] if len(m1.args) > 0 else None
+                            up_node = m0
+
+                        if gate_node is not None and up_node is not None:
+                            lin_gate = self._get_linear_details(gm, gate_node)
+                            lin_up = self._get_linear_details(gm, up_node)
+                            if lin_gate is not None and lin_up is not None:
+                                norm2_node = lin_gate[0]
+                                w_mlp_gate, b_mlp_gate = lin_gate[1], lin_gate[2]
+                                w_mlp_up, b_mlp_up = lin_up[1], lin_up[2]
+
+            if w_mlp_gate is None or w_mlp_up is None:
+                continue
+
+            is_norm2, norm2_type, eps2, norm2_w, norm2_b = self._get_norm_details(gm, norm2_node)
+            if not is_norm2:
+                norm2_w, norm2_b, eps2 = None, None, 1e-5
+
+            attn_reshaped, w_attn_out, b_attn_out = lin_attn
+            w_attn_qkv, b_attn_qkv = None, None
+            norm1_node = None
+            num_heads = 4
+
+            curr = attn_reshaped
+            visited = set()
+            while curr is not None and isinstance(curr, Node) and curr not in visited:
+                visited.add(curr)
+                lin_cand = self._get_linear_details(gm, curr)
+                if lin_cand is not None and lin_cand[0] != curr:
+                    norm1_node, w_attn_qkv, b_attn_qkv = lin_cand
+                    break
+                curr = curr.args[0] if curr.args and isinstance(curr.args[0], Node) else None
+
+            if w_attn_qkv is None:
+                continue
+
+            is_norm1, norm1_type, eps1, norm1_w, norm1_b = self._get_norm_details(gm, norm1_node)
+            if not is_norm1:
+                norm1_w, norm1_b, eps1 = None, None, 1e-5
+
+            if self.mode == "mode_a":
+                with graph.inserting_before(node):
+                    subgraph_call = graph.call_function(
+                        holonomic_symplectic_subgraph,
+                        args=(
+                            x_in, norm2_node if norm2_node is not None else x_in,
+                            w_attn_qkv, b_attn_qkv,
+                            w_attn_out, b_attn_out,
+                            w_mlp_gate, b_mlp_gate,
+                            w_mlp_up, b_mlp_up,
+                            w_mlp_down, b_mlp_down,
+                            act_name,
+                            num_heads,
+                        ),
+                    )
+                    item0 = graph.call_function(operator.getitem, (subgraph_call, 0))
+                    item1 = graph.call_function(operator.getitem, (subgraph_call, 1))
+                add1_cand.replace_all_uses_with(item0)
+                node.replace_all_uses_with(item1)
+                self.stats.symplectic_subgraph_count += 1
+            else:
+                with graph.inserting_before(node):
+                    new_node = graph.call_function(
+                        holonomic_residual_subgraph,
+                        args=(
+                            x_in,
+                            norm1_w, norm1_b, eps1,
+                            w_attn_qkv, b_attn_qkv,
+                            w_attn_out, b_attn_out,
+                            num_heads,
+                            norm2_w, norm2_b, eps2,
+                            w_mlp_gate, b_mlp_gate,
+                            w_mlp_up, b_mlp_up,
+                            w_mlp_down, b_mlp_down,
+                            act_name,
+                        ),
+                    )
+                node.replace_all_uses_with(new_node)
+                self.stats.holonomic_residual_subgraph_count += 1
 
     def _rewrite_residual_chains(self, gm: GraphModule) -> None:
         graph = gm.graph
@@ -1735,9 +2384,9 @@ class HolonomicSubgraphTransformer(Transformer):
         return None
 
 
-def transform_subgraph_module(gm: GraphModule) -> Tuple[GraphModule, TransformationStats]:
+def transform_subgraph_module(gm: GraphModule, mode: str = "auto") -> Tuple[GraphModule, TransformationStats]:
     """Helper function to transform an FX GraphModule with HolonomicSubgraphTransformer."""
-    transformer = HolonomicSubgraphTransformer(gm)
+    transformer = HolonomicSubgraphTransformer(gm, mode=mode)
     rewritten_gm = transformer.transform()
     return rewritten_gm, transformer.stats
 
@@ -2060,6 +2709,7 @@ class FXSubgraphCompiler(nn.Module):
         tile_n: int = 64,
         tile_k: int = 32,
         example_inputs: Optional[Sequence[torch.Tensor]] = None,
+        mode: str = "auto",
     ) -> None:
         super().__init__()
         self.model = model
@@ -2067,6 +2717,7 @@ class FXSubgraphCompiler(nn.Module):
         self.tile_m = tile_m
         self.tile_n = tile_n
         self.tile_k = tile_k
+        self.mode = mode
 
         from .mlir_dialects import (
             MLIRModule,
@@ -2078,8 +2729,9 @@ class FXSubgraphCompiler(nn.Module):
         )
 
         self.traced_gm, _ = _trace_or_build_fx_graph(model, example_inputs)
+        self.rewritten_gm, self.stats = transform_subgraph_module(self.traced_gm, mode=mode)
         self.holonomic_mod: MLIRModule = fx_to_holonomic_mlir(
-            self.traced_gm,
+            self.rewritten_gm,
             name=model.__class__.__name__.lower(),
         )
         self.subgraph_mod: MLIRModule = HolonomicToSubgraphPass().run(self.holonomic_mod)
@@ -2122,14 +2774,18 @@ class FXSubgraphCompiler(nn.Module):
         if kwargs:
             return self.model(*args, **kwargs)
         try:
-            return self.traced_gm(*args)
+            return self.rewritten_gm(*args)
         except Exception:
-            return self.model(*args, **kwargs)
+            try:
+                return self.traced_gm(*args)
+            except Exception:
+                return self.model(*args, **kwargs)
 
 
 def compile_fx_subgraph(
     model: nn.Module,
     target: str = "nvvm",
     example_inputs: Optional[Sequence[torch.Tensor]] = None,
+    mode: str = "auto",
 ) -> FXSubgraphCompiler:
-    return FXSubgraphCompiler(model=model, target=target, example_inputs=example_inputs)
+    return FXSubgraphCompiler(model=model, target=target, example_inputs=example_inputs, mode=mode)

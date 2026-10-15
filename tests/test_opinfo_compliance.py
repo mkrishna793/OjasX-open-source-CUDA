@@ -37,8 +37,11 @@ import ojasx2.ops
 import ojasx2.tile_hal
 import ojasx2.generated_holonomic_ops
 import ojasx2.fx_subgraph_compiler
-import ojasx2.dagger_attention
 import ojasx2.fused_cross_entropy
+from ojasx2 import (
+    holonomic_symplectic_subgraph,
+    holonomic_residual_subgraph,
+)
 from ojasx2.holonomic_math_compiler import holonomic_linear, holonomic_swiglu
 
 
@@ -850,4 +853,80 @@ def test_opinfo_dual_regime_tangent_operator_factorization(M: int, D_in: int, r:
     assert torch.allclose(X.grad, X_ref.grad, atol=1e-3, rtol=1e-3)
     assert torch.allclose(W_down.grad, W_down_ref.grad, atol=1e-3, rtol=1e-3)
     assert torch.allclose(W_up.grad, W_up_ref.grad, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("stride_mode", ["contiguous", "transposed", "sliced"])
+@pytest.mark.parametrize("dtype", DTYPES)
+def test_opinfo_symplectic_subgraph_mode_a(device: str, stride_mode: str, dtype: torch.dtype):
+    """OpInfo parametrization for Mode A Symplectic Subgraph across strides, devices, and dtypes."""
+    torch.manual_seed(777)
+    b, s, d = 2, 8, 16
+    q1 = make_strided_tensor((b, s, d), stride_mode, device, dtype, requires_grad=True)
+    q2 = make_strided_tensor((b, s, d), stride_mode, device, dtype, requires_grad=True)
+
+    scale = 1.0 / math.sqrt(d)
+    w_qkv = torch.randn(3 * d, d, device=device, dtype=dtype, requires_grad=True) * scale
+    w_out = torch.randn(d, d, device=device, dtype=dtype, requires_grad=True) * scale
+    w_gate = torch.randn(2 * d, d, device=device, dtype=dtype, requires_grad=True) * scale
+    w_up = torch.randn(2 * d, d, device=device, dtype=dtype, requires_grad=True) * scale
+    w_down = torch.randn(d, 2 * d, device=device, dtype=dtype, requires_grad=True) * scale
+
+    out1, out2 = holonomic_symplectic_subgraph(
+        q1, q2,
+        w_qkv, None,
+        w_out, None,
+        w_gate, None,
+        w_up, None,
+        w_down, None,
+        act="silu",
+        num_heads=4,
+    )
+    loss = (out1.float().square().mean() + out2.float().square().mean())
+    loss.backward()
+
+    assert out1.shape == (b, s, d)
+    assert out2.shape == (b, s, d)
+    assert q1.grad is not None
+    assert q2.grad is not None
+    assert torch.isfinite(out1).all()
+    assert torch.isfinite(out2).all()
+
+
+@pytest.mark.parametrize("device", DEVICES)
+@pytest.mark.parametrize("stride_mode", ["contiguous", "transposed", "sliced"])
+@pytest.mark.parametrize("dtype", DTYPES)
+def test_opinfo_holonomic_residual_subgraph_mode_b(device: str, stride_mode: str, dtype: torch.dtype):
+    """OpInfo parametrization for Mode B Holonomic Residual Subgraph across strides, devices, and dtypes."""
+    torch.manual_seed(888)
+    b, s, d = 2, 8, 16
+    scale = 1.0 / math.sqrt(d)
+    x = make_strided_tensor((b, s, d), stride_mode, device, dtype, requires_grad=True)
+    norm1_w = torch.ones(d, device=device, dtype=dtype, requires_grad=True)
+    w_qkv = torch.randn(3 * d, d, device=device, dtype=dtype, requires_grad=True) * scale
+    w_out = torch.randn(d, d, device=device, dtype=dtype, requires_grad=True) * scale
+    norm2_w = torch.ones(d, device=device, dtype=dtype, requires_grad=True)
+    w_gate = torch.randn(2 * d, d, device=device, dtype=dtype, requires_grad=True) * scale
+    w_up = torch.randn(2 * d, d, device=device, dtype=dtype, requires_grad=True) * scale
+    w_down = torch.randn(d, 2 * d, device=device, dtype=dtype, requires_grad=True) * scale
+
+    y = holonomic_residual_subgraph(
+        x,
+        norm1_w, None, 1e-5,
+        w_qkv, None,
+        w_out, None,
+        4,
+        norm2_w, None, 1e-5,
+        w_gate, None,
+        w_up, None,
+        w_down, None,
+        act="silu",
+    )
+    loss = y.float().square().mean()
+    loss.backward()
+
+    assert y.shape == (b, s, d)
+    assert x.grad is not None
+    assert torch.isfinite(y).all()
+
 

@@ -80,6 +80,16 @@ from .smart_router import (
     FrozenLinearZeroTape,
     optimize_model,
 )
+from .fx_subgraph_compiler import (
+    holonomic_symplectic_subgraph,
+    holonomic_residual_subgraph,
+    HolonomicSymplecticSubgraphFunction,
+    HolonomicResidualSubgraphFunction,
+    compile_fx_subgraph,
+    FXSubgraphCompiler,
+    TransformationStats,
+    transform_subgraph_module,
+)
 from .holonomic_layers import (
     HolonomicLayerNorm,
     HolonomicGroupNorm,
@@ -136,4 +146,4 @@ from .logger import (
     set_log_level,
 )
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
