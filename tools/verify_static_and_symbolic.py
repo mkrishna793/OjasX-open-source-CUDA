@@ -119,20 +119,26 @@ def main() -> int:
 
     # 4. MLIR 3-Dialect Pipeline & SSA Verification
     if "torch" not in sys.modules:
-        mock_torch = types.ModuleType("torch")
-        mock_torch.Tensor = type("Tensor", (), {})
-        mock_nn = types.ModuleType("torch.nn")
-        mock_nn.Module = type("Module", (), {})
-        mock_nn.Linear = type("Linear", (mock_nn.Module,), {})
-        mock_nn.LayerNorm = type("LayerNorm", (mock_nn.Module,), {})
-        mock_fx = types.ModuleType("torch.fx")
-        mock_fx.GraphModule = type("GraphModule", (), {})
-        mock_fx.Node = type("Node", (), {})
-        mock_torch.nn = mock_nn
-        mock_torch.fx = mock_fx
-        sys.modules["torch"] = mock_torch
-        sys.modules["torch.nn"] = mock_nn
-        sys.modules["torch.fx"] = mock_fx
+        try:
+            import torch
+            import torch.nn
+            import torch.fx
+        except ImportError:
+            mock_torch = types.ModuleType("torch")
+            mock_torch.Tensor = type("Tensor", (), {})
+            mock_nn = types.ModuleType("torch.nn")
+            mock_nn.Module = type("Module", (), {})
+            mock_nn.Linear = type("Linear", (mock_nn.Module,), {})
+            mock_nn.LayerNorm = type("LayerNorm", (mock_nn.Module,), {})
+            mock_fx = types.ModuleType("torch.fx")
+            mock_fx.GraphModule = type("GraphModule", (), {})
+            mock_fx.Node = type("Node", (), {})
+            mock_fx.Interpreter = type("Interpreter", (), {"__init__": lambda self, *args, **kwargs: None})
+            mock_torch.nn = mock_nn
+            mock_torch.fx = mock_fx
+            sys.modules["torch"] = mock_torch
+            sys.modules["torch.nn"] = mock_nn
+            sys.modules["torch.fx"] = mock_fx
 
     spec = importlib.util.spec_from_file_location("mlir_dialects", "ojasx2/mlir_dialects.py")
     assert spec is not None and spec.loader is not None

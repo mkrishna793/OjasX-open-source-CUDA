@@ -15,7 +15,7 @@ Automatically inspects any PyTorch `nn.Module` and decides per-layer:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn

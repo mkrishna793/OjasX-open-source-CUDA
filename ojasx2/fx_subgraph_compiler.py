@@ -19,7 +19,7 @@ from __future__ import annotations
 import math
 import operator
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 import torch
 import torch.nn as nn
