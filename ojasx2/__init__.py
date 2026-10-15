@@ -130,5 +130,10 @@ from .mlir_dialects import (
     compile_model_to_target,
     compile_mlir_to_target,
 )
+from .logger import (
+    OjasXLogger,
+    get_logger,
+    set_log_level,
+)
 
 __version__ = "0.6.0"

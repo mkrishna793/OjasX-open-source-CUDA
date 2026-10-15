@@ -419,7 +419,7 @@ def cull_zero_cotangent_gemm(
     if dZ.numel() == 0 or X.numel() == 0:
         return dZ.new_zeros((dZ.size(-1), X.size(-1)))
 
-    if not maybe_sparse:
+    if not maybe_sparse or (hasattr(torch, "compiler") and hasattr(torch.compiler, "is_compiling") and torch.compiler.is_compiling()):
         return torch.matmul(dZ.transpose(-2, -1), X)
 
     m = dZ.size(0)

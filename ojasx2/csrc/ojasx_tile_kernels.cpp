@@ -32,6 +32,15 @@
 
 namespace ojasx_hal {
 
+static inline float stable_sigmoid(float x) {
+    if (x >= 0.0f) {
+        return 1.0f / (1.0f + std::exp(-x));
+    } else {
+        float ex = std::exp(x);
+        return ex / (1.0f + ex);
+    }
+}
+
 // ============================================================================
 // 1. Universal Hardware Silicon Prober (macOS, Linux x86_64/ARM64, Windows)
 // ============================================================================
@@ -791,7 +800,7 @@ at::Tensor fused_l1_glu_fwd(
 
                 switch (act_mode) {
                     case GLU_ACT_SWIGLU: {
-                        float sig = 1.0f / (1.0f + std::exp(-g));
+                        float sig = stable_sigmoid(g);
                         phi_g = g * sig;
                         break;
                     }
@@ -826,7 +835,7 @@ at::Tensor fused_l1_glu_fwd(
                         break;
                     }
                     case GLU_ACT_SIGMOIDGLU: {
-                        phi_g = 1.0f / (1.0f + std::exp(-g));
+                        phi_g = stable_sigmoid(g);
                         break;
                     }
                     case GLU_ACT_BILINEARGLU: {
@@ -834,7 +843,7 @@ at::Tensor fused_l1_glu_fwd(
                         break;
                     }
                     case GLU_ACT_QUICKGEGLU: {
-                        float s = 1.0f / (1.0f + std::exp(-1.702f * g));
+                        float s = stable_sigmoid(1.702f * g);
                         phi_g = g * s;
                         break;
                     }
@@ -982,7 +991,7 @@ std::tuple<at::Tensor, at::Tensor> fused_l1_glu_bwd(
 
                 switch (act_mode) {
                     case GLU_ACT_SWIGLU: {
-                        float sig = 1.0f / (1.0f + std::exp(-g));
+                        float sig = stable_sigmoid(g);
                         phi_g = g * sig;
                         dphi_g = sig * (1.0f + g * (1.0f - sig));
                         break;
@@ -1026,7 +1035,7 @@ std::tuple<at::Tensor, at::Tensor> fused_l1_glu_bwd(
                         break;
                     }
                     case GLU_ACT_SIGMOIDGLU: {
-                        float sig = 1.0f / (1.0f + std::exp(-g));
+                        float sig = stable_sigmoid(g);
                         phi_g = sig;
                         dphi_g = sig * (1.0f - sig);
                         break;
@@ -1037,7 +1046,7 @@ std::tuple<at::Tensor, at::Tensor> fused_l1_glu_bwd(
                         break;
                     }
                     case GLU_ACT_QUICKGEGLU: {
-                        float s = 1.0f / (1.0f + std::exp(-1.702f * g));
+                        float s = stable_sigmoid(1.702f * g);
                         phi_g = g * s;
                         dphi_g = s * (1.0f + 1.702f * g * (1.0f - s));
                         break;
@@ -1045,7 +1054,7 @@ std::tuple<at::Tensor, at::Tensor> fused_l1_glu_bwd(
                     case GLU_ACT_MISHGLU: {
                         float sp = (g > 20.0f) ? g : std::log1pf(std::exp(g));
                         float tsp = std::tanh(sp);
-                        float sig = 1.0f / (1.0f + std::exp(-g));
+                        float sig = stable_sigmoid(g);
                         phi_g = g * tsp;
                         dphi_g = tsp + g * sig * (1.0f - tsp * tsp);
                         break;

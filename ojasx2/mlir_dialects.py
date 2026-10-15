@@ -1717,6 +1717,7 @@ class HardwareCodeEmitter:
         return "\n".join(lines)
 
     emit_cpp_avx2 = emit_cpp_amx
+    emit_rocdl_hsaco = emit_rocdl_gcn
 
 
 # =============================================================================

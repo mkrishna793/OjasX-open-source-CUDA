@@ -402,12 +402,14 @@ static id<MTLBuffer> create_metal_buffer_zerocopy(id<MTLDevice> device, const at
 
     if ((addr % page_size) == 0) {
         size_t page_aligned_length = ((length + page_size - 1) / page_size) * page_size;
-        id<MTLBuffer> buf = [device newBufferWithBytesNoCopy:ptr
-                                                      length:page_aligned_length
-                                                     options:MTLResourceStorageModeShared
-                                                 deallocator:nil];
-        if (buf != nil) {
-            return buf;
+        if (tensor.storage().nbytes() >= page_aligned_length) {
+            id<MTLBuffer> buf = [device newBufferWithBytesNoCopy:ptr
+                                                          length:page_aligned_length
+                                                         options:MTLResourceStorageModeShared
+                                                     deallocator:nil];
+            if (buf != nil) {
+                return buf;
+            }
         }
     }
 
@@ -531,6 +533,12 @@ std::tuple<at::Tensor, at::Tensor> tilelang_metal_gemm_relu2_fwd(
             [enc endEncoding];
             [cmd commit];
             [cmd waitUntilCompleted];
+
+            if ([cmd status] == MTLCommandBufferStatusError) {
+                NSError *err = [cmd error];
+                const char *desc = err ? [[err localizedDescription] UTF8String] : "Unknown Metal Error";
+                TORCH_CHECK(false, "OjasX Metal Execution failed: ", desc);
+            }
 
             out_cpu = at::from_blob([buf_out contents], {M, N}, [buf_out](void*) {}, x_cpu.options()).clone();
             mask_cpu = at::from_blob([buf_mask contents], {M, words_per_row}, [buf_mask](void*) {}, x_cpu.options().dtype(at::kInt)).clone();
