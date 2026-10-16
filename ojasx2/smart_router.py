@@ -1370,7 +1370,7 @@ class OptimizationReport:
 def optimize_model(
     model: nn.Module,
     batch_tokens: int = 512,
-    prefer_1bit_relu2_for_relu: bool = True,
+    prefer_1bit_relu2_for_relu: bool = False,
     prefer_unified_mlp: bool = False,
     tiny_param_threshold: int = 1024,
     large_vocab_threshold: int = 8192,

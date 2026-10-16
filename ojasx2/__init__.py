@@ -147,5 +147,13 @@ from .logger import (
     get_logger,
     set_log_level,
 )
+from .updater import (
+    update,
+    check_for_updates,
+    notify_if_update_available_background,
+)
 
 __version__ = "0.7.1"
+
+# Launch non-blocking background update check (0ms import overhead, cached)
+notify_if_update_available_background()
