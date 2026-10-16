@@ -21,8 +21,10 @@ from .symplectic_engine import (
     SymplecticSwiGLUFFN,
     SymplecticStack,
     SymplecticMetrics,
+    SymplecticSqueeze,
     symplectic_coupling,
     symplectic_coupling_chain,
+    symplectic_squeeze,
     audit_symplectic_reversibility,
 )
 
@@ -146,4 +148,4 @@ from .logger import (
     set_log_level,
 )
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"

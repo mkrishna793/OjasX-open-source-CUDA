@@ -376,7 +376,55 @@ def test_stress_symplectic_gradient_parity_deep(depth: int):
     q1_s = q1_e.detach().clone().requires_grad_(True)
     q2_s = q2_e.detach().clone().requires_grad_(True)
 
-    # 1. Eager execution
+    # 1. Eager execution (2nd-Order Störmer-Verlet with Strang splitting and FSAL)
+    cur_q1, cur_q2 = q1_e, q2_e
+    cur_q1 = cur_q1 + 0.5 * blocks_e[0][0](cur_q2)
+    for i, (f, g) in enumerate(blocks_e):
+        cur_q2 = cur_q2 + g(cur_q1)
+        if i < len(blocks_e) - 1:
+            cur_q1 = cur_q1 + 0.5 * f(cur_q2) + 0.5 * blocks_e[i + 1][0](cur_q2)
+        else:
+            cur_q1 = cur_q1 + 0.5 * f(cur_q2)
+    loss_e = (cur_q1.pow(2) + cur_q2.pow(2)).sum()
+    loss_e.backward()
+
+    # 2. Symplectic execution
+    out1_s, out2_s = symplectic_coupling_chain(q1_s, q2_s, blocks_s, scheme="stormer_verlet")
+    loss_s = (out1_s.pow(2) + out2_s.pow(2)).sum()
+    loss_s.backward()
+
+    # Parity assertions
+    torch.testing.assert_close(cur_q1, out1_s, rtol=1e-10, atol=1e-10)
+    torch.testing.assert_close(cur_q2, out2_s, rtol=1e-10, atol=1e-10)
+    torch.testing.assert_close(q1_e.grad, q1_s.grad, rtol=1e-10, atol=1e-10)
+    torch.testing.assert_close(q2_e.grad, q2_s.grad, rtol=1e-10, atol=1e-10)
+
+    for pe, ps in zip(params_e, params_s):
+        torch.testing.assert_close(pe.grad, ps.grad, rtol=1e-10, atol=1e-10)
+
+
+@pytest.mark.parametrize("depth", [16])
+def test_stress_symplectic_euler_gradient_parity(depth: int):
+    """Stress tests exact gradient parity against eager unrolled chain for Euler scheme."""
+    torch.manual_seed(4321 + depth)
+    dim = 8
+    batch = 4
+    device = torch.device("cpu")
+    dtype = torch.float64
+
+    blocks_e = _build_deep_symplectic_blocks(depth, dim, dtype, device)
+    import copy
+    blocks_s = copy.deepcopy(blocks_e)
+
+    params_e = [p for b in blocks_e for m in b for p in m.parameters()]
+    params_s = [p for b in blocks_s for m in b for p in m.parameters()]
+
+    q1_e = torch.randn(batch, dim, dtype=dtype, device=device, requires_grad=True)
+    q2_e = torch.randn(batch, dim, dtype=dtype, device=device, requires_grad=True)
+    q1_s = q1_e.detach().clone().requires_grad_(True)
+    q2_s = q2_e.detach().clone().requires_grad_(True)
+
+    # Eager execution Euler
     cur_q1, cur_q2 = q1_e, q2_e
     for f, g in blocks_e:
         cur_q1 = cur_q1 + f(cur_q2)
@@ -384,12 +432,11 @@ def test_stress_symplectic_gradient_parity_deep(depth: int):
     loss_e = (cur_q1.pow(2) + cur_q2.pow(2)).sum()
     loss_e.backward()
 
-    # 2. Symplectic execution
-    out1_s, out2_s = symplectic_coupling_chain(q1_s, q2_s, blocks_s)
+    # Symplectic execution Euler
+    out1_s, out2_s = symplectic_coupling_chain(q1_s, q2_s, blocks_s, scheme="euler")
     loss_s = (out1_s.pow(2) + out2_s.pow(2)).sum()
     loss_s.backward()
 
-    # Parity assertions
     torch.testing.assert_close(cur_q1, out1_s, rtol=1e-10, atol=1e-10)
     torch.testing.assert_close(cur_q2, out2_s, rtol=1e-10, atol=1e-10)
     torch.testing.assert_close(q1_e.grad, q1_s.grad, rtol=1e-10, atol=1e-10)

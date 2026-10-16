@@ -374,3 +374,157 @@ def test_fx_compiler_residual_subgraph_mode_b_auto() -> None:
     y_compiled.sum().backward()
     y_ref.sum().backward()
     torch.testing.assert_close(x.grad, x_ref.grad, atol=1e-4, rtol=1e-4)
+
+
+class EagerSeparateQKVReference(nn.Module):
+    """Reference block with separate Q, K, V projections and LayerNorm."""
+    def __init__(self, dim: int = 32, num_heads: int = 8, bias: bool = False, norm_type: str = "rms"):
+        super().__init__()
+        self.dim = dim
+        self.num_heads = num_heads
+        self.norm_type = norm_type
+        if norm_type == "layer":
+            self.norm1 = nn.LayerNorm(dim, eps=1e-5)
+            self.norm2 = nn.LayerNorm(dim, eps=1e-5)
+        else:
+            self.norm1 = nn.RMSNorm(dim, eps=1e-5)
+            self.norm2 = nn.RMSNorm(dim, eps=1e-5)
+        self.q_proj = nn.Linear(dim, dim, bias=bias)
+        self.k_proj = nn.Linear(dim, dim, bias=bias)
+        self.v_proj = nn.Linear(dim, dim, bias=bias)
+        self.out_proj = nn.Linear(dim, dim, bias=bias)
+        self.w_gate = nn.Linear(dim, dim * 2, bias=bias)
+        self.w_up = nn.Linear(dim, dim * 2, bias=bias)
+        self.w_down = nn.Linear(dim * 2, dim, bias=bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h1 = self.norm1(x)
+        b, s, d = h1.shape
+        hd = d // self.num_heads
+        q = self.q_proj(h1).view(b, s, self.num_heads, hd).transpose(1, 2)
+        k = self.k_proj(h1).view(b, s, self.num_heads, hd).transpose(1, 2)
+        v = self.v_proj(h1).view(b, s, self.num_heads, hd).transpose(1, 2)
+        attn = F.scaled_dot_product_attention(q, k, v)
+        attn = attn.transpose(1, 2).reshape(b, s, d)
+        x1 = x + self.out_proj(attn)
+
+        h2 = self.norm2(x1)
+        mlp = self.w_down(F.silu(self.w_gate(h2)) * self.w_up(h2))
+        return x1 + mlp
+
+
+@pytest.mark.parametrize("bias", [False, True])
+def test_separate_qkv_subgraph_compilation(bias: bool) -> None:
+    """Verifies Bug 2 fix: separate q_proj, k_proj, v_proj are fused and rewritten without crash."""
+    torch.manual_seed(42)
+    dim = 32
+    mod = EagerSeparateQKVReference(dim=dim, num_heads=4, bias=bias)
+    compiled = compile_fx_subgraph(mod, mode="mode_b")
+    assert compiled.stats.holonomic_residual_subgraph_count >= 1
+
+    x = torch.randn(2, 8, dim, requires_grad=True)
+    x_ref = x.detach().clone().requires_grad_(True)
+    y_comp = compiled(x)
+    y_ref = mod(x_ref)
+    torch.testing.assert_close(y_comp, y_ref, atol=1e-4, rtol=1e-4)
+
+
+@pytest.mark.parametrize("heads", [8, 12, 16, 32, 64])
+def test_dynamic_num_heads_compilation(heads: int) -> None:
+    """Verifies Bug 5 fix: dynamic num_heads inference for 8, 12, 16, 32, 64 heads."""
+    dim = 192  # divisible by 8, 12, 16, 32, 64
+    mod = EagerSeparateQKVReference(dim=dim, num_heads=heads, bias=False)
+    compiled = compile_fx_subgraph(mod, mode="mode_b")
+    assert compiled.stats.holonomic_residual_subgraph_count >= 1
+
+    x = torch.randn(2, 4, dim)
+    y_comp = compiled(x)
+    y_ref = mod(x)
+    torch.testing.assert_close(y_comp, y_ref, atol=1e-4, rtol=1e-4)
+
+
+def test_layernorm_bias_gradients_mode_b() -> None:
+    """Verifies Bug 6 fix: LayerNorm bias gradients are populated and match eager execution."""
+    torch.manual_seed(101)
+    dim = 16
+    x = torch.randn(2, 4, dim, requires_grad=True)
+    x_ref = x.detach().clone().requires_grad_(True)
+    norm1_w = torch.randn(dim, requires_grad=True)
+    norm1_b = torch.randn(dim, requires_grad=True)
+    norm1_w_ref = norm1_w.detach().clone().requires_grad_(True)
+    norm1_b_ref = norm1_b.detach().clone().requires_grad_(True)
+
+    w_qkv = torch.randn(3 * dim, dim, requires_grad=True)
+    w_out = torch.randn(dim, dim, requires_grad=True)
+    norm2_w = torch.randn(dim, requires_grad=True)
+    norm2_b = torch.randn(dim, requires_grad=True)
+    norm2_w_ref = norm2_w.detach().clone().requires_grad_(True)
+    norm2_b_ref = norm2_b.detach().clone().requires_grad_(True)
+
+    w_gate = torch.randn(2 * dim, dim, requires_grad=True)
+    w_up = torch.randn(2 * dim, dim, requires_grad=True)
+    w_down = torch.randn(dim, 2 * dim, requires_grad=True)
+
+    # Reference
+    h1_ref = F.layer_norm(x_ref, (dim,), norm1_w_ref, norm1_b_ref, 1e-5)
+    qkv = F.linear(h1_ref, w_qkv).reshape(2, 4, 3, 4, 4).permute(2, 0, 3, 1, 4)
+    attn = F.scaled_dot_product_attention(qkv[0], qkv[1], qkv[2]).permute(0, 2, 1, 3).reshape(2, 4, dim)
+    x1_ref = x_ref + F.linear(attn, w_out)
+    h2_ref = F.layer_norm(x1_ref, (dim,), norm2_w_ref, norm2_b_ref, 1e-5)
+    x2_ref = x1_ref + F.linear(F.silu(F.linear(h2_ref, w_gate)) * F.linear(h2_ref, w_up), w_down)
+    x2_ref.sum().backward()
+
+    # Subgraph
+    y_sub = holonomic_residual_subgraph(
+        x, norm1_w, norm1_b, 1e-5,
+        w_qkv, None, w_out, None, 4,
+        norm2_w, norm2_b, 1e-5,
+        w_gate, None, w_up, None, w_down, None,
+        act="silu", norm_type="layer",
+    )
+    y_sub.sum().backward()
+
+    torch.testing.assert_close(y_sub, x2_ref, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(x.grad, x_ref.grad, atol=1e-4, rtol=1e-4)
+    assert norm1_b.grad is not None
+    assert norm2_b.grad is not None
+    torch.testing.assert_close(norm1_b.grad, norm1_b_ref.grad, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(norm2_b.grad, norm2_b_ref.grad, atol=1e-4, rtol=1e-4)
+
+
+def test_tied_weights_no_overaccumulation() -> None:
+    """Verifies Bug 7 fix: tied weights (w_gate is w_up) produce exact gradients without N-fold multiplication."""
+    torch.manual_seed(202)
+    dim = 16
+    x = torch.randn(2, 4, dim, requires_grad=True)
+    x_ref = x.detach().clone().requires_grad_(True)
+    norm1_w = torch.ones(dim, requires_grad=True)
+    norm2_w = torch.ones(dim, requires_grad=True)
+    w_qkv = torch.randn(3 * dim, dim, requires_grad=True)
+    w_out = torch.randn(dim, dim, requires_grad=True)
+    w_tied = torch.randn(2 * dim, dim, requires_grad=True)
+    w_tied_ref = w_tied.detach().clone().requires_grad_(True)
+    w_down = torch.randn(dim, 2 * dim, requires_grad=True)
+
+    # Reference with tied weights
+    h1_ref = F.rms_norm(x_ref, (dim,), norm1_w, 1e-5)
+    qkv = F.linear(h1_ref, w_qkv).reshape(2, 4, 3, 4, 4).permute(2, 0, 3, 1, 4)
+    attn = F.scaled_dot_product_attention(qkv[0], qkv[1], qkv[2]).permute(0, 2, 1, 3).reshape(2, 4, dim)
+    x1_ref = x_ref + F.linear(attn, w_out)
+    h2_ref = F.rms_norm(x1_ref, (dim,), norm2_w, 1e-5)
+    x2_ref = x1_ref + F.linear(F.silu(F.linear(h2_ref, w_tied_ref)) * F.linear(h2_ref, w_tied_ref), w_down)
+    x2_ref.sum().backward()
+
+    # Subgraph
+    y_sub = holonomic_residual_subgraph(
+        x, norm1_w, None, 1e-5,
+        w_qkv, None, w_out, None, 4,
+        norm2_w, None, 1e-5,
+        w_tied, None, w_tied, None, w_down, None,
+        act="silu", norm_type="rms",
+    )
+    y_sub.sum().backward()
+
+    torch.testing.assert_close(y_sub, x2_ref, atol=1e-4, rtol=1e-4)
+    torch.testing.assert_close(w_tied.grad, w_tied_ref.grad, atol=1e-4, rtol=1e-4)
+

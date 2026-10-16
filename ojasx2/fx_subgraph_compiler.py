@@ -18,12 +18,15 @@ from __future__ import annotations
 
 import math
 import operator
+import os
+import warnings
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.autograd.function import once_differentiable
 from torch.fx import Graph, GraphModule, Node, Transformer
 
 from .holonomic_math_compiler import (
@@ -33,9 +36,12 @@ from .holonomic_math_compiler import (
     halley_activation_cotangent,
     halley_invert_activation,
 )
+from .logger import get_logger
 from .residuals import pack_mask, unpack_mask
 import ojasx2.dagger_attention
 import ojasx2.fused_cross_entropy
+
+logger = get_logger("fx_subgraph_compiler")
 
 
 
@@ -918,6 +924,7 @@ class HolonomicSymplecticSubgraphFunction(torch.autograd.Function):
         return q1_next, q2_next
 
     @staticmethod
+    @torch.autograd.function.once_differentiable
     def backward(ctx: Any, grad_q1: torch.Tensor, grad_q2: torch.Tensor) -> Tuple[Optional[torch.Tensor], ...]:
         (
             q1_next, q2_next,
@@ -934,14 +941,23 @@ class HolonomicSymplecticSubgraphFunction(torch.autograd.Function):
 
         # 1. Reconstruct q2 and differentiate g_mlp from q1_next
         q1_in = q1_next.detach().requires_grad_(True)
-        mlp_params = [p for p in (w_mlp_gate, b_mlp_gate, w_mlp_up, b_mlp_up, w_mlp_down, b_mlp_down) if p is not None and p.requires_grad]
+        raw_mlp_params = [w_mlp_gate, b_mlp_gate, w_mlp_up, b_mlp_up, w_mlp_down, b_mlp_down]
+        mlp_param_counts: Dict[int, int] = {}
+        unique_mlp_params: List[torch.Tensor] = []
+        for p in raw_mlp_params:
+            if p is not None and p.requires_grad:
+                pid = id(p)
+                mlp_param_counts[pid] = mlp_param_counts.get(pid, 0) + 1
+                if not any(id(u) == pid for u in unique_mlp_params):
+                    unique_mlp_params.append(p)
+
         with torch.enable_grad():
             g_val = _eval_mlp(q1_in, w_mlp_gate, b_mlp_gate, w_mlp_up, b_mlp_up, w_mlp_down, b_mlp_down, act)
 
         with torch.no_grad():
             q2_reconstructed = (q2_next.to(acc_dtype) - g_val.detach().to(acc_dtype)).to(q2_next.dtype)
 
-        inputs_g = [q1_in] + mlp_params
+        inputs_g = [q1_in] + unique_mlp_params
         grads_g = torch.autograd.grad(
             outputs=g_val,
             inputs=inputs_g,
@@ -953,18 +969,24 @@ class HolonomicSymplecticSubgraphFunction(torch.autograd.Function):
         dq1_from_g = grads_g[0] if grads_g[0] is not None else torch.zeros_like(q1_in)
         total_grad_q1 = grad_q1 + dq1_from_g
 
-        mlp_param_grads = {}
-        idx = 1
-        for p in (w_mlp_gate, b_mlp_gate, w_mlp_up, b_mlp_up, w_mlp_down, b_mlp_down):
-            if p is not None and p.requires_grad:
-                mlp_param_grads[id(p)] = grads_g[idx]
-                idx += 1
-            else:
-                mlp_param_grads[id(p)] = None
+        mlp_param_grads: Dict[int, Optional[torch.Tensor]] = {}
+        for p, g in zip(unique_mlp_params, grads_g[1:]):
+            pid = id(p)
+            cnt = mlp_param_counts[pid]
+            mlp_param_grads[pid] = (g / cnt) if (g is not None and cnt > 1) else g
 
         # 2. Reconstruct q1 and differentiate f_attn from q2_reconstructed
         q2_in = q2_reconstructed.detach().requires_grad_(True)
-        attn_params = [p for p in (w_attn_qkv, b_attn_qkv, w_attn_out, b_attn_out) if p is not None and p.requires_grad]
+        raw_attn_params = [w_attn_qkv, b_attn_qkv, w_attn_out, b_attn_out]
+        attn_param_counts: Dict[int, int] = {}
+        unique_attn_params: List[torch.Tensor] = []
+        for p in raw_attn_params:
+            if p is not None and p.requires_grad:
+                pid = id(p)
+                attn_param_counts[pid] = attn_param_counts.get(pid, 0) + 1
+                if not any(id(u) == pid for u in unique_attn_params):
+                    unique_attn_params.append(p)
+
         with torch.enable_grad():
             b_sz, s_len, dim = q2_in.shape
             hd = dim // num_heads
@@ -977,7 +999,7 @@ class HolonomicSymplecticSubgraphFunction(torch.autograd.Function):
         with torch.no_grad():
             q1_reconstructed = (q1_next.to(acc_dtype) - f_val.detach().to(acc_dtype)).to(q1_next.dtype)
 
-        inputs_f = [q2_in] + attn_params
+        inputs_f = [q2_in] + unique_attn_params
         grads_f = torch.autograd.grad(
             outputs=f_val,
             inputs=inputs_f,
@@ -989,14 +1011,11 @@ class HolonomicSymplecticSubgraphFunction(torch.autograd.Function):
         dq2_from_f = grads_f[0] if grads_f[0] is not None else torch.zeros_like(q2_in)
         total_grad_q2 = grad_q2 + dq2_from_f
 
-        attn_param_grads = {}
-        idx = 1
-        for p in (w_attn_qkv, b_attn_qkv, w_attn_out, b_attn_out):
-            if p is not None and p.requires_grad:
-                attn_param_grads[id(p)] = grads_f[idx]
-                idx += 1
-            else:
-                attn_param_grads[id(p)] = None
+        attn_param_grads: Dict[int, Optional[torch.Tensor]] = {}
+        for p, g in zip(unique_attn_params, grads_f[1:]):
+            pid = id(p)
+            cnt = attn_param_counts[pid]
+            attn_param_grads[pid] = (g / cnt) if (g is not None and cnt > 1) else g
 
         return (
             total_grad_q1 if ctx.needs_input_grad[0] else None,
@@ -1078,14 +1097,22 @@ class HolonomicResidualSubgraphFunction(torch.autograd.Function):
         w_mlp_down: torch.Tensor,
         b_mlp_down: Optional[torch.Tensor],
         act: str = "silu",
+        norm_type: str = "rms",
     ) -> torch.Tensor:
         ctx.norm1_eps = norm1_eps
         ctx.norm2_eps = norm2_eps
         ctx.num_heads = num_heads
         ctx.act = act
+        ctx.norm_type = norm_type
 
         with torch.no_grad():
-            h1 = F.rms_norm(x, (x.size(-1),), norm1_w, norm1_eps) if norm1_w is not None else x
+            if norm1_b is not None or norm_type == "layer":
+                h1 = F.layer_norm(x, (x.size(-1),), norm1_w, norm1_b, norm1_eps)
+            elif norm1_w is not None:
+                h1 = F.rms_norm(x, (x.size(-1),), norm1_w, norm1_eps)
+            else:
+                h1 = x
+
             b_sz, s_len, dim = h1.shape
             hd = dim // num_heads
             qkv = F.linear(h1, w_attn_qkv, b_attn_qkv).reshape(b_sz, s_len, 3, num_heads, hd).permute(2, 0, 3, 1, 4)
@@ -1095,7 +1122,13 @@ class HolonomicResidualSubgraphFunction(torch.autograd.Function):
             f_val = F.linear(attn, w_attn_out, b_attn_out)
             x1 = x + f_val
 
-            h2 = F.rms_norm(x1, (x1.size(-1),), norm2_w, norm2_eps) if norm2_w is not None else x1
+            if norm2_b is not None or norm_type == "layer":
+                h2 = F.layer_norm(x1, (x1.size(-1),), norm2_w, norm2_b, norm2_eps)
+            elif norm2_w is not None:
+                h2 = F.rms_norm(x1, (x1.size(-1),), norm2_w, norm2_eps)
+            else:
+                h2 = x1
+
             g_val = _eval_mlp(h2, w_mlp_gate, b_mlp_gate, w_mlp_up, b_mlp_up, w_mlp_down, b_mlp_down, act)
             x2 = x1 + g_val
 
@@ -1112,6 +1145,7 @@ class HolonomicResidualSubgraphFunction(torch.autograd.Function):
         return x2
 
     @staticmethod
+    @torch.autograd.function.once_differentiable
     def backward(ctx: Any, grad_output: torch.Tensor) -> Tuple[Optional[torch.Tensor], ...]:
         (
             x,
@@ -1128,12 +1162,27 @@ class HolonomicResidualSubgraphFunction(torch.autograd.Function):
         norm2_eps = ctx.norm2_eps
         num_heads = ctx.num_heads
         act = ctx.act
+        norm_type = getattr(ctx, "norm_type", "rms")
 
         # 1. Recompute x1 on-the-fly from input x
         x_in = x.detach().requires_grad_(True)
-        attn_params = [p for p in (norm1_w, norm1_b, w_attn_qkv, b_attn_qkv, w_attn_out, b_attn_out) if p is not None and p.requires_grad]
+        raw_attn_params = [norm1_w, norm1_b, w_attn_qkv, b_attn_qkv, w_attn_out, b_attn_out]
+        attn_param_counts: Dict[int, int] = {}
+        unique_attn_params: List[torch.Tensor] = []
+        for p in raw_attn_params:
+            if p is not None and p.requires_grad:
+                pid = id(p)
+                attn_param_counts[pid] = attn_param_counts.get(pid, 0) + 1
+                if not any(id(u) == pid for u in unique_attn_params):
+                    unique_attn_params.append(p)
+
         with torch.enable_grad():
-            h1 = F.rms_norm(x_in, (x_in.size(-1),), norm1_w, norm1_eps) if norm1_w is not None else x_in
+            if norm1_b is not None or norm_type == "layer":
+                h1 = F.layer_norm(x_in, (x_in.size(-1),), norm1_w, norm1_b, norm1_eps)
+            elif norm1_w is not None:
+                h1 = F.rms_norm(x_in, (x_in.size(-1),), norm1_w, norm1_eps)
+            else:
+                h1 = x_in
             b_sz, s_len, dim = h1.shape
             hd = dim // num_heads
             qkv = F.linear(h1, w_attn_qkv, b_attn_qkv).reshape(b_sz, s_len, 3, num_heads, hd).permute(2, 0, 3, 1, 4)
@@ -1145,13 +1194,27 @@ class HolonomicResidualSubgraphFunction(torch.autograd.Function):
 
         # 2. Backpropagate through sub-layer 2 (x1 -> x2)
         x1_in = x1.detach().requires_grad_(True)
-        mlp_params = [p for p in (norm2_w, norm2_b, w_mlp_gate, b_mlp_gate, w_mlp_up, b_mlp_up, w_mlp_down, b_mlp_down) if p is not None and p.requires_grad]
+        raw_mlp_params = [norm2_w, norm2_b, w_mlp_gate, b_mlp_gate, w_mlp_up, b_mlp_up, w_mlp_down, b_mlp_down]
+        mlp_param_counts: Dict[int, int] = {}
+        unique_mlp_params: List[torch.Tensor] = []
+        for p in raw_mlp_params:
+            if p is not None and p.requires_grad:
+                pid = id(p)
+                mlp_param_counts[pid] = mlp_param_counts.get(pid, 0) + 1
+                if not any(id(u) == pid for u in unique_mlp_params):
+                    unique_mlp_params.append(p)
+
         with torch.enable_grad():
-            h2 = F.rms_norm(x1_in, (x1_in.size(-1),), norm2_w, norm2_eps) if norm2_w is not None else x1_in
+            if norm2_b is not None or norm_type == "layer":
+                h2 = F.layer_norm(x1_in, (x1_in.size(-1),), norm2_w, norm2_b, norm2_eps)
+            elif norm2_w is not None:
+                h2 = F.rms_norm(x1_in, (x1_in.size(-1),), norm2_w, norm2_eps)
+            else:
+                h2 = x1_in
             g_val = _eval_mlp(h2, w_mlp_gate, b_mlp_gate, w_mlp_up, b_mlp_up, w_mlp_down, b_mlp_down, act)
             x2 = x1_in + g_val
 
-        inputs_g = [x1_in] + mlp_params
+        inputs_g = [x1_in] + unique_mlp_params
         grads_g = torch.autograd.grad(
             outputs=x2,
             inputs=inputs_g,
@@ -1162,17 +1225,14 @@ class HolonomicResidualSubgraphFunction(torch.autograd.Function):
         )
         dx1 = grads_g[0] if grads_g[0] is not None else grad_output
 
-        mlp_param_grads = {}
-        idx = 1
-        for p in (norm2_w, norm2_b, w_mlp_gate, b_mlp_gate, w_mlp_up, b_mlp_up, w_mlp_down, b_mlp_down):
-            if p is not None and p.requires_grad:
-                mlp_param_grads[id(p)] = grads_g[idx]
-                idx += 1
-            else:
-                mlp_param_grads[id(p)] = None
+        mlp_param_grads: Dict[int, Optional[torch.Tensor]] = {}
+        for p, g in zip(unique_mlp_params, grads_g[1:]):
+            pid = id(p)
+            cnt = mlp_param_counts[pid]
+            mlp_param_grads[pid] = (g / cnt) if (g is not None and cnt > 1) else g
 
         # 3. Backpropagate dx1 through sub-layer 1 (x -> x1)
-        inputs_f = [x_in] + attn_params
+        inputs_f = [x_in] + unique_attn_params
         grads_f = torch.autograd.grad(
             outputs=x1,
             inputs=inputs_f,
@@ -1183,14 +1243,11 @@ class HolonomicResidualSubgraphFunction(torch.autograd.Function):
         )
         dx = grads_f[0] if grads_f[0] is not None else dx1
 
-        attn_param_grads = {}
-        idx = 1
-        for p in (norm1_w, norm1_b, w_attn_qkv, b_attn_qkv, w_attn_out, b_attn_out):
-            if p is not None and p.requires_grad:
-                attn_param_grads[id(p)] = grads_f[idx]
-                idx += 1
-            else:
-                attn_param_grads[id(p)] = None
+        attn_param_grads: Dict[int, Optional[torch.Tensor]] = {}
+        for p, g in zip(unique_attn_params, grads_f[1:]):
+            pid = id(p)
+            cnt = attn_param_counts[pid]
+            attn_param_grads[pid] = (g / cnt) if (g is not None and cnt > 1) else g
 
         return (
             dx if ctx.needs_input_grad[0] else None,
@@ -1211,6 +1268,7 @@ class HolonomicResidualSubgraphFunction(torch.autograd.Function):
             mlp_param_grads.get(id(b_mlp_up)),
             mlp_param_grads.get(id(w_mlp_down)),
             mlp_param_grads.get(id(b_mlp_down)),
+            None,
             None,
         )
 
@@ -1235,6 +1293,7 @@ def holonomic_residual_subgraph(
     w_mlp_down: torch.Tensor,
     b_mlp_down: Optional[torch.Tensor],
     act: str = "silu",
+    norm_type: str = "rms",
 ) -> torch.Tensor:
     return HolonomicResidualSubgraphFunction.apply(
         x,
@@ -1247,6 +1306,7 @@ def holonomic_residual_subgraph(
         w_mlp_up, b_mlp_up,
         w_mlp_down, b_mlp_down,
         act,
+        norm_type,
     )
 
 
@@ -1325,7 +1385,7 @@ try:
             "holonomic_residual_subgraph(Tensor x, Tensor? norm1_w, Tensor? norm1_b, float norm1_eps, "
             "Tensor w_attn_qkv, Tensor? b_attn_qkv, Tensor w_attn_out, Tensor? b_attn_out, int num_heads, "
             "Tensor? norm2_w, Tensor? norm2_b, float norm2_eps, Tensor w_mlp_gate, Tensor? b_mlp_gate, "
-            "Tensor w_mlp_up, Tensor? b_mlp_up, Tensor w_mlp_down, Tensor? b_mlp_down, str act='silu') -> Tensor"
+            "Tensor w_mlp_up, Tensor? b_mlp_up, Tensor w_mlp_down, Tensor? b_mlp_down, str act='silu', str norm_type='rms') -> Tensor"
         )
         _ojasx_fx_lib.impl("holonomic_residual_subgraph", holonomic_residual_subgraph, "CompositeExplicitAutograd")
 
@@ -1478,6 +1538,7 @@ try:
         w_mlp_down: torch.Tensor,
         b_mlp_down: Optional[torch.Tensor],
         act: str = "silu",
+        norm_type: str = "rms",
     ) -> torch.Tensor:
         return x.new_empty(x.shape)
 
@@ -1567,7 +1628,10 @@ class HolonomicSubgraphTransformer(Transformer):
                 b = node.args[2] if len(node.args) > 2 else node.kwargs.get("bias", None)
                 return x, w, b
         elif node.op == "call_module":
-            mod = getattr(gm, node.target, None)
+            try:
+                mod = gm.get_submodule(node.target)
+            except (AttributeError, KeyError):
+                mod = getattr(gm, node.target, None)
             if isinstance(mod, nn.Linear):
                 x = node.args[0]
                 w_node = HolonomicSubgraphTransformer._get_or_create_attr(gm.graph, f"{node.target}.weight")
@@ -1663,14 +1727,17 @@ class HolonomicSubgraphTransformer(Transformer):
                 eps = node.args[4] if len(node.args) > 4 else node.kwargs.get("eps", 1e-5)
                 return True, "layer", float(eps), weight, bias
         elif node.op == "call_module":
-            mod = getattr(gm, node.target, None)
+            try:
+                mod = gm.get_submodule(node.target)
+            except (AttributeError, KeyError):
+                mod = getattr(gm, node.target, None)
             if isinstance(mod, nn.LayerNorm):
                 w_node = HolonomicSubgraphTransformer._get_or_create_attr(gm.graph, f"{node.target}.weight") if mod.weight is not None else None
                 b_node = HolonomicSubgraphTransformer._get_or_create_attr(gm.graph, f"{node.target}.bias") if mod.bias is not None else None
-                return True, "layer", float(mod.eps), w_node, b_node
+                return True, "layer", float(getattr(mod, "eps", None) or 1e-5), w_node, b_node
             elif mod is not None and "RMSNorm" in mod.__class__.__name__:
                 w_node = HolonomicSubgraphTransformer._get_or_create_attr(gm.graph, f"{node.target}.weight") if getattr(mod, "weight", None) is not None else None
-                return True, "rms", float(getattr(mod, "eps", 1e-6)), w_node, None
+                return True, "rms", float(getattr(mod, "eps", None) or 1e-6), w_node, None
         return False, "", 1e-5, None, None
 
     def transform(self) -> GraphModule:
@@ -2118,24 +2185,167 @@ class HolonomicSubgraphTransformer(Transformer):
             attn_reshaped, w_attn_out, b_attn_out = lin_attn
             w_attn_qkv, b_attn_qkv = None, None
             norm1_node = None
-            num_heads = 4
 
-            curr = attn_reshaped
-            visited = set()
-            while curr is not None and isinstance(curr, Node) and curr not in visited:
-                visited.add(curr)
-                lin_cand = self._get_linear_details(gm, curr)
-                if lin_cand is not None and lin_cand[0] != curr:
-                    norm1_node, w_attn_qkv, b_attn_qkv = lin_cand
-                    break
-                curr = curr.args[0] if curr.args and isinstance(curr.args[0], Node) else None
+            w_attn_out_param = self._get_node_param(gm, w_attn_out)
+            dim = w_attn_out_param.shape[0] if w_attn_out_param is not None else None
+
+            def _find_attn_core(start_node: Node) -> Optional[Node]:
+                visited = set()
+                queue = [start_node]
+                while queue:
+                    c = queue.pop(0)
+                    if c in visited or not isinstance(c, Node):
+                        continue
+                    visited.add(c)
+                    if c.op == "call_function":
+                        if c.target in (
+                            F.scaled_dot_product_attention,
+                            getattr(torch.ops.aten, "scaled_dot_product_attention", None),
+                            torch.ops.ojasx_holonomic.dagger_attention,
+                        ):
+                            return c
+                        if (
+                            c.target == operator.getitem
+                            and len(c.args) > 0
+                            and isinstance(c.args[0], Node)
+                            and getattr(c.args[0], "target", None) == torch.ops.ojasx_holonomic.dagger_attention
+                        ):
+                            return c.args[0]
+                    for a in c.args:
+                        if isinstance(a, Node):
+                            queue.append(a)
+                return None
+
+            attn_core = _find_attn_core(attn_reshaped)
+
+            def _find_linear_source(node: Node) -> Optional[Tuple[Node, Any, Any]]:
+                visited = set()
+                queue = [node]
+                while queue:
+                    c = queue.pop(0)
+                    if c in visited or not isinstance(c, Node):
+                        continue
+                    visited.add(c)
+                    lin = self._get_linear_details(gm, c)
+                    if lin is not None and lin[0] != c:
+                        return lin
+                    for a in c.args:
+                        if isinstance(a, Node):
+                            queue.append(a)
+                return None
+
+            if attn_core is not None and len(attn_core.args) >= 3:
+                q_in = attn_core.args[0]
+                k_in = attn_core.args[1]
+                v_in = attn_core.args[2]
+                lin_q = _find_linear_source(q_in) if isinstance(q_in, Node) else None
+                lin_k = _find_linear_source(k_in) if isinstance(k_in, Node) else None
+                lin_v = _find_linear_source(v_in) if isinstance(v_in, Node) else None
+
+                if lin_q is not None and lin_k is not None and lin_v is not None:
+                    x_q, w_q, b_q = lin_q
+                    x_k, w_k, b_k = lin_k
+                    x_v, w_v, b_v = lin_v
+
+                    if w_q == w_k == w_v:
+                        norm1_node = x_q
+                        w_attn_qkv = w_q
+                        b_attn_qkv = b_q
+                    else:
+                        norm1_node = x_q
+                        t_wq = self._get_node_param(gm, w_q)
+                        t_wk = self._get_node_param(gm, w_k)
+                        t_wv = self._get_node_param(gm, w_v)
+
+                        if t_wq is not None and t_wk is not None and t_wv is not None:
+                            fused_w = torch.cat([t_wq, t_wk, t_wv], dim=0)
+                            cnt_idx = f"{self.stats.holonomic_residual_subgraph_count}_{self.stats.symplectic_subgraph_count}"
+                            fused_w_name = f"_fused_attn_qkv_{cnt_idx}"
+                            req_grad = any(getattr(t, "requires_grad", False) for t in (t_wq, t_wk, t_wv))
+                            gm.register_parameter(fused_w_name, nn.Parameter(fused_w, requires_grad=req_grad))
+                            w_attn_qkv = self._get_or_create_attr(gm.graph, fused_w_name)
+
+                            t_bq = self._get_node_param(gm, b_q) if b_q is not None else None
+                            t_bk = self._get_node_param(gm, b_k) if b_k is not None else None
+                            t_bv = self._get_node_param(gm, b_v) if b_v is not None else None
+
+                            if any(b is not None for b in (t_bq, t_bk, t_bv)):
+                                dev, dt = t_wq.device, t_wq.dtype
+                                t_bq = t_bq if t_bq is not None else torch.zeros(t_wq.shape[0], device=dev, dtype=dt)
+                                t_bk = t_bk if t_bk is not None else torch.zeros(t_wk.shape[0], device=dev, dtype=dt)
+                                t_bv = t_bv if t_bv is not None else torch.zeros(t_wv.shape[0], device=dev, dtype=dt)
+                                fused_b = torch.cat([t_bq, t_bk, t_bv], dim=0)
+                                fused_b_name = f"_fused_attn_b_{cnt_idx}"
+                                b_req_grad = any(getattr(t, "requires_grad", False) for t in (t_bq, t_bk, t_bv))
+                                gm.register_parameter(fused_b_name, nn.Parameter(fused_b, requires_grad=b_req_grad))
+                                b_attn_qkv = self._get_or_create_attr(gm.graph, fused_b_name)
+                            else:
+                                b_attn_qkv = None
+
+            if w_attn_qkv is None:
+                curr = attn_reshaped
+                visited = set()
+                while curr is not None and isinstance(curr, Node) and curr not in visited:
+                    visited.add(curr)
+                    lin_cand = self._get_linear_details(gm, curr)
+                    if lin_cand is not None and lin_cand[0] != curr:
+                        norm1_node, w_attn_qkv, b_attn_qkv = lin_cand
+                        break
+                    curr = curr.args[0] if curr.args and isinstance(curr.args[0], Node) else None
 
             if w_attn_qkv is None:
                 continue
 
+            if dim is None:
+                w_param = self._get_node_param(gm, w_attn_qkv)
+                if w_param is not None:
+                    dim = w_param.shape[1]
+
+            num_heads = None
+            if dim is not None:
+                for m in gm.modules():
+                    for attr in ("num_heads", "n_heads", "num_attention_heads", "n_head"):
+                        val = getattr(m, attr, None)
+                        if isinstance(val, int) and val > 0 and (dim % val == 0):
+                            num_heads = val
+                            break
+                    if num_heads is not None:
+                        break
+
+                if num_heads is None:
+                    for n in gm.graph.nodes:
+                        if n.op == "call_function" and n.target in (operator.floordiv, torch.floor_divide):
+                            if len(n.args) >= 2 and isinstance(n.args[1], int) and n.args[1] > 0 and (dim % n.args[1] == 0):
+                                num_heads = n.args[1]
+                                break
+                        elif n.op in ("call_method", "call_function") and str(n.target) in ("view", "reshape"):
+                            args = list(n.args)
+                            if len(args) == 2 and isinstance(args[1], (tuple, list)):
+                                args = [args[0]] + list(args[1])
+                            for i in range(len(args) - 1):
+                                if args[i] == 3 and isinstance(args[i + 1], int) and args[i + 1] > 0 and (dim % args[i + 1] == 0):
+                                    num_heads = args[i + 1]
+                                    break
+                            if num_heads is not None:
+                                break
+                            for a in args:
+                                if isinstance(a, int) and a > 1 and a != dim and (dim % a == 0):
+                                    num_heads = a
+                                    break
+                            if num_heads is not None:
+                                break
+
+            if num_heads is None:
+                num_heads = 4 if (dim is None or dim % 4 == 0) else 1
+
+            if dim is not None:
+                assert dim % num_heads == 0, f"Dimension {dim} must be divisible by num_heads {num_heads}"
+
             is_norm1, norm1_type, eps1, norm1_w, norm1_b = self._get_norm_details(gm, norm1_node)
             if not is_norm1:
-                norm1_w, norm1_b, eps1 = None, None, 1e-5
+                norm1_w, norm1_b, eps1, norm1_type = None, None, 1e-5, "rms"
+
+            norm_subgraph_type = "layer" if (norm1_type == "layer" or norm2_type == "layer" or norm1_b is not None or norm2_b is not None) else "rms"
 
             if self.mode == "mode_a":
                 with graph.inserting_before(node):
@@ -2172,6 +2382,7 @@ class HolonomicSubgraphTransformer(Transformer):
                             w_mlp_up, b_mlp_up,
                             w_mlp_down, b_mlp_down,
                             act_name,
+                            norm_subgraph_type,
                         ),
                     )
                 node.replace_all_uses_with(new_node)
@@ -2773,12 +2984,23 @@ class FXSubgraphCompiler(nn.Module):
         # fine-tuning, call the underlying module directly so no kwargs are dropped.
         if kwargs:
             return self.model(*args, **kwargs)
+        debug_mode = os.environ.get("OJASX_DEBUG", "0").strip().lower() in ("1", "true", "yes")
         try:
             return self.rewritten_gm(*args)
-        except Exception:
+        except Exception as e:
+            msg = f"FXSubgraphCompiler: execution of rewritten_gm failed: {e}"
+            logger.error(msg)
+            warnings.warn(msg, RuntimeWarning, stacklevel=2)
+            if debug_mode:
+                raise RuntimeError(msg) from e
             try:
                 return self.traced_gm(*args)
-            except Exception:
+            except Exception as e2:
+                msg2 = f"FXSubgraphCompiler: fallback execution of traced_gm failed: {e2}"
+                logger.error(msg2)
+                warnings.warn(msg2, RuntimeWarning, stacklevel=2)
+                if debug_mode:
+                    raise RuntimeError(msg2) from e2
                 return self.model(*args, **kwargs)
 
 

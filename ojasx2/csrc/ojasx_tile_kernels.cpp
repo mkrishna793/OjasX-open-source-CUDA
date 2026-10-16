@@ -233,7 +233,7 @@ at::Tensor unpack_1bit_ballot(const at::Tensor& packed, int64_t cols, at::Scalar
     }
 
     auto shifts = at::arange(0, 32, p_2d.options().dtype(at::kInt)).reshape({1, 1, 32});
-    auto words = p_2d.unsqueeze(-1);
+    auto words = (p_2d.to(at::kLong) & static_cast<int64_t>(uint32_t(~0u))).unsqueeze(-1);
     auto bits = at::bitwise_and(at::bitwise_right_shift(words, shifts), 1);
     return bits.reshape({rows, words_per_row * 32}).slice(1, 0, cols).to(dtype).reshape(out_sizes);
 }
@@ -491,9 +491,15 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> fused_amx_linear_relu2_bwd(
 
     at::Tensor dx = at::matmul(dz, w_2d).reshape(orig_sizes);
     at::Tensor dw = at::matmul(dz.t(), x_2d);
-    at::Tensor db = dz.sum(0);
-    if (bias_opt.has_value() && bias_opt->defined()) {
-        db = db.to(bias_opt->scalar_type());
+    bool has_bias = (bias_opt.has_value() && bias_opt->defined() && bias_opt->numel() > 0);
+    at::Tensor db;
+    if (has_bias) {
+        db = dz.sum(0);
+        if (bias_opt->scalar_type() != db.scalar_type()) {
+            db = db.to(bias_opt->scalar_type());
+        }
+    } else {
+        db = at::empty({out_features}, dz.options());
     }
 
     return std::make_tuple(dx, dw, db);
