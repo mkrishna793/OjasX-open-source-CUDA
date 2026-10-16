@@ -271,6 +271,19 @@ std::tuple<at::Tensor, at::Tensor> fused_amx_linear_relu2_fwd(
     at::Tensor x_2d = x_contig.reshape({rows, in_features});
     at::Tensor w_2d = w_contig.reshape({out_features, in_features});
 
+    // Check for CPU Half / BFloat16 inputs: safely upcast to Float to utilize AMX/BLAS acceleration and downcast result
+    at::ScalarType orig_dtype = x.scalar_type();
+    if (x_2d.device().is_cpu() && (orig_dtype == at::kHalf || orig_dtype == at::kBFloat16)) {
+        at::Tensor x_f = x_2d.to(at::kFloat);
+        at::Tensor w_f = w_2d.to(at::kCPU, at::kFloat);
+        c10::optional<at::Tensor> b_f = c10::nullopt;
+        if (bias_opt.has_value() && bias_opt->defined() && bias_opt->numel() > 0) {
+            b_f = bias_opt->to(at::kCPU, at::kFloat);
+        }
+        auto [out_f, mask] = fused_amx_linear_relu2_fwd(x_f, w_f, b_f);
+        return std::make_tuple(out_f.to(orig_dtype).reshape(orig_sizes), mask.reshape(mask_sizes));
+    }
+
     // All CPU FP32 platforms (macOS AMX, Linux x86_64 AVX2/AVX-512, ARM64 NEON, Windows)
     if (x_2d.device().is_cpu() && w_2d.device().is_cpu() &&
         x_2d.scalar_type() == at::kFloat && w_2d.scalar_type() == at::kFloat) {
@@ -336,7 +349,17 @@ std::tuple<at::Tensor, at::Tensor> fused_amx_linear_relu2_fwd(
     }
 
     // Native GPU (CUDA / ROCm / MPS / XPU) in-place fused execution (0 extra intermediate buffers)
-    at::Tensor z_nd = at::linear(x_2d, w_2d, bias_opt).reshape(orig_sizes);
+    at::Tensor w_dev = (w_2d.device() == x_2d.device() && w_2d.scalar_type() == x_2d.scalar_type())
+        ? w_2d
+        : w_2d.to(x_2d.device(), x_2d.scalar_type());
+    c10::optional<at::Tensor> b_dev = c10::nullopt;
+    if (bias_opt.has_value() && bias_opt->defined() && bias_opt->numel() > 0) {
+        TORCH_CHECK(bias_opt->numel() == out_features, "bias numel must match weight out_features");
+        b_dev = (bias_opt->device() == x_2d.device() && bias_opt->scalar_type() == x_2d.scalar_type())
+            ? *bias_opt
+            : bias_opt->to(x_2d.device(), x_2d.scalar_type());
+    }
+    at::Tensor z_nd = at::linear(x_2d, w_dev, b_dev).reshape(orig_sizes);
     at::Tensor packed_mask = pack_1bit_ballot(z_nd);
     z_nd.clamp_min_(0.0);
     z_nd.mul_(z_nd);
@@ -376,6 +399,24 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> fused_amx_linear_relu2_bwd(
     at::Tensor x_2d = x_contig.reshape({rows, in_features});
     at::Tensor w_2d = w_contig.reshape({out_features, in_features});
     at::Tensor go_2d = go_contig.reshape({rows, out_features});
+
+    // Check for CPU Half / BFloat16 inputs: safely upcast to Float to utilize AMX/BLAS acceleration and downcast result
+    at::ScalarType orig_dtype = x.scalar_type();
+    if (x_2d.device().is_cpu() && (orig_dtype == at::kHalf || orig_dtype == at::kBFloat16)) {
+        at::Tensor go_f = go_2d.to(at::kFloat);
+        at::Tensor x_f = x_2d.to(at::kFloat);
+        at::Tensor w_f = w_2d.to(at::kCPU, at::kFloat);
+        c10::optional<at::Tensor> b_f = c10::nullopt;
+        if (bias_opt.has_value() && bias_opt->defined() && bias_opt->numel() > 0) {
+            b_f = bias_opt->to(at::kCPU, at::kFloat);
+        }
+        auto [dx_f, dw_f, db_f] = fused_amx_linear_relu2_bwd(go_f, x_f, w_f, b_f, mask_contig);
+        at::Tensor db_out = db_f;
+        if (bias_opt.has_value() && bias_opt->defined() && bias_opt->scalar_type() != at::kFloat) {
+            db_out = db_f.to(bias_opt->scalar_type());
+        }
+        return std::make_tuple(dx_f.to(orig_dtype).reshape(orig_sizes), dw_f.to(weight.scalar_type()), db_out);
+    }
 
     if (x_2d.device().is_cpu() && w_2d.device().is_cpu() && go_2d.device().is_cpu() &&
         mask_contig.device().is_cpu() && mask_contig.scalar_type() == at::kInt &&
@@ -485,12 +526,21 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> fused_amx_linear_relu2_bwd(
     }
 
     // Native GPU (CUDA / ROCm / MPS / XPU) backward contraction
-    at::Tensor z = at::linear(x_2d, w_2d, bias_opt);
-    at::Tensor sign_mask = unpack_1bit_ballot(mask_contig, out_features, z.scalar_type()).reshape({rows, out_features});
-    at::Tensor dz = go_2d * (2.0 * z * sign_mask);
+    at::Tensor w_dev = (w_2d.device() == x_2d.device() && w_2d.scalar_type() == x_2d.scalar_type())
+        ? w_2d : w_2d.to(x_2d.device(), x_2d.scalar_type());
+    at::Tensor go_dev = (go_2d.device() == x_2d.device() && go_2d.scalar_type() == x_2d.scalar_type())
+        ? go_2d : go_2d.to(x_2d.device(), x_2d.scalar_type());
+    c10::optional<at::Tensor> b_dev = c10::nullopt;
+    if (bias_opt.has_value() && bias_opt->defined() && bias_opt->numel() > 0) {
+        b_dev = (bias_opt->device() == x_2d.device() && bias_opt->scalar_type() == x_2d.scalar_type())
+            ? *bias_opt : bias_opt->to(x_2d.device(), x_2d.scalar_type());
+    }
+    at::Tensor z = at::linear(x_2d, w_dev, b_dev);
+    at::Tensor sign_mask = unpack_1bit_ballot(mask_contig.to(x_2d.device()), out_features, z.scalar_type()).reshape({rows, out_features});
+    at::Tensor dz = go_dev * (2.0 * z * sign_mask);
 
-    at::Tensor dx = at::matmul(dz, w_2d).reshape(orig_sizes);
-    at::Tensor dw = at::matmul(dz.t(), x_2d);
+    at::Tensor dx = at::matmul(dz, w_dev).reshape(orig_sizes);
+    at::Tensor dw = at::matmul(dz.t(), x_2d).to(weight.scalar_type());
     bool has_bias = (bias_opt.has_value() && bias_opt->defined() && bias_opt->numel() > 0);
     at::Tensor db;
     if (has_bias) {
@@ -530,6 +580,15 @@ std::tuple<at::Tensor, at::Tensor> fused_l1_rmsnorm_fwd(
     int64_t rows = x.numel() / dim;
     at::Tensor x_contig = x.contiguous();
     at::Tensor w_contig = weight.contiguous();
+
+    // Check for CPU Half / BFloat16 inputs: safely upcast to Float for vDSP / AVX2 / NEON vectorized RMSNorm, then downcast
+    at::ScalarType orig_dtype = x.scalar_type();
+    if (x_contig.device().is_cpu() && (orig_dtype == at::kHalf || orig_dtype == at::kBFloat16)) {
+        at::Tensor x_f = x_contig.to(at::kFloat);
+        at::Tensor w_f = w_contig.to(at::kCPU, at::kFloat);
+        auto [out_f, rstd_f] = fused_l1_rmsnorm_fwd(x_f, w_f, eps);
+        return std::make_tuple(out_f.to(orig_dtype).reshape(orig_sizes), rstd_f.reshape(rstd_sizes));
+    }
 
     if (x_contig.device().is_cpu() && w_contig.device().is_cpu() &&
         x_contig.scalar_type() == at::kFloat && w_contig.scalar_type() == at::kFloat) {
@@ -592,10 +651,10 @@ std::tuple<at::Tensor, at::Tensor> fused_l1_rmsnorm_fwd(
 
     at::ScalarType compute_type = (x.scalar_type() == at::kDouble) ? at::kDouble : at::kFloat;
     at::Tensor x_comp = x_contig.to(compute_type);
-    at::Tensor w_comp = w_contig.to(compute_type);
+    at::Tensor w_comp = w_contig.to(x_comp.device(), compute_type).reshape({dim});
     at::Tensor rstd = at::rsqrt(x_comp.pow(2).mean(-1, true) + eps);
     at::Tensor out = ((x_comp * rstd) * w_comp).to(x.scalar_type());
-    return std::make_tuple(out, rstd);
+    return std::make_tuple(out.reshape(orig_sizes), rstd.reshape(rstd_sizes));
 }
 
 std::tuple<at::Tensor, at::Tensor> fused_l1_rmsnorm_bwd(
@@ -618,6 +677,17 @@ std::tuple<at::Tensor, at::Tensor> fused_l1_rmsnorm_bwd(
     at::Tensor go_contig = grad_out.contiguous();
     at::Tensor w_contig = weight.contiguous();
     at::Tensor rstd_contig = rstd.contiguous();
+
+    // Check for CPU Half / BFloat16 inputs: safely upcast to Float for vDSP / AVX2 / NEON vectorized RMSNorm backward, then downcast
+    at::ScalarType orig_dtype = x.scalar_type();
+    if (x_contig.device().is_cpu() && (orig_dtype == at::kHalf || orig_dtype == at::kBFloat16)) {
+        at::Tensor go_f = go_contig.to(at::kFloat);
+        at::Tensor x_f = x_contig.to(at::kFloat);
+        at::Tensor w_f = w_contig.to(at::kCPU, at::kFloat);
+        at::Tensor rstd_f = rstd_contig.to(at::kCPU, at::kFloat);
+        auto [dx_f, dw_f] = fused_l1_rmsnorm_bwd(go_f, x_f, w_f, rstd_f);
+        return std::make_tuple(dx_f.to(orig_dtype).reshape(orig_sizes), dw_f.to(weight.scalar_type()));
+    }
 
     // Universal L1-cache-resident single-pass backward on ALL CPUs (macOS vDSP, Linux/Windows AVX2/NEON)
     if (x_contig.device().is_cpu() && go_contig.device().is_cpu() &&
@@ -688,9 +758,9 @@ std::tuple<at::Tensor, at::Tensor> fused_l1_rmsnorm_bwd(
     // Native GPU (CUDA / ROCm / MPS / XPU) vectorized backward
     at::ScalarType compute_type = (x.scalar_type() == at::kDouble) ? at::kDouble : at::kFloat;
     at::Tensor x_comp = x_contig.to(compute_type);
-    at::Tensor go_comp = go_contig.to(compute_type);
-    at::Tensor w_comp = w_contig.to(compute_type);
-    at::Tensor rstd_comp = rstd_contig.to(compute_type);
+    at::Tensor go_comp = go_contig.to(x_comp.device(), compute_type);
+    at::Tensor w_comp = w_contig.to(x_comp.device(), compute_type).reshape({dim});
+    at::Tensor rstd_comp = rstd_contig.to(x_comp.device(), compute_type);
 
     at::Tensor x_hat = x_comp * rstd_comp;
     at::Tensor dw = (go_comp * x_hat).reshape({-1, dim}).sum(0).to(weight.scalar_type());
@@ -698,7 +768,7 @@ std::tuple<at::Tensor, at::Tensor> fused_l1_rmsnorm_bwd(
     at::Tensor mean_dot = (d_xhat * x_hat).mean(-1, true);
     at::Tensor dx = (rstd_comp * (d_xhat - x_hat * mean_dot)).to(x.scalar_type());
 
-    return std::make_tuple(dx, dw);
+    return std::make_tuple(dx.reshape(orig_sizes), dw);
 }
 
 // ============================================================================

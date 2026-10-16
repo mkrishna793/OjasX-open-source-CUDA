@@ -1487,7 +1487,12 @@ class HardwareCodeEmitter:
             if shape is not None and hasattr(shape, "value"):
                 s_val = shape.value
                 if isinstance(s_val, (list, tuple)) and len(s_val) == 4:
-                    return int(s_val[0]), int(s_val[1]), int(s_val[2]), int(s_val[3])
+                    return (
+                        int(s_val[0]) if str(s_val[0]).isdigit() else 1,
+                        int(s_val[1]) if str(s_val[1]).isdigit() else 1,
+                        int(s_val[2]) if str(s_val[2]).isdigit() else 1,
+                        int(s_val[3]) if str(s_val[3]).isdigit() else 1,
+                    )
             elif op.results and hasattr(op.results[0].type, "shape"):
                 r_shape = op.results[0].type.shape
                 if len(r_shape) == 4:
@@ -1912,11 +1917,16 @@ def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
     for arg_node, arg_val in zip([n for n in gm.graph.nodes if n.op == "placeholder"], args):
         node_to_val[arg_node] = arg_val
 
+    def get_val(arg: Any) -> MLIRValue:
+        if arg in node_to_val:
+            return node_to_val[arg]
+        return args[0] if args else _register_arg(MLIRValue("%0", TensorType(("?", 128), FloatType(32))))
+
     for node in gm.graph.nodes:
         if node.op == "get_attr":
             attr_val = _register_arg(MLIRValue(f"%{node.name}", TensorType(("?", 128), FloatType(32))))
             node_to_val[node] = attr_val
-        elif node.op in ("call_function", "call_module"):
+        elif node.op in ("call_function", "call_module", "call_method"):
             target_str = str(node.target)
             fn_self = getattr(node.target, "__self__", None)
             if fn_self is not None and hasattr(fn_self, "__name__"):
@@ -2100,6 +2110,13 @@ def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
                 val_idx += 1
                 body_ops.append(op)
                 node_to_val[node] = op.results[0]
+
+            elif any(k in t_low for k in ("view", "reshape", "transpose", "permute", "contiguous", "getitem", "getattr")):
+                if len(node.args) > 0:
+                    node_to_val[node] = get_val(node.args[0])
+            else:
+                if len(node.args) > 0:
+                    node_to_val[node] = get_val(node.args[0])
 
     func = MLIRFunction(
         name="forward",

@@ -157,27 +157,31 @@ def halley_invert_activation(
         z_{k+1} = z_k - [2 * (phi(z_k) - y) * phi'(z_k)] / [2 * (phi'(z_k))^2 - (phi(z_k) - y) * phi''(z_k)]
     For monotonic activations (sigmoid, tanh, relu, leaky_relu, relu2), inverts in 1 step analytically.
     """
+    orig_dtype = y.dtype
+    if y.dtype in (torch.float16, torch.bfloat16):
+        y = y.to(torch.float32)
+
     norm_act = act.lower()
 
     if norm_act in ("none", "identity", "bilinear"):
-        return y
+        return y.to(orig_dtype)
 
     if norm_act == "relu":
-        return torch.where(branch_bit, y, torch.zeros_like(y))
+        return torch.where(branch_bit, y, torch.zeros_like(y)).to(orig_dtype)
 
     if norm_act == "leaky_relu":
-        return torch.where(branch_bit, y, y / neg_slope)
+        return torch.where(branch_bit, y, y / neg_slope).to(orig_dtype)
 
     if norm_act in ("relu2", "squared_relu"):
-        return torch.where(branch_bit, torch.sqrt(torch.clamp(y, min=0.0)), torch.zeros_like(y))
+        return torch.where(branch_bit, torch.sqrt(torch.clamp(y, min=0.0)), torch.zeros_like(y)).to(orig_dtype)
 
     if norm_act == "sigmoid":
         y_clamped = torch.clamp(y, 1e-7, 1.0 - 1e-7)
-        return torch.log(y_clamped / (1.0 - y_clamped))
+        return torch.log(y_clamped / (1.0 - y_clamped)).to(orig_dtype)
 
     if norm_act == "tanh":
         y_clamped = torch.clamp(y, -1.0 + 1e-7, 1.0 - 1e-7)
-        return 0.5 * torch.log((1.0 + y_clamped) / (1.0 - y_clamped))
+        return (0.5 * torch.log((1.0 + y_clamped) / (1.0 - y_clamped))).to(orig_dtype)
 
     # --- Smooth Non-Monotonic Activations ---
     z_star = _ACTIVATION_MIN_Z.get(norm_act, -1.2784645427610738)
@@ -230,13 +234,13 @@ def halley_invert_activation(
             denom = torch.where(denom.abs() < 1e-10, torch.sign(denom) * 1e-10 + 1e-10, denom)
             step = torch.clamp((2.0 * f * phi_p) / denom, -2.0, 2.0)
             z = z - step
-        return z
+        return z.to(orig_dtype)
 
     elif norm_act in ("quickgelu", "quickgeglu"):
         # QuickGELU(z) = z * sigmoid(1.702 * z) = (1 / 1.702) * SiLU(1.702 * z)
-        return (1.0 / 1.702) * halley_invert_activation(
+        return ((1.0 / 1.702) * halley_invert_activation(
             1.702 * y, branch_bit, act="silu", max_iters=max_iters
-        )
+        )).to(orig_dtype)
 
     elif norm_act in ("gelu", "gelu_tanh", "geglu"):
         c = 0.7978845608028654  # sqrt(2 / pi)
@@ -279,7 +283,7 @@ def halley_invert_activation(
             denom = torch.where(denom.abs() < 1e-10, torch.sign(denom) * 1e-10 + 1e-10, denom)
             step = torch.clamp((2.0 * f * phi_p) / denom, -2.0, 2.0)
             z = z - step
-        return z
+        return z.to(orig_dtype)
 
     elif norm_act in ("gelu_exact", "geglu_exact"):
         # Exact GELU: phi(z) = 0.5 * z * (1 + erf(z / sqrt(2)))
@@ -317,7 +321,7 @@ def halley_invert_activation(
             denom = torch.where(denom.abs() < 1e-10, torch.sign(denom) * 1e-10 + 1e-10, denom)
             step = torch.clamp((2.0 * f * phi_p) / denom, -2.0, 2.0)
             z = z - step
-        return z
+        return z.to(orig_dtype)
 
     elif norm_act in ("mish", "mishglu"):
         phi_pp_star = 0.266947914
@@ -355,11 +359,11 @@ def halley_invert_activation(
             denom = torch.where(denom.abs() < 1e-10, torch.sign(denom) * 1e-10 + 1e-10, denom)
             step = torch.clamp((2.0 * f * phi_p) / denom, -2.0, 2.0)
             z = z - step
-        return z
+        return z.to(orig_dtype)
 
     else:
         # Fallback to direct identity
-        return y
+        return y.to(orig_dtype)
 
 
 def halley_activation_cotangent(

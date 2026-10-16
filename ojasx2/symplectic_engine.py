@@ -73,11 +73,24 @@ class SymplecticMetrics:
 # 2. Reversible Attention & SwiGLU Submodules
 # =============================================================================
 
+def _repeat_kv(t: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """Repeat KV heads across multiple query heads for Grouped-Query Attention (GQA)."""
+    if n_rep == 1:
+        return t
+    B, num_kv_heads, N, D = t.shape
+    return (
+        t[:, :, None, :, :]
+        .expand(B, num_kv_heads, n_rep, N, D)
+        .reshape(B, num_kv_heads * n_rep, N, D)
+    )
+
+
 class SymplecticCausalAttention(nn.Module):
     """
     True Multi-Head Causal Self-Attention for the Symplectic f-operator.
     Uses tiled online-softmax (Flash/Dagger-style) when sequence length exceeds
     tile_size to avoid materializing the O(N^2) attention matrix.
+    Supports Grouped-Query Attention (GQA) via num_kv_heads.
     """
 
     def __init__(
@@ -90,6 +103,7 @@ class SymplecticCausalAttention(nn.Module):
         bias: bool = False,
         device: Any = None,
         dtype: Any = None,
+        num_kv_heads: Optional[int] = None,
     ) -> None:
         super().__init__()
         if dim % num_heads != 0:
@@ -97,6 +111,11 @@ class SymplecticCausalAttention(nn.Module):
         self.dim = dim
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
+        self.num_kv_heads = num_heads if num_kv_heads is None else num_kv_heads
+        if self.num_heads % self.num_kv_heads != 0:
+            raise ValueError(
+                f"num_heads ({num_heads}) must be divisible by num_kv_heads ({self.num_kv_heads})"
+            )
         self.scale = 1.0 / math.sqrt(self.head_dim)
         self.is_causal = is_causal
         self.dropout_p = dropout
@@ -104,7 +123,8 @@ class SymplecticCausalAttention(nn.Module):
 
         factory_kwargs = {"device": device, "dtype": dtype}
         self.norm = nn.LayerNorm(dim, **factory_kwargs)
-        self.qkv = nn.Linear(dim, 3 * dim, bias=bias, **factory_kwargs)
+        kv_dim = self.num_kv_heads * self.head_dim
+        self.qkv = nn.Linear(dim, dim + 2 * kv_dim, bias=bias, **factory_kwargs)
         self.out_proj = nn.Linear(dim, dim, bias=bias, **factory_kwargs)
         # Zero-init output projection for stable symplectic identity start
         nn.init.zeros_(self.out_proj.weight)
@@ -175,18 +195,45 @@ class SymplecticCausalAttention(nn.Module):
 
         return out.to(q.dtype)
 
-    def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        attn_mask: Optional[torch.Tensor] = None,
+        num_kv_heads: Optional[int] = None,
+    ) -> torch.Tensor:
         is_2d = x.dim() == 2
         if is_2d:
             x = x.unsqueeze(1)
 
         B, N, D = x.shape
         h = self.norm(x)
-        qkv = self.qkv(h).reshape(B, N, 3, self.num_heads, self.head_dim)
-        q, k, v = qkv.unbind(dim=2)
-        q = q.transpose(1, 2)
-        k = k.transpose(1, 2)
-        v = v.transpose(1, 2)
+
+        effective_kv_heads = self.num_kv_heads if num_kv_heads is None else num_kv_heads
+        q_dim = self.dim
+        kv_dim = self.num_kv_heads * self.head_dim
+
+        qkv = self.qkv(h)
+        if self.qkv.out_features == q_dim + 2 * kv_dim:
+            q, k, v = torch.split(qkv, [q_dim, kv_dim, kv_dim], dim=-1)
+            q = q.reshape(B, N, self.num_heads, self.head_dim).transpose(1, 2)
+            k = k.reshape(B, N, self.num_kv_heads, self.head_dim).transpose(1, 2)
+            v = v.reshape(B, N, self.num_kv_heads, self.head_dim).transpose(1, 2)
+            curr_kv_heads = self.num_kv_heads
+        else:
+            qkv = qkv.reshape(B, N, 3, self.num_heads, self.head_dim)
+            q, k, v = qkv.unbind(dim=2)
+            q = q.transpose(1, 2)
+            k = k.transpose(1, 2)
+            v = v.transpose(1, 2)
+            curr_kv_heads = self.num_heads
+
+        if effective_kv_heads != self.num_heads:
+            if curr_kv_heads != effective_kv_heads:
+                k = k[:, :effective_kv_heads, :, :]
+                v = v[:, :effective_kv_heads, :, :]
+            n_rep = self.num_heads // effective_kv_heads
+            k = _repeat_kv(k, n_rep)
+            v = _repeat_kv(v, n_rep)
 
         attn_out = self._tiled_online_attention(q, k, v, attn_mask=attn_mask)
         attn_out = attn_out.transpose(1, 2).contiguous().reshape(B, N, D)
@@ -427,6 +474,12 @@ class SymplecticCouplingFunction(torch.autograd.Function):
         ctx.cuda_rng_state = (
             torch.cuda.get_rng_state(q1.device) if q1.is_cuda else None
         )
+        ctx.mps_rng_state = None
+        if q1.device.type == "mps" and hasattr(torch, "mps") and hasattr(torch.mps, "get_rng_state"):
+            try:
+                ctx.mps_rng_state = torch.mps.get_rng_state()
+            except Exception:
+                ctx.mps_rng_state = None
 
         idx = 0
         scheme = "stormer_verlet"
@@ -541,6 +594,16 @@ class SymplecticCouplingFunction(torch.autograd.Function):
             torch.set_rng_state(ctx.cpu_rng_state)
             if buf1.is_cuda and ctx.cuda_rng_state is not None:
                 torch.cuda.set_rng_state(ctx.cuda_rng_state, device=buf1.device)
+            if (
+                buf1.device.type == "mps"
+                and getattr(ctx, "mps_rng_state", None) is not None
+                and hasattr(torch, "mps")
+                and hasattr(torch.mps, "set_rng_state")
+            ):
+                try:
+                    torch.mps.set_rng_state(ctx.mps_rng_state)
+                except Exception:
+                    pass
 
             if scheme == "stormer_verlet" and L > 0:
                 for l in reversed(range(L)):
@@ -812,6 +875,7 @@ class SymplecticTransformerBlock(nn.Module):
         enable_squeeze: bool = False,
         device: Any = None,
         dtype: Any = None,
+        num_kv_heads: Optional[int] = None,
     ) -> None:
         super().__init__()
         self.dim = dim
@@ -841,6 +905,7 @@ class SymplecticTransformerBlock(nn.Module):
                 is_causal=is_causal,
                 dropout=dropout,
                 tile_size=tile_size,
+                num_kv_heads=num_kv_heads,
                 **factory_kwargs,
             )
 
@@ -921,6 +986,7 @@ class SymplecticStack(nn.Module):
         use_mlp_mixer: bool = False,
         scheme: str = "stormer_verlet",
         enable_squeeze: bool = False,
+        num_kv_heads: Optional[int] = None,
     ) -> None:
         super().__init__()
         self.dim = dim
@@ -937,6 +1003,7 @@ class SymplecticStack(nn.Module):
                 use_mlp_mixer=use_mlp_mixer,
                 scheme=scheme,
                 enable_squeeze=enable_squeeze,
+                num_kv_heads=num_kv_heads,
             )
             for _ in range(depth)
         ])

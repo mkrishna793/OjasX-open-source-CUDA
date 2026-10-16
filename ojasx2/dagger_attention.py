@@ -55,7 +55,13 @@ def _extract_mask_tile(
 
     if attn_mask is not None:
         if attn_mask.ndim == 2:
-            if attn_mask.shape[0] == B and attn_mask.shape[1] == Skv:
+            if attn_mask.shape[0] == Sq and attn_mask.shape[1] == Skv:
+                m_tile = attn_mask[r_start:r_end, c_start:c_end].unsqueeze(0).unsqueeze(0)
+                if m_tile.dtype == torch.bool:
+                    bool_mask = m_tile
+                else:
+                    float_bias = m_tile.to(acc_dtype)
+            elif attn_mask.shape[0] == B and attn_mask.shape[1] == Skv and attn_mask.shape[0] != Sq:
                 # 2D batch key-padding mask [B, Skv] (where 1/True = valid token, 0/False = pad)
                 k_slice = attn_mask[:, c_start:c_end].unsqueeze(1).unsqueeze(2)
                 if k_slice.dtype == torch.bool:
@@ -435,6 +441,7 @@ class _HolonomicDaggerAttentionFunction(torch.autograd.Function):
         sm_scale: Optional[float] = None,
         attn_mask: Optional[torch.Tensor] = None,
         key_padding_mask: Optional[torch.Tensor] = None,
+        tile_size: int = 128,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         out, lse = _dagger_attention_forward_tiled(
             q,
@@ -442,11 +449,14 @@ class _HolonomicDaggerAttentionFunction(torch.autograd.Function):
             v,
             is_causal=is_causal,
             sm_scale=sm_scale,
+            block_r=tile_size,
+            block_c=tile_size,
             attn_mask=attn_mask,
             key_padding_mask=key_padding_mask,
         )
         ctx.is_causal = is_causal
         ctx.sm_scale = sm_scale
+        ctx.tile_size = tile_size
         ctx.attn_mask = attn_mask.detach() if isinstance(attn_mask, torch.Tensor) else None
         ctx.key_padding_mask = (
             key_padding_mask.detach() if isinstance(key_padding_mask, torch.Tensor) else None
@@ -458,6 +468,7 @@ class _HolonomicDaggerAttentionFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, dout: torch.Tensor, dlse: Optional[torch.Tensor] = None):
         q, k, v, out, lse = ctx.saved_tensors
+        tile_size = getattr(ctx, "tile_size", 128)
         dq, dk, dv = _dagger_attention_backward_tiled(
             q,
             k,
@@ -468,10 +479,12 @@ class _HolonomicDaggerAttentionFunction(torch.autograd.Function):
             dlse=dlse,
             is_causal=ctx.is_causal,
             sm_scale=ctx.sm_scale,
+            block_r=tile_size,
+            block_c=tile_size,
             attn_mask=getattr(ctx, "attn_mask", None),
             key_padding_mask=getattr(ctx, "key_padding_mask", None),
         )
-        return dq, dk, dv, None, None, None, None
+        return dq, dk, dv, None, None, None, None, None
 
 
 def holonomic_dagger_attention(
@@ -482,14 +495,15 @@ def holonomic_dagger_attention(
     sm_scale: Optional[float] = None,
     attn_mask: Optional[torch.Tensor] = None,
     key_padding_mask: Optional[torch.Tensor] = None,
+    tile_size: int = 128,
 ) -> torch.Tensor:
     """Functional entrypoint for Holonomic Dagger Attention.
 
     Returns the attention output tensor [B, H, S_q, d].
     """
-    if attn_mask is not None or key_padding_mask is not None:
+    if attn_mask is not None or key_padding_mask is not None or tile_size != 128:
         return _HolonomicDaggerAttentionFunction.apply(
-            q, k, v, is_causal, sm_scale, attn_mask, key_padding_mask
+            q, k, v, is_causal, sm_scale, attn_mask, key_padding_mask, tile_size
         )[0]
     return torch.ops.ojasx_holonomic.dagger_attention(
         q, k, v, is_causal=is_causal, sm_scale=sm_scale
@@ -504,11 +518,12 @@ def holonomic_dagger_attention_with_lse(
     sm_scale: Optional[float] = None,
     attn_mask: Optional[torch.Tensor] = None,
     key_padding_mask: Optional[torch.Tensor] = None,
+    tile_size: int = 128,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Functional entrypoint returning both attention output and row-wise LogSumExp."""
-    if attn_mask is not None or key_padding_mask is not None:
+    if attn_mask is not None or key_padding_mask is not None or tile_size != 128:
         return _HolonomicDaggerAttentionFunction.apply(
-            q, k, v, is_causal, sm_scale, attn_mask, key_padding_mask
+            q, k, v, is_causal, sm_scale, attn_mask, key_padding_mask, tile_size
         )
     return torch.ops.ojasx_holonomic.dagger_attention(
         q, k, v, is_causal=is_causal, sm_scale=sm_scale
@@ -544,6 +559,7 @@ def dagger_tiled_attention(
         sm_scale=scale,
         attn_mask=attn_mask,
         key_padding_mask=key_padding_mask,
+        tile_size=tile_size,
     )
 
 

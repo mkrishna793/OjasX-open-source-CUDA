@@ -398,6 +398,9 @@ static id<MTLBuffer> create_metal_buffer_zerocopy(id<MTLDevice> device, const at
         return [device newBufferWithLength:64 options:MTLResourceStorageModeShared];
     }
     if (tensor.device().is_mps()) {
+        TORCH_CHECK(tensor.storage_offset() == 0,
+                    "create_metal_buffer_zerocopy: MPS tensor must have storage_offset == 0 (got ",
+                    tensor.storage_offset(), "). Clone tensor before creating Metal buffer.");
         id<MTLBuffer> buf = (__bridge id<MTLBuffer>)(tensor.storage().data());
         if (buf != nil) {
             return buf;
@@ -405,17 +408,18 @@ static id<MTLBuffer> create_metal_buffer_zerocopy(id<MTLDevice> device, const at
     }
     void* ptr = tensor.data_ptr();
     uintptr_t addr = (uintptr_t)ptr;
-    constexpr size_t kAlignment = 64;
+    const size_t page_size = static_cast<size_t>(getpagesize());
 
-    if ((addr % kAlignment) == 0) {
-        size_t aligned_length = ((length + kAlignment - 1) / kAlignment) * kAlignment;
-        size_t buf_length = (tensor.storage().nbytes() >= aligned_length) ? aligned_length : length;
-        id<MTLBuffer> buf = [device newBufferWithBytesNoCopy:ptr
-                                                      length:buf_length
-                                                     options:MTLResourceStorageModeShared
-                                                 deallocator:nil];
-        if (buf != nil) {
-            return buf;
+    if ((addr % page_size) == 0) {
+        size_t aligned_length = ((length + page_size - 1) / page_size) * page_size;
+        if (tensor.storage().nbytes() >= aligned_length) {
+            id<MTLBuffer> buf = [device newBufferWithBytesNoCopy:ptr
+                                                          length:aligned_length
+                                                         options:MTLResourceStorageModeShared
+                                                     deallocator:nil];
+            if (buf != nil) {
+                return buf;
+            }
         }
     }
 
@@ -484,20 +488,20 @@ std::tuple<at::Tensor, at::Tensor> tilelang_metal_gemm_relu2_fwd(
         at::ScalarType compute_dtype = use_fp16 ? at::kHalf : at::kFloat;
         at::Device target_device = (orig_device.is_cpu() || orig_device.is_mps()) ? orig_device : at::Device(at::kCPU);
 
-        at::Tensor x_in = (x.device() == target_device && x.scalar_type() == compute_dtype)
-            ? x.contiguous().reshape({M, K})
-            : x.to(target_device, compute_dtype).contiguous().reshape({M, K});
-        at::Tensor w_in = (weight.device() == target_device && weight.scalar_type() == compute_dtype)
-            ? weight.contiguous().reshape({N, K})
-            : weight.to(target_device, compute_dtype).contiguous().reshape({N, K});
+        at::Tensor x_in = (x.device() == target_device && x.scalar_type() == compute_dtype && x.is_contiguous() && x.storage_offset() == 0)
+            ? x.reshape({M, K})
+            : x.to(target_device, compute_dtype).contiguous().clone().reshape({M, K});
+        at::Tensor w_in = (weight.device() == target_device && weight.scalar_type() == compute_dtype && weight.is_contiguous() && weight.storage_offset() == 0)
+            ? weight.reshape({N, K})
+            : weight.to(target_device, compute_dtype).contiguous().clone().reshape({N, K});
         bool has_bias = bias_opt.has_value() && bias_opt->defined() && bias_opt->numel() > 0;
         if (has_bias) {
             TORCH_CHECK(bias_opt->numel() == N, "bias numel must match weight out_features");
         }
         at::Tensor b_in = has_bias
-            ? ((bias_opt->device() == target_device && bias_opt->scalar_type() == compute_dtype)
-                ? bias_opt->contiguous().reshape({N})
-                : bias_opt->to(target_device, compute_dtype).contiguous().reshape({N}))
+            ? ((bias_opt->device() == target_device && bias_opt->scalar_type() == compute_dtype && bias_opt->is_contiguous() && bias_opt->storage_offset() == 0)
+                ? bias_opt->reshape({N})
+                : bias_opt->to(target_device, compute_dtype).contiguous().clone().reshape({N}))
             : at::zeros({1}, x_in.options());
 
         if (target_device.is_mps() && at::hasMPS()) {
@@ -549,6 +553,15 @@ std::tuple<at::Tensor, at::Tensor> tilelang_metal_gemm_relu2_fwd(
                 NSError *err = [cmd error];
                 const char *desc = err ? [[err localizedDescription] UTF8String] : "Unknown Metal Error";
                 TORCH_CHECK(false, "OjasX Metal Execution failed: ", desc);
+            }
+
+            if (!target_device.is_mps()) {
+                if ([buf_out contents] != out.data_ptr()) {
+                    std::memcpy(out.data_ptr(), [buf_out contents], out.nbytes());
+                }
+                if ([buf_mask contents] != mask.data_ptr()) {
+                    std::memcpy(mask.data_ptr(), [buf_mask contents], mask.nbytes());
+                }
             }
         }
 

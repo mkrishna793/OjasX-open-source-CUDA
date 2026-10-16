@@ -93,9 +93,13 @@ def _streaming_fused_lce_forward(
     lse = torch.zeros(m, dtype=compute_dtype, device=h.device)
     sum_z = torch.zeros(m, dtype=compute_dtype, device=h.device) if label_smoothing > 0.0 else None
 
+    can_cull_chunks = _is_concrete_eager_tensor(mask)
     # Dual-pass tile streaming loop: transient memory <= O(tile_tok x tile_voc)
     for tok_s in range(0, m, tile_tok):
         tok_e = min(tok_s + tile_tok, m)
+        mask_chunk = mask[tok_s:tok_e]
+        if can_cull_chunks and not bool(mask_chunk.any()):
+            continue
         h_chunk = h_2d_comp[tok_s:tok_e]
         m_chunk = torch.full((tok_e - tok_s,), -float("inf"), dtype=compute_dtype, device=h.device)
         s_chunk = torch.zeros(tok_e - tok_s, dtype=compute_dtype, device=h.device)

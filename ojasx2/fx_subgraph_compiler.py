@@ -397,14 +397,10 @@ class HolonomicGatedMLPFunction(torch.autograd.Function):
         x_2d = x.reshape(-1, in_features)
         dy_2d = grad_output.reshape(-1, w_down.size(0))
 
-        # Recompute projections in L1 / registers
+        # Recompute projections in L1 / registers without allocating concatenated w_comb
         is_cpu = dy_2d.device.type == "cpu"
-        w_comb = torch.cat([w_gate.contiguous(), w_up.contiguous()], dim=0)
-        if b_gate is None and b_up is None:
-            z_gate, z_up = F.linear(x_2d, w_comb).chunk(2, dim=-1)
-        else:
-            z_gate = F.linear(x_2d, w_gate, b_gate)
-            z_up = F.linear(x_2d, w_up, b_up)
+        z_gate = F.linear(x_2d, w_gate, b_gate)
+        z_up = F.linear(x_2d, w_up, b_up)
         act_gate = _eval_act_fn(z_gate, act)
         mul_out = act_gate * z_up
 
@@ -441,10 +437,10 @@ class HolonomicGatedMLPFunction(torch.autograd.Function):
         db_gate = dz_gate.sum(dim=0) if (b_gate is not None and ctx.needs_input_grad[2]) else None
         db_up = dup.sum(dim=0) if (b_up is not None and ctx.needs_input_grad[4]) else None
 
-        # Single combined GEMM accumulating dx in hardware registers without allocating a 2nd buffer
+        # Directly accumulate dx without allocating concatenated w_comb
         dx = None
         if ctx.needs_input_grad[0]:
-            dx_2d = torch.matmul(dG_U, w_comb)
+            dx_2d = dz_gate.matmul(w_gate) + dup.matmul(w_up)
             dx = dx_2d.reshape(orig_shape)
 
         return dx, dw_gate, db_gate, dw_up, db_up, dw_down, db_down, None, None
@@ -514,13 +510,9 @@ class HolonomicUniversalGLUFunction(torch.autograd.Function):
         x_2d = x.reshape(-1, in_features)
         dy_2d = grad_output.reshape(-1, w_gate.size(0))
 
-        # Recompute projections
-        w_comb = torch.cat([w_gate.contiguous(), w_up.contiguous()], dim=0)
-        if b_gate is None and b_up is None:
-            z_gate, z_up = F.linear(x_2d, w_comb).chunk(2, dim=-1)
-        else:
-            z_gate = F.linear(x_2d, w_gate, b_gate)
-            z_up = F.linear(x_2d, w_up, b_up)
+        # Recompute projections without allocating concatenated w_comb
+        z_gate = F.linear(x_2d, w_gate, b_gate)
+        z_up = F.linear(x_2d, w_up, b_up)
         act_gate = _eval_act_fn(z_gate, act)
 
         dup = dy_2d * act_gate
@@ -552,13 +544,16 @@ class HolonomicUniversalGLUFunction(torch.autograd.Function):
         db_gate = dz_gate.sum(dim=0) if (b_gate is not None and ctx.needs_input_grad[2]) else None
         db_up = dup.sum(dim=0) if (b_up is not None and ctx.needs_input_grad[4]) else None
 
-        # Single combined GEMM accumulating dx in hardware registers without allocating a 2nd buffer
+        # Directly accumulate dx without allocating concatenated w_comb
         dx = None
         if ctx.needs_input_grad[0]:
-            dx_2d = torch.matmul(dG_U, w_comb)
+            dx_2d = dz_gate.matmul(w_gate) + dup.matmul(w_up)
             dx = dx_2d.reshape(orig_shape)
 
         return dx, dw_gate, db_gate, dw_up, db_up, None, None
+
+
+HolonomicFusedGLUMLPFunction = HolonomicUniversalGLUFunction
 
 
 def holonomic_glu(
@@ -863,6 +858,34 @@ def _eval_mlp(
     return F.linear(h_act, w_down, b_down)
 
 
+def _eval_attn(
+    h: torch.Tensor,
+    w_attn_qkv: torch.Tensor,
+    b_attn_qkv: Optional[torch.Tensor],
+    w_attn_out: torch.Tensor,
+    b_attn_out: Optional[torch.Tensor],
+    num_heads: int,
+) -> torch.Tensor:
+    b_sz, s_len, dim = h.shape
+    hd = dim // num_heads
+    if w_attn_qkv.shape[0] != 3 * dim:
+        qkv = F.linear(h, w_attn_qkv, b_attn_qkv)
+        kv_dim = (w_attn_qkv.shape[0] - dim) // 2
+        num_kv_heads = kv_dim // hd
+        q = qkv[..., :dim].reshape(b_sz, s_len, num_heads, hd).permute(0, 2, 1, 3)
+        k = qkv[..., dim : dim + kv_dim].reshape(b_sz, s_len, num_kv_heads, hd).permute(0, 2, 1, 3)
+        v = qkv[..., dim + kv_dim :].reshape(b_sz, s_len, num_kv_heads, hd).permute(0, 2, 1, 3)
+        if num_heads // num_kv_heads > 1:
+            k = k.repeat_interleave(num_heads // num_kv_heads, dim=1)
+            v = v.repeat_interleave(num_heads // num_kv_heads, dim=1)
+    else:
+        qkv = F.linear(h, w_attn_qkv, b_attn_qkv).reshape(b_sz, s_len, 3, num_heads, hd).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+    attn = F.scaled_dot_product_attention(q, k, v)
+    attn = attn.permute(0, 2, 1, 3).reshape(b_sz, s_len, dim)
+    return F.linear(attn, w_attn_out, b_attn_out)
+
+
 class HolonomicSymplecticSubgraphFunction(torch.autograd.Function):
     """
     Mode A: Dual-Stream Symplectic Subgraph with Exact Inverse State Reconstruction.
@@ -901,13 +924,7 @@ class HolonomicSymplecticSubgraphFunction(torch.autograd.Function):
 
         acc_dtype = torch.float32 if q1.dtype in (torch.float16, torch.bfloat16) else q1.dtype
         with torch.no_grad():
-            b_sz, s_len, dim = q2.shape
-            hd = dim // num_heads
-            qkv = F.linear(q2, w_attn_qkv, b_attn_qkv).reshape(b_sz, s_len, 3, num_heads, hd).permute(2, 0, 3, 1, 4)
-            q, k, v = qkv[0], qkv[1], qkv[2]
-            attn = F.scaled_dot_product_attention(q, k, v)
-            attn = attn.permute(0, 2, 1, 3).reshape(b_sz, s_len, dim)
-            f_val = F.linear(attn, w_attn_out, b_attn_out)
+            f_val = _eval_attn(q2, w_attn_qkv, b_attn_qkv, w_attn_out, b_attn_out, num_heads)
             q1_next = (q1.to(acc_dtype) + f_val.to(acc_dtype)).to(q1.dtype)
 
             g_val = _eval_mlp(q1_next, w_mlp_gate, b_mlp_gate, w_mlp_up, b_mlp_up, w_mlp_down, b_mlp_down, act)
@@ -988,13 +1005,7 @@ class HolonomicSymplecticSubgraphFunction(torch.autograd.Function):
                     unique_attn_params.append(p)
 
         with torch.enable_grad():
-            b_sz, s_len, dim = q2_in.shape
-            hd = dim // num_heads
-            qkv = F.linear(q2_in, w_attn_qkv, b_attn_qkv).reshape(b_sz, s_len, 3, num_heads, hd).permute(2, 0, 3, 1, 4)
-            q, k, v = qkv[0], qkv[1], qkv[2]
-            attn = F.scaled_dot_product_attention(q, k, v)
-            attn = attn.permute(0, 2, 1, 3).reshape(b_sz, s_len, dim)
-            f_val = F.linear(attn, w_attn_out, b_attn_out)
+            f_val = _eval_attn(q2_in, w_attn_qkv, b_attn_qkv, w_attn_out, b_attn_out, num_heads)
 
         with torch.no_grad():
             q1_reconstructed = (q1_next.to(acc_dtype) - f_val.detach().to(acc_dtype)).to(q1_next.dtype)
@@ -1113,13 +1124,7 @@ class HolonomicResidualSubgraphFunction(torch.autograd.Function):
             else:
                 h1 = x
 
-            b_sz, s_len, dim = h1.shape
-            hd = dim // num_heads
-            qkv = F.linear(h1, w_attn_qkv, b_attn_qkv).reshape(b_sz, s_len, 3, num_heads, hd).permute(2, 0, 3, 1, 4)
-            q, k, v = qkv[0], qkv[1], qkv[2]
-            attn = F.scaled_dot_product_attention(q, k, v)
-            attn = attn.permute(0, 2, 1, 3).reshape(b_sz, s_len, dim)
-            f_val = F.linear(attn, w_attn_out, b_attn_out)
+            f_val = _eval_attn(h1, w_attn_qkv, b_attn_qkv, w_attn_out, b_attn_out, num_heads)
             x1 = x + f_val
 
             if norm2_b is not None or norm_type == "layer":
@@ -1183,13 +1188,7 @@ class HolonomicResidualSubgraphFunction(torch.autograd.Function):
                 h1 = F.rms_norm(x_in, (x_in.size(-1),), norm1_w, norm1_eps)
             else:
                 h1 = x_in
-            b_sz, s_len, dim = h1.shape
-            hd = dim // num_heads
-            qkv = F.linear(h1, w_attn_qkv, b_attn_qkv).reshape(b_sz, s_len, 3, num_heads, hd).permute(2, 0, 3, 1, 4)
-            q, k, v = qkv[0], qkv[1], qkv[2]
-            attn = F.scaled_dot_product_attention(q, k, v)
-            attn = attn.permute(0, 2, 1, 3).reshape(b_sz, s_len, dim)
-            f_val = F.linear(attn, w_attn_out, b_attn_out)
+            f_val = _eval_attn(h1, w_attn_qkv, b_attn_qkv, w_attn_out, b_attn_out, num_heads)
             x1 = x_in + f_val
 
         # 2. Backpropagate through sub-layer 2 (x1 -> x2)

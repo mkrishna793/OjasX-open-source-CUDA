@@ -42,23 +42,32 @@ class HolonomicGradFreeOptimizer(Optimizer):
         weight_decay: float = 0.0,
         momentum: float = 0.0,
         max_grad_norm: Optional[float] = None,
+        grad_accum_steps: int = 1,
+        enabled: bool = True,
     ) -> None:
-        if algorithm not in ("sgd", "adamw"):
-            raise ValueError(f"Unsupported algorithm: {algorithm}. Choose 'sgd' or 'adamw'.")
+        algo_lower = algorithm.lower()
+        if algo_lower not in ("sgd", "adamw", "adafactor", "low_memory_adamw"):
+            raise ValueError(
+                f"Unsupported algorithm: {algorithm}. Choose 'sgd', 'adamw', 'adafactor', or 'low_memory_adamw'."
+            )
 
-        self.algorithm = algorithm
+        self.algorithm = "adafactor" if algo_lower == "low_memory_adamw" else algo_lower
+        self.grad_accum_steps = int(grad_accum_steps)
+        self.enabled = bool(enabled)
         self._param_to_group: Dict[nn.Parameter, Dict[str, Any]] = {}
         self._handles: List[Any] = []
         self.last_step_freed_bytes: int = 0
         self.last_step_updated_params: int = 0
         defaults = dict(
             lr=float(lr),
-            algorithm=algorithm,
+            algorithm=self.algorithm,
             betas=(float(betas[0]), float(betas[1])),
             eps=float(eps),
             weight_decay=float(weight_decay),
             momentum=float(momentum),
             max_grad_norm=float(max_grad_norm) if max_grad_norm is not None else None,
+            grad_accum_steps=int(grad_accum_steps),
+            enabled=bool(enabled),
         )
 
         super().__init__(params, defaults)
@@ -92,12 +101,39 @@ class HolonomicGradFreeOptimizer(Optimizer):
     def _make_hook(self, param: nn.Parameter) -> Any:
         @torch.no_grad()
         def _hook(_p: nn.Parameter) -> None:
+            if not self.enabled:
+                return
+
             grad = _p.grad
             if grad is None:
                 return
 
             grad_bytes = grad.numel() * grad.element_size()
             group = self._param_to_group.get(_p, self.param_groups[0])
+            grad_accum_steps = int(group.get("grad_accum_steps", self.grad_accum_steps))
+
+            st = self.state[_p]
+
+            if grad_accum_steps > 1:
+                st["accum_count"] = st.get("accum_count", 0) + 1
+                scaled_grad = grad / grad_accum_steps
+                if st.get("grad_accum") is None:
+                    st["grad_accum"] = scaled_grad.clone()
+                else:
+                    st["grad_accum"].add_(scaled_grad)
+
+                _p.grad = None
+                self.last_step_freed_bytes += grad_bytes
+
+                if st["accum_count"] % grad_accum_steps != 0:
+                    return
+
+                effective_grad = st["grad_accum"]
+                st["grad_accum"] = None
+            else:
+                effective_grad = grad
+                _p.grad = None
+                self.last_step_freed_bytes += grad_bytes
 
             # Dynamic hyperparameter retrieval (100% lr_scheduler compatible!)
             lr = float(group["lr"])
@@ -106,22 +142,23 @@ class HolonomicGradFreeOptimizer(Optimizer):
             eps = float(group.get("eps", 1e-8))
             momentum = float(group.get("momentum", 0.0))
             max_grad_norm = group.get("max_grad_norm")
-            algo = group.get("algorithm", self.algorithm)
+            algo = group.get("algorithm", self.algorithm).lower()
+            if algo == "low_memory_adamw":
+                algo = "adafactor"
 
             # In-hook gradient norm clipping
             if max_grad_norm is not None and max_grad_norm > 0:
-                norm = torch.linalg.vector_norm(grad)
+                norm = torch.linalg.vector_norm(effective_grad)
                 if norm > max_grad_norm:
-                    grad = grad * (max_grad_norm / (norm + 1e-6))
+                    effective_grad = effective_grad * (max_grad_norm / (norm + 1e-6))
 
-            st = self.state[_p]
             st["step"] = st.get("step", 0) + 1
             step = st["step"]
 
             is_half = _p.dtype in (torch.float16, torch.bfloat16)
 
             if algo == "sgd":
-                d_p = grad.float() if is_half else grad
+                d_p = effective_grad.float() if is_half else effective_grad
                 p_data = _p.float() if is_half else _p
 
                 if weight_decay != 0.0:
@@ -143,7 +180,7 @@ class HolonomicGradFreeOptimizer(Optimizer):
             elif algo == "adamw":
                 beta1, beta2 = betas
                 p_f32 = _p.float() if is_half else _p
-                g_f32 = grad.float() if is_half else grad
+                g_f32 = effective_grad.float() if is_half else effective_grad
 
                 if weight_decay != 0.0:
                     if is_half:
@@ -179,9 +216,74 @@ class HolonomicGradFreeOptimizer(Optimizer):
                 else:
                     _p.add_(delta)
 
-            # Immediately release parameter gradient tensor from RAM!
-            _p.grad = None
-            self.last_step_freed_bytes += grad_bytes
+            elif algo == "adafactor":
+                beta1, beta2 = betas
+                p_f32 = _p.float() if is_half else _p
+                g_f32 = effective_grad.float() if is_half else effective_grad
+
+                if weight_decay != 0.0:
+                    if is_half:
+                        p_f32 = p_f32 * (1.0 - lr * weight_decay)
+                    else:
+                        _p.mul_(1.0 - lr * weight_decay)
+
+                grad_sq = g_f32.square()
+                bias_correction2 = 1.0 - (beta2 ** step)
+
+                if _p.ndim >= 2:
+                    exp_avg_sq_row = st.get("exp_avg_sq_row")
+                    exp_avg_sq_col = st.get("exp_avg_sq_col")
+                    if exp_avg_sq_row is None or exp_avg_sq_col is None:
+                        row_shape = _p.shape[:-1]
+                        col_shape = _p.shape[:-2] + _p.shape[-1:]
+                        exp_avg_sq_row = st["exp_avg_sq_row"] = torch.zeros(
+                            row_shape, dtype=torch.float32, device=_p.device
+                        )
+                        exp_avg_sq_col = st["exp_avg_sq_col"] = torch.zeros(
+                            col_shape, dtype=torch.float32, device=_p.device
+                        )
+
+                    row_mean = grad_sq.mean(dim=-1)
+                    col_mean = grad_sq.mean(dim=-2)
+
+                    exp_avg_sq_row.mul_(beta2).add_(row_mean, alpha=1.0 - beta2)
+                    exp_avg_sq_col.mul_(beta2).add_(col_mean, alpha=1.0 - beta2)
+
+                    r_factor = exp_avg_sq_row / exp_avg_sq_row.mean(dim=-1, keepdim=True).clamp(min=eps)
+                    v_hat = r_factor.unsqueeze(-1) * exp_avg_sq_col.unsqueeze(-2)
+                    denom = (v_hat.sqrt() / math.sqrt(bias_correction2)).add_(eps)
+                else:
+                    exp_avg_sq = st.get("exp_avg_sq")
+                    if exp_avg_sq is None:
+                        exp_avg_sq = st["exp_avg_sq"] = torch.zeros_like(p_f32)
+                    exp_avg_sq.mul_(beta2).addcmul_(g_f32, g_f32, value=1.0 - beta2)
+                    denom = (exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(eps)
+
+                if beta1 > 0.0:
+                    exp_avg = st.get("exp_avg")
+                    if exp_avg is None:
+                        # Store in _p.dtype (FP16/BF16) to conserve memory
+                        exp_avg = st["exp_avg"] = torch.zeros_like(_p)
+
+                    if is_half:
+                        exp_avg_f32 = exp_avg.float().mul_(beta1).add_(g_f32, alpha=1.0 - beta1)
+                        exp_avg.copy_(exp_avg_f32.to(_p.dtype))
+                        bias_correction1 = 1.0 - (beta1 ** step)
+                        update = exp_avg.float() / bias_correction1
+                    else:
+                        exp_avg.mul_(beta1).add_(g_f32, alpha=1.0 - beta1)
+                        bias_correction1 = 1.0 - (beta1 ** step)
+                        update = exp_avg / bias_correction1
+                else:
+                    update = g_f32
+
+                step_size = lr
+                delta = -step_size * (update / denom)
+                if is_half:
+                    _p.copy_((p_f32 + delta).to(_p.dtype))
+                else:
+                    _p.add_(delta)
+
             self.last_step_updated_params += 1
 
         return _hook
@@ -228,10 +330,21 @@ class HolonomicGradFreeOptimizer(Optimizer):
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
         super().load_state_dict(state_dict)
         for p, st in self.state.items():
+            group = self._param_to_group.get(p, self.param_groups[0])
+            algo = group.get("algorithm", self.algorithm).lower()
+            if algo == "low_memory_adamw":
+                algo = "adafactor"
             if p.dtype in (torch.float16, torch.bfloat16):
-                for k in ("exp_avg", "exp_avg_sq", "momentum_buffer"):
-                    if k in st and isinstance(st[k], torch.Tensor) and st[k].dtype != torch.float32:
-                        st[k] = st[k].float()
+                if algo != "adafactor":
+                    for k in ("exp_avg", "exp_avg_sq", "momentum_buffer"):
+                        if k in st and isinstance(st[k], torch.Tensor) and st[k].dtype != torch.float32:
+                            st[k] = st[k].float()
+                else:
+                    for k in ("exp_avg_sq", "exp_avg_sq_row", "exp_avg_sq_col"):
+                        if k in st and isinstance(st[k], torch.Tensor) and st[k].dtype != torch.float32:
+                            st[k] = st[k].float()
+                    if "exp_avg" in st and isinstance(st["exp_avg"], torch.Tensor) and st["exp_avg"].dtype != p.dtype:
+                        st["exp_avg"] = st["exp_avg"].to(p.dtype)
         self._refresh_param_groups_and_hooks()
 
     @property

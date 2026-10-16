@@ -51,9 +51,16 @@ from .tile_hal import (
     TileSchedulePlanner,
     probe_hardware_profile,
 )
-from .dagger_attention import HolonomicDaggerAttention
+from .dagger_attention import HolonomicDaggerAttention, DaggerAttention
 from .fused_cross_entropy import FusedLinearCrossEntropy, HolonomicFusedLinearCrossEntropy
 from .symplectic_engine import SymplecticCoupling, SymplecticTransformerBlock
+
+# Expose out_features on FusedLinearCrossEntropy for nn.Linear drop-in compatibility
+if not hasattr(FusedLinearCrossEntropy, "out_features"):
+    FusedLinearCrossEntropy.out_features = property(
+        lambda self: getattr(self, "vocab_size", None),
+        lambda self, v: setattr(self, "vocab_size", v),
+    )
 
 
 class HolonomicFusedLinearCrossEntropyHead(HolonomicFusedLinearCrossEntropy):
@@ -63,6 +70,59 @@ class HolonomicFusedLinearCrossEntropyHead(HolonomicFusedLinearCrossEntropy):
     1. Unsupervised / inference call: `logits = head(h)` (returns standard linear projection)
     2. Supervised training call: `loss = head(h, targets)` (returns fused streaming cross-entropy with 0 DRAM logits)
     """
+
+    def __init__(
+        self,
+        in_features: Optional[int] = None,
+        vocab_size: Optional[int] = None,
+        bias: bool = False,
+        ignore_index: int = -100,
+        label_smoothing: float = 0.0,
+        reduction: str = "mean",
+        chunk_size: int = 1024,
+        weight: Optional[nn.Parameter] = None,
+        device: Any = None,
+        dtype: Any = None,
+        _init_empty: bool = False,
+    ) -> None:
+        if _init_empty and weight is None:
+            super().__init__(
+                in_features=None,
+                vocab_size=None,
+                bias=False,
+                ignore_index=ignore_index,
+                label_smoothing=label_smoothing,
+                reduction=reduction,
+                chunk_size=chunk_size,
+                weight=None,
+                device=device,
+                dtype=dtype,
+            )
+            self.in_features = in_features
+            self.vocab_size = vocab_size
+            if bias:
+                self.bias = nn.Parameter(torch.zeros(vocab_size, device=device, dtype=dtype))
+            else:
+                self.register_parameter("bias", None)
+        else:
+            super().__init__(
+                in_features=in_features,
+                vocab_size=vocab_size,
+                bias=bias,
+                ignore_index=ignore_index,
+                label_smoothing=label_smoothing,
+                reduction=reduction,
+                chunk_size=chunk_size,
+                weight=weight,
+                device=device,
+                dtype=dtype,
+            )
+            if weight is not None and bias and not hasattr(self, "bias"):
+                self.bias = nn.Parameter(
+                    torch.zeros(vocab_size or weight.shape[0], device=device or weight.device, dtype=dtype or weight.dtype)
+                )
+
+        self.out_features = self.vocab_size
 
     def forward(
         self,
@@ -404,6 +464,7 @@ class SmartWorkloadRouter:
                     HolonomicGLU,
                     HolonomicActivationLens,
                     HolonomicDaggerAttention,
+                    DaggerAttention,
                     HolonomicFusedLinearCrossEntropy,
                     HolonomicFusedLinearCrossEntropyHead,
                     HolonomicUnifiedTransformerMLP,
@@ -790,7 +851,7 @@ class SmartWorkloadRouter:
         report: SmartWorkloadReport,
     ) -> Tuple[bool, Optional[nn.Module]]:
         """Detects Transformer attention layers and rewrites them into Holonomic Dagger Attention."""
-        if isinstance(module, HolonomicDaggerAttention):
+        if isinstance(module, (HolonomicDaggerAttention, DaggerAttention)):
             return False, None
 
         if isinstance(module, nn.MultiheadAttention):
@@ -967,8 +1028,10 @@ class SmartWorkloadRouter:
             in_features=module.in_features,
             vocab_size=module.out_features,
             bias=module.bias is not None,
+            weight=module.weight,
             device=module.weight.device,
             dtype=module.weight.dtype,
+            _init_empty=True,
         )
         rep.weight = module.weight
         if module.bias is not None:

@@ -161,6 +161,15 @@ def format_update_banner(current_ver: str, latest_ver: str, is_git: bool = False
 
 def notify_if_update_available_background() -> None:
     """Asynchronously check for updates in a non-blocking daemon thread on import."""
+    import multiprocessing
+    if (
+        os.environ.get("OJASX_DISABLE_UPDATE_CHECK", "0") in ("1", "true", "True")
+        or "PYTEST_CURRENT_TEST" in os.environ
+        or "CI" in os.environ
+        or multiprocessing.current_process().name != "MainProcess"
+    ):
+        return
+
     def _worker() -> None:
         try:
             has_update, latest_ver, _ = check_for_updates(force=False, timeout=2.0)
