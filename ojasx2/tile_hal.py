@@ -636,6 +636,23 @@ torch.library.register_autograd(
 )
 
 
+def _normalize_target_arch(arch: str) -> str:
+    a = str(arch).lower().strip()
+    if a in ("cuda", "nvvm", "ptx", "sm80", "sm90", "nvidia"):
+        return "cuda"
+    if a in ("rocm", "hip", "amd", "gcn", "cdna", "rdna"):
+        return "rocm"
+    if a in ("sycl", "spirv", "intel", "xpu", "vulkan", "oneapi"):
+        return "sycl"
+    if a in ("ascend", "cann", "huawei", "npu"):
+        return "ascend"
+    if a in ("metal", "mps", "apple"):
+        return "metal"
+    if a in ("cpu", "amx", "avx", "avx2", "avx512", "neon"):
+        return "cpu"
+    return a
+
+
 def tilelang_universal_gemm_relu2(
     x: torch.Tensor,
     weight: torch.Tensor,
@@ -644,8 +661,9 @@ def tilelang_universal_gemm_relu2(
     panel_size: int = 4,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     ensure_tile_kernels_loaded()
+    norm_arch = _normalize_target_arch(target_arch) if target_arch != "auto" else "auto"
     return torch.ops.ojasx_hal.tilelang_universal_gemm_relu2_fwd(
-        x, weight, bias, target_arch, panel_size
+        x, weight, bias, norm_arch, panel_size
     )
 
 
@@ -658,7 +676,7 @@ def tilelang_query_chip_schedule(
     l2_kb: int = 4096,
 ) -> Dict[str, int]:
     raw = torch.ops.ojasx_hal.tilelang_query_chip_schedule(
-        target_arch, M, N, K, smem_kb, l2_kb
+        _normalize_target_arch(target_arch), M, N, K, smem_kb, l2_kb
     )
     return {
         "block_m": int(raw[0]),
@@ -682,7 +700,7 @@ def tilelang_emit_universal_source(
     panel_size: int = 4,
 ) -> str:
     return torch.ops.ojasx_hal.tilelang_emit_universal_source(
-        target_arch, block_m, block_n, block_k, panel_size
+        _normalize_target_arch(target_arch), block_m, block_n, block_k, panel_size
     )
 
 
