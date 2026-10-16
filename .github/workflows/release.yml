@@ -42,10 +42,7 @@ jobs:
 
             ### Quick Install Directly in PyTorch
             ```bash
-            # Option 1: Install pre-built wheel directly from this GitHub Release
-            pip install https://github.com/mkrishna793/OjasX-open-source-CUDA/releases/download/${{ github.ref_name }}/ojasx_verified_core-0.6.0-py3-none-any.whl
-
-            # Option 2: Install directly from the release tag via git
+            # Option 1: Install directly from the release tag via git
             pip install git+https://github.com/mkrishna793/OjasX-open-source-CUDA.git@${{ github.ref_name }}
             ```
 
