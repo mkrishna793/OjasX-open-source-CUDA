@@ -142,13 +142,82 @@ def build_native_tile_library():
         return None
 
 
+def build_native_math_library():
+    root = Path(__file__).resolve().parent
+    math_csrc_dir = root / "ojasx2" / "math" / "csrc"
+    if not (math_csrc_dir / "ojasx_math_bindings.cpp").exists():
+        return None
+
+    try:
+        import torch
+    except ImportError:
+        return None
+
+    import sysconfig
+
+    torch_dir = Path(torch.__file__).resolve().parent
+    py_inc = sysconfig.get_paths().get("include", "")
+    inc_dirs = [
+        str(math_csrc_dir),
+        str(torch_dir / "include"),
+        str(torch_dir / "include" / "torch" / "csrc" / "api" / "include"),
+    ]
+    if py_inc:
+        inc_dirs.append(py_inc)
+    lib_dir = str(torch_dir / "lib")
+    system = platform.system()
+
+    if system == "Darwin":
+        out_lib = math_csrc_dir / "ojasx_math_native.so"
+        sdk_path = Path("/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk")
+        sdk_flags = ["-isysroot", str(sdk_path)] if sdk_path.exists() else []
+        cmd = [
+            "clang++",
+            *sdk_flags,
+            "-std=c++20",
+            "-O3",
+            "-shared",
+            "-fPIC",
+            "-fobjc-arc",
+            "-undefined",
+            "dynamic_lookup",
+            "-Wno-deprecated-declarations",
+            str(math_csrc_dir / "ojasx_math_bindings.cpp"),
+            str(math_csrc_dir / "ojasx_math_metal.mm"),
+            *[f"-I{d}" for d in inc_dirs],
+            f"-L{lib_dir}",
+            f"-Wl,-rpath,{lib_dir}",
+            "-ltorch",
+            "-ltorch_cpu",
+            "-ltorch_python",
+            "-lc10",
+            "-framework",
+            "Metal",
+            "-framework",
+            "Foundation",
+            "-framework",
+            "Accelerate",
+            "-o",
+            str(out_lib),
+        ]
+        try:
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return out_lib
+        except Exception as exc:
+            sys.stderr.write(f"[OjasX setup.py] Native math C++/Metal build skipped: {exc}\n")
+            return None
+    return None
+
+
 class BuildPyWithNativeKernels(build_py):
     def run(self) -> None:
         self.native_library = None
+        self.native_math_library = None
         if os.environ.get("OJASX_DISABLE_NATIVE", "0") != "1" and (
             os.environ.get("OJASX_REBUILD_NATIVE", "1") == "1"
         ):
             self.native_library = build_native_tile_library()
+            self.native_math_library = build_native_math_library()
         super().run()
         for binary in (Path(self.build_lib) / "ojasx2" / "csrc").glob("*"):
             if binary.suffix in (".dylib", ".so", ".pyd", ".dll") and (

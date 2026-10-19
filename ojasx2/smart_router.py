@@ -1551,12 +1551,17 @@ def optimize_model(
     )
 
     # Attach fine-tuning counts to report
-    report._extra_action_counts = {
+    extra_counts = {
         "replaced_attention_layers": replaced_attn,
         "replaced_loss_modules": replaced_loss,
         "checkpointed_blocks": checkpointed,
         "symplectic_blocks_configured": symp_count,
     }
+    if replaced_attn > 0:
+        extra_counts["HOLONOMIC_DAGGER_ATTENTION"] = replaced_attn
+    if replaced_loss > 0:
+        extra_counts["FUSED_LINEAR_CROSS_ENTROPY"] = replaced_loss
+    report._extra_action_counts = extra_counts
 
     return model, report
 

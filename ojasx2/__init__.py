@@ -13,6 +13,7 @@ from .nonlinear import layernorm_linear_chain, layernorm_chain_cost
 from .nonlinear import gram_layernorm_linear_chain, gram_layernorm_chain_cost
 from .radial_core import rms_core_linear_chain, rms_core_cost
 from .reversible import reversible_coupling_chain
+from . import math
 from .symplectic_engine import (
     SymplecticCouplingFunction,
     SymplecticCoupling,
@@ -153,7 +154,7 @@ from .updater import (
     notify_if_update_available_background,
 )
 
-__version__ = "0.7.1"
+__version__ = "0.8.0"
 
 # Launch non-blocking background update check (0ms import overhead, cached)
 notify_if_update_available_background()
