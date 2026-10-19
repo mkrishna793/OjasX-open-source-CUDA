@@ -371,4 +371,70 @@ inline float halley_invert_gelu(float y, int branch_sign, int iters = 3) noexcep
     return z;
 }
 
+// ============================================================================
+// 4. E8 Lattice Sphere Packing & Fast Conway-Sloane Decoding
+// ============================================================================
+namespace lattice {
+
+/**
+ * Snaps an 8-dimensional vector to the closest point in the E8 Gosset lattice.
+ * Pure algebraic rounding in O(8) steps with zero table lookups.
+ * E8 = D8 U (D8 + 1/2 * 1)
+ */
+template <typename T>
+inline void conway_sloane_e8_project(const T* in8, T* out8) {
+    T f1[8], f2[8];
+    int sum1 = 0, sum2 = 0;
+    int worst1 = 0, worst2 = 0;
+    T max_err1 = 0, max_err2 = 0;
+
+    for (int i = 0; i < 8; ++i) {
+        // D8 candidate: nearest integers with even sum
+        f1[i] = std::round(in8[i]);
+        sum1 += static_cast<int>(f1[i]);
+        T err1 = std::abs(in8[i] - f1[i]);
+        if (err1 > max_err1) { max_err1 = err1; worst1 = i; }
+
+        // D8 + 0.5 candidate: nearest half-integers with even sum
+        T shifted = in8[i] - static_cast<T>(0.5);
+        f2[i] = std::round(shifted);
+        sum2 += static_cast<int>(f2[i]);
+        T err2 = std::abs(shifted - f2[i]);
+        if (err2 > max_err2) { max_err2 = err2; worst2 = i; }
+    }
+
+    if (sum1 % 2 != 0) {
+        f1[worst1] += (in8[worst1] >= f1[worst1]) ? static_cast<T>(1.0) : static_cast<T>(-1.0);
+    }
+    if (sum2 % 2 != 0) {
+        f2[worst2] += ((in8[worst2] - static_cast<T>(0.5)) >= f2[worst2]) ? static_cast<T>(1.0) : static_cast<T>(-1.0);
+    }
+
+    T d1 = 0, d2 = 0;
+    for (int i = 0; i < 8; ++i) {
+        f2[i] += static_cast<T>(0.5);
+        d1 += (in8[i] - f1[i]) * (in8[i] - f1[i]);
+        d2 += (in8[i] - f2[i]) * (in8[i] - f2[i]);
+    }
+
+    const T* chosen = (d1 <= d2) ? f1 : f2;
+    for (int i = 0; i < 8; ++i) {
+        out8[i] = chosen[i];
+    }
+}
+
+/**
+ * On-the-fly 2-bit register unpack of 4 weights from a single uint8 byte.
+ */
+template <typename T>
+inline void unpack_2bit_byte(uint8_t byte_val, T scale, T* out4) {
+    out4[0] = (static_cast<T>(byte_val & 0x03) - static_cast<T>(1.5)) * scale;
+    out4[1] = (static_cast<T>((byte_val >> 2) & 0x03) - static_cast<T>(1.5)) * scale;
+    out4[2] = (static_cast<T>((byte_val >> 4) & 0x03) - static_cast<T>(1.5)) * scale;
+    out4[3] = (static_cast<T>((byte_val >> 6) & 0x03) - static_cast<T>(1.5)) * scale;
+}
+
+} // namespace lattice
+
 } // namespace ojasx::math
+

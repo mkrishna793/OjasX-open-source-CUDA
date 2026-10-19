@@ -96,6 +96,17 @@ from .streaming import (
     fused_linear_cross_entropy,
 )
 
+# 5. E8 Lattice Sphere Packing & Quantization
+from .lattice import (
+    fast_walsh_hadamard_transform,
+    randomized_hadamard_transform,
+    conway_sloane_e8_project,
+    E8LatticePacker,
+    E8LatticeLinear,
+    E8QuantizationAwareLinear,
+    pack_model_e8,
+)
+
 
 # =============================================================================
 # 5. Native C++/Metal Acceleration Hooks
@@ -226,4 +237,12 @@ __all__ = [
     # Acceleration
     "has_native_backend",
     "get_native_backend",
+    # E8 Lattice
+    "fast_walsh_hadamard_transform",
+    "randomized_hadamard_transform",
+    "conway_sloane_e8_project",
+    "E8LatticePacker",
+    "E8LatticeLinear",
+    "E8QuantizationAwareLinear",
+    "pack_model_e8",
 ]

@@ -1,6 +1,6 @@
 {
   "status": "passed",
-  "generated_at_utc": "2026-10-19T07:26:27.055678Z",
+  "generated_at_utc": "2026-10-19T10:56:37.455625Z",
   "version": "0.5.0",
   "device": "mps",
   "silicon_capabilities": {
@@ -75,9 +75,9 @@
             32,
             128
           ],
-          "eager_forward_backward_ms": 0.78,
-          "ojasx_forward_backward_ms": 0.876,
-          "speedup_x": 0.891,
+          "eager_forward_backward_ms": 0.565,
+          "ojasx_forward_backward_ms": 0.618,
+          "speedup_x": 0.915,
           "eager_tape_bytes": 852992,
           "ojasx_tape_bytes": 262656,
           "tape_reduction_pct": 69.21,
@@ -102,9 +102,9 @@
             32,
             128
           ],
-          "eager_forward_backward_ms": 0.675,
-          "ojasx_forward_backward_ms": 0.939,
-          "speedup_x": 0.719,
+          "eager_forward_backward_ms": 0.358,
+          "ojasx_forward_backward_ms": 0.562,
+          "speedup_x": 0.637,
           "eager_tape_bytes": 394240,
           "ojasx_tape_bytes": 263168,
           "tape_reduction_pct": 33.25,
@@ -131,9 +131,9 @@
             16,
             16
           ],
-          "eager_forward_backward_ms": 0.442,
-          "ojasx_forward_backward_ms": 0.745,
-          "speedup_x": 0.593,
+          "eager_forward_backward_ms": 0.246,
+          "ojasx_forward_backward_ms": 0.44,
+          "speedup_x": 0.56,
           "eager_tape_bytes": 525312,
           "ojasx_tape_bytes": 9216,
           "tape_reduction_pct": 98.25,
@@ -158,9 +158,9 @@
             32,
             32
           ],
-          "eager_forward_backward_ms": 0.622,
-          "ojasx_forward_backward_ms": 1.23,
-          "speedup_x": 0.506,
+          "eager_forward_backward_ms": 0.349,
+          "ojasx_forward_backward_ms": 0.61,
+          "speedup_x": 0.573,
           "eager_tape_bytes": 36864,
           "ojasx_tape_bytes": 20992,
           "tape_reduction_pct": 43.06,
@@ -185,9 +185,9 @@
             32,
             128
           ],
-          "eager_forward_backward_ms": 0.415,
-          "ojasx_forward_backward_ms": 0.451,
-          "speedup_x": 0.92,
+          "eager_forward_backward_ms": 0.246,
+          "ojasx_forward_backward_ms": 0.257,
+          "speedup_x": 0.958,
           "eager_tape_bytes": 135168,
           "ojasx_tape_bytes": 69632,
           "tape_reduction_pct": 48.48,
@@ -212,15 +212,15 @@
             512,
             2048
           ],
-          "eager_forward_backward_ms": 2623.364,
-          "ojasx_forward_backward_ms": 5250.303,
-          "speedup_x": 0.5,
+          "eager_forward_backward_ms": 972.957,
+          "ojasx_forward_backward_ms": 1555.843,
+          "speedup_x": 0.625,
           "eager_tape_bytes": 2482065412,
           "ojasx_tape_bytes": 692658176,
           "tape_reduction_pct": 72.09,
           "max_abs_error": 0.0,
           "max_rel_error": 0.0,
-          "gradient_cosine_similarity": 0.999212,
+          "gradient_cosine_similarity": 1.0,
           "backendbench_correctness_pass": true,
           "detected_profile": "MODERN_LLM_MLP",
           "optimizations_applied": [
@@ -230,7 +230,8 @@
             "replaced_attention_layers",
             "replaced_loss_modules",
             "checkpointed_blocks",
-            "symplectic_blocks_configured"
+            "symplectic_blocks_configured",
+            "HOLONOMIC_DAGGER_ATTENTION"
           ]
         }
       },

@@ -221,6 +221,31 @@ at::Tensor halley_invert_activation_tensor(
     return z_fp32.to(orig_dtype);
 }
 
+// ============================================================================
+// 4. E8 Lattice Conway-Sloane Fast Projection Tensor Operator
+// ============================================================================
+at::Tensor conway_sloane_e8_project_tensor(at::Tensor x) {
+    TORCH_CHECK(x.size(-1) == 8, "Last dimension of x must be 8 for E8 lattice");
+    auto x_contig = x.contiguous();
+    auto out = at::empty_like(x_contig);
+    const int64_t num_blocks = x.numel() / 8;
+
+    AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "conway_sloane_e8_project_cpu", [&] {
+        const scalar_t* in_ptr = x_contig.data_ptr<scalar_t>();
+        scalar_t* out_ptr = out.data_ptr<scalar_t>();
+
+        at::parallel_for(0, num_blocks, 1024, [&](int64_t begin, int64_t end) {
+            for (int64_t b = begin; b < end; ++b) {
+                ojasx::math::lattice::conway_sloane_e8_project<scalar_t>(
+                    in_ptr + b * 8,
+                    out_ptr + b * 8
+                );
+            }
+        });
+    });
+    return out;
+}
+
 } // namespace ojasx_math
 
 // ============================================================================
@@ -245,6 +270,10 @@ PYBIND11_MODULE(ojasx_math_native, m) {
           "3rd-order Halley-Padé rational root inversion for non-monotonic activations (SiLU/GELU)",
           py::arg("y"), py::arg("branch_bit"), py::arg("act") = "silu", py::arg("iters") = 3, py::arg("prefer_metal") = true);
 
+    m.def("conway_sloane_e8_project_tensor", &ojasx_math::conway_sloane_e8_project_tensor,
+          "Fast O(8) algebraic Conway-Sloane snapping to 8D E8 Gosset lattice in C++20",
+          py::arg("x"));
+
     m.def("is_metal_available", &ojasx::math::metal::is_metal_available,
           "Check whether Apple Silicon Metal 4 GPU acceleration is available");
 }
@@ -256,10 +285,12 @@ TORCH_LIBRARY(ojasx_math_native, m) {
     m.def("stormer_verlet_step_tensors(Tensor q1, Tensor q2, Tensor delta_f1, Tensor delta_g, Tensor delta_f2, float h) -> (Tensor, Tensor)");
     m.def("structured_pullback_tensor(Tensor v, Tensor d, Tensor U, Tensor V, bool prefer_metal=True) -> Tensor");
     m.def("halley_invert_activation_tensor(Tensor y, Tensor branch_bit, str act='silu', int iters=3, bool prefer_metal=True) -> Tensor");
+    m.def("conway_sloane_e8_project_tensor(Tensor x) -> Tensor");
 }
 
 TORCH_LIBRARY_IMPL(ojasx_math_native, CompositeExplicitAutograd, m) {
     m.impl("stormer_verlet_step_tensors", ojasx_math::stormer_verlet_step_tensors);
     m.impl("structured_pullback_tensor", ojasx_math::structured_pullback_tensor);
     m.impl("halley_invert_activation_tensor", ojasx_math::halley_invert_activation_tensor);
+    m.impl("conway_sloane_e8_project_tensor", ojasx_math::conway_sloane_e8_project_tensor);
 }

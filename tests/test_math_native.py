@@ -75,3 +75,22 @@ def test_halley_inversion_gelu():
     # Metal GPU
     z_metal = native.halley_invert_activation_tensor(y_gelu, branch, act="gelu", iters=3, prefer_metal=True)
     assert torch.allclose(z_metal, test_z, atol=1e-3, rtol=1e-3)
+
+
+def test_native_conway_sloane_e8():
+    assert hasattr(native, "conway_sloane_e8_project_tensor")
+    torch.manual_seed(42)
+    x = torch.randn(20, 8)
+    p = native.conway_sloane_e8_project_tensor(x)
+    assert p.shape == (20, 8)
+    
+    for i in range(20):
+        pt = p[i]
+        is_int = torch.allclose(pt, torch.round(pt), atol=1e-5)
+        is_half = torch.allclose(pt - 0.5, torch.round(pt - 0.5), atol=1e-5)
+        assert is_int or is_half
+        if is_int:
+            assert int(torch.round(torch.sum(pt)).item()) % 2 == 0
+        else:
+            assert int(torch.round(torch.sum(pt - 0.5)).item()) % 2 == 0
+

@@ -54,6 +54,7 @@ from .tile_hal import (
 from .dagger_attention import HolonomicDaggerAttention, DaggerAttention
 from .fused_cross_entropy import FusedLinearCrossEntropy, HolonomicFusedLinearCrossEntropy
 from .symplectic_engine import SymplecticCoupling, SymplecticTransformerBlock
+from .math.lattice import E8LatticeLinear, E8QuantizationAwareLinear
 
 # Expose out_features on FusedLinearCrossEntropy for nn.Linear drop-in compatibility
 if not hasattr(FusedLinearCrossEntropy, "out_features"):
@@ -470,6 +471,8 @@ class SmartWorkloadRouter:
                     HolonomicUnifiedTransformerMLP,
                     SymplecticCoupling,
                     SymplecticTransformerBlock,
+                    E8LatticeLinear,
+                    E8QuantizationAwareLinear,
                 ),
             ):
                 continue

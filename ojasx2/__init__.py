@@ -153,8 +153,17 @@ from .updater import (
     check_for_updates,
     notify_if_update_available_background,
 )
+from .math.lattice import (
+    E8LatticeLinear,
+    E8QuantizationAwareLinear,
+    E8LatticePacker,
+    conway_sloane_e8_project,
+    pack_model_e8,
+    fast_walsh_hadamard_transform,
+    randomized_hadamard_transform,
+)
 
-__version__ = "0.8.0"
+__version__ = "0.8.1"
 
 # Launch non-blocking background update check (0ms import overhead, cached)
 notify_if_update_available_background()
