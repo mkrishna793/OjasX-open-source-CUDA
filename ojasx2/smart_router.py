@@ -968,26 +968,32 @@ class SmartWorkloadRouter:
             and q_proj is not None
             and k_proj is not None
             and v_proj is not None
-            and isinstance(q_proj, nn.Linear)
-            and isinstance(k_proj, nn.Linear)
-            and isinstance(v_proj, nn.Linear)
+            and isinstance(q_proj, (nn.Linear, E8LatticeLinear))
+            and isinstance(k_proj, (nn.Linear, E8LatticeLinear))
+            and isinstance(v_proj, (nn.Linear, E8LatticeLinear))
         ):
             total_p = sum(p.numel() for p in module.parameters())
             trainable_p = sum(p.numel() for p in module.parameters() if p.requires_grad)
 
+            cfg = getattr(module, "config", None)
+            head_dim = getattr(module, "head_dim", getattr(cfg, "head_dim", None))
             num_heads = getattr(
                 module,
                 "num_heads",
-                getattr(module, "n_heads", getattr(module, "num_attention_heads", 8)),
+                getattr(module, "n_heads", getattr(module, "num_attention_heads", getattr(cfg, "num_attention_heads", None))),
             )
+            if num_heads is None and head_dim:
+                num_heads = q_proj.out_features // head_dim
+            elif num_heads is None:
+                num_heads = 8
+            if head_dim is None and num_heads:
+                head_dim = q_proj.out_features // num_heads
+
             num_kv_heads = getattr(
                 module,
                 "num_key_value_heads",
-                getattr(module, "n_kv_heads", getattr(module, "num_kv_heads", num_heads)),
+                getattr(module, "n_kv_heads", getattr(module, "num_kv_heads", getattr(cfg, "num_key_value_heads", num_heads))),
             )
-            head_dim = getattr(module, "head_dim", None)
-            if head_dim is None and num_heads:
-                head_dim = q_proj.out_features // num_heads
 
             rep = HolonomicDaggerAttention(
                 q_proj=q_proj,

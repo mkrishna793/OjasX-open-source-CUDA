@@ -38,6 +38,7 @@ Key Capabilities:
 
 from __future__ import annotations
 
+import copy
 import math
 from typing import Optional, Tuple, Union
 
@@ -468,30 +469,67 @@ def pack_model_e8(
     model: nn.Module,
     rank: int = 0,
     lora_alpha: float = 16.0,
+    group_size: int = 32,
+    target_modules: Optional[Union[list[str], tuple[str, ...], str]] = None,
+    exclude_modules: Optional[Union[list[str], tuple[str, ...]]] = None,
     inplace: bool = True
 ) -> nn.Module:
     """
     Recursively scans and packs all nn.Linear modules in a PyTorch model into
     2.0-bit E8LatticeLinear layers, reducing raw weight memory by 8.0x.
     
+    Compatible with any HuggingFace model (e.g. LLaMA, Qwen, Mistral, Gemma)
+    and PyTorch architectures.
+    
     Args:
         model: Target PyTorch neural network.
         rank: If > 0, attaches low-rank full-precision trainable adapters for fine-tuning.
         lora_alpha: Scaling hyperparameter for low-rank adapter.
+        group_size: Quantization group size (8, 32, or 64). Default 32.
+        target_modules: Specific module names or substrings to pack (e.g. ["q_proj", "v_proj"]).
+        exclude_modules: Specific module names to skip (e.g. ["lm_head"]).
         inplace: Modify model in-place.
         
     Returns:
-        Optimized model with 8x smaller weight footprint.
+        Optimized model with 8x smaller weight footprint and trainable adapters.
     """
     target_model = model if inplace else copy.deepcopy(model)
     
+    if isinstance(target_modules, str):
+        target_modules = [target_modules]
+        
     for name, module in target_model.named_children():
-        if isinstance(module, nn.Linear):
+        is_linear = isinstance(module, nn.Linear)
+        
+        # Check exclusion
+        if exclude_modules is not None and any(ex in name for ex in exclude_modules):
+            continue
+            
+        # Check target inclusion
+        if target_modules is not None:
+            is_targeted = any(t in name for t in target_modules)
+        else:
+            is_targeted = True
+            
+        if is_linear and is_targeted:
             # Only pack if dimensions are compatible with 8D blocks
             if (module.in_features * module.out_features) % 8 == 0:
-                e8_layer = E8LatticeLinear.from_linear(module, rank=rank, lora_alpha=lora_alpha)
+                e8_layer = E8LatticeLinear.from_linear(
+                    module,
+                    rank=rank,
+                    lora_alpha=lora_alpha,
+                    group_size=group_size
+                )
                 setattr(target_model, name, e8_layer)
         else:
-            pack_model_e8(module, rank=rank, lora_alpha=lora_alpha, inplace=True)
+            pack_model_e8(
+                module,
+                rank=rank,
+                lora_alpha=lora_alpha,
+                group_size=group_size,
+                target_modules=target_modules,
+                exclude_modules=exclude_modules,
+                inplace=True
+            )
             
     return target_model

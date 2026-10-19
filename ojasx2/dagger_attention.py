@@ -667,12 +667,25 @@ class DaggerAttention(nn.Module):
             q_proj = attn_mod.q_proj
             k_proj = attn_mod.k_proj
             v_proj = attn_mod.v_proj
-            out_proj = getattr(attn_mod, "o_proj", getattr(attn_mod, "out_proj", None))
             dim = q_proj.in_features
-            num_heads = getattr(attn_mod, "num_heads", getattr(attn_mod, "num_attention_heads", 8))
-            head_dim = getattr(attn_mod, "head_dim", dim // num_heads)
+            cfg = getattr(attn_mod, "config", None)
+            head_dim = getattr(attn_mod, "head_dim", getattr(cfg, "head_dim", None))
+            num_heads = getattr(
+                attn_mod,
+                "num_heads",
+                getattr(attn_mod, "num_attention_heads", getattr(cfg, "num_attention_heads", getattr(cfg, "n_heads", None))),
+            )
+            if num_heads is None and head_dim:
+                num_heads = q_proj.out_features // head_dim
+            elif num_heads is None:
+                num_heads = 8
+            if head_dim is None and num_heads:
+                head_dim = q_proj.out_features // num_heads
+
             num_kv_heads = getattr(
-                attn_mod, "num_key_value_heads", k_proj.out_features // head_dim
+                attn_mod,
+                "num_key_value_heads",
+                getattr(cfg, "num_key_value_heads", getattr(attn_mod, "n_kv_heads", k_proj.out_features // head_dim)),
             )
             instance = cls(
                 dim=dim,
@@ -684,6 +697,7 @@ class DaggerAttention(nn.Module):
                 k_proj=k_proj,
                 v_proj=v_proj,
                 o_proj=out_proj,
+                return_tuple=True,
             )
             return instance
         raise TypeError(f"Unsupported attention module type for weight preservation: {type(attn_mod)}")
@@ -709,6 +723,12 @@ class DaggerAttention(nn.Module):
         x = hidden_states if hidden_states is not None else query
         if x is None:
             raise ValueError("forward() requires either hidden_states or query argument")
+
+        # Auto-extract modern HuggingFace position_embeddings (RoPE)
+        if rotary_cos is None and rotary_sin is None and "position_embeddings" in kwargs:
+            pos_emb = kwargs["position_embeddings"]
+            if isinstance(pos_emb, (tuple, list)) and len(pos_emb) == 2:
+                rotary_cos, rotary_sin = pos_emb
 
         causal = is_causal if is_causal is not None else self.is_causal
         eff_mask = attn_mask if attn_mask is not None else kwargs.get("attention_mask", None)
