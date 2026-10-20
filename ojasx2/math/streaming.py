@@ -198,8 +198,7 @@ def fused_linear_cross_entropy(
             ignore_index=ignore_index,
             label_smoothing=label_smoothing,
             reduction=reduction,
-            tile_tok=tile_tok,
-            tile_voc=tile_voc,
+            chunk_size=tile_tok,
         )
     except Exception:
         return _fused_cross_entropy_reference(

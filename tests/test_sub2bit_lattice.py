@@ -89,3 +89,17 @@ def test_e8_lattice_linear_sub2bit_modes():
     loss.backward()
     assert layer_1_5.lora_A.grad is not None
     assert layer_1_5.lora_B.grad is not None
+
+
+def test_e8_lattice_linear_default_group_size_1_5():
+    """Verifies that E8LatticeLinear.from_linear with default group_size handles bitrate=1.5 cleanly."""
+    linear = nn.Linear(64, 64)
+    # Default group_size is 8 in from_linear; must not crash with bitrate=1.5
+    layer = E8LatticeLinear.from_linear(linear, bitrate=1.5)
+    assert layer.bitrate == 1.5
+    assert layer.block_scales.shape[0] == (64 * 64) // layer.group_size
+    x = torch.randn(2, 64)
+    out = layer(x)
+    assert out.shape == (2, 64)
+    assert torch.isfinite(out).all()
+

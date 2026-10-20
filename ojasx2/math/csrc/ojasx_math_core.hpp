@@ -509,7 +509,7 @@ inline void fused_e8_gemm_backward_dx(
 
     for (size_t m = 0; m < M; ++m) {
         for (size_t k = 0; k < K; ++k) {
-            const size_t g = k / group_size;
+            const size_t g = (num_scale_groups > 0) ? std::min(k / group_size, num_scale_groups - 1) : 0;
             const size_t b_idx = k / 4;
             const size_t shift = (k % 4) * 2;
             float acc = 0.0f;

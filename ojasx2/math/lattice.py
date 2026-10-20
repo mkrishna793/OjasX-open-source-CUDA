@@ -73,8 +73,8 @@ def fast_walsh_hadamard_transform(x: torch.Tensor) -> torch.Tensor:
     """
     orig_shape = x.shape
     n = orig_shape[-1]
-    if (n & (n - 1)) != 0:
-        raise ValueError(f"Last dimension ({n}) must be an exact power of 2 for FWHT.")
+    if n <= 0 or (n & (n - 1)) != 0:
+        raise ValueError(f"Last dimension ({n}) must be a positive power of 2 for FWHT.")
     
     out = x.clone()
     h = 1
@@ -521,7 +521,11 @@ class E8LatticeLinear(nn.Module):
         self.bitrate = bitrate
         
         total_elements = out_features * in_features
-        eff_group = group_size if total_elements % group_size == 0 else (16 if bitrate == 1.5 else 8)
+        if bitrate == 1.5:
+            eff_group = group_size if (group_size >= 16 and total_elements % group_size == 0) else 16
+        else:
+            eff_group = group_size if total_elements % group_size == 0 else 8
+        self.group_size = eff_group
         num_scales = total_elements // eff_group
         
         if bitrate == 1.5:
@@ -567,20 +571,21 @@ class E8LatticeLinear(nn.Module):
         bitrate: float = 2.0,
     ) -> E8LatticeLinear:
         """Constructs an E8LatticeLinear by packing an existing nn.Linear module."""
+        eff_gs = max(16, group_size) if bitrate == 1.5 else group_size
         m = cls(
             linear.in_features,
             linear.out_features,
             bias=(linear.bias is not None),
             rank=rank,
             lora_alpha=lora_alpha,
-            group_size=group_size,
+            group_size=eff_gs,
             bitrate=bitrate,
             device=linear.weight.device,
             dtype=linear.weight.dtype
         )
         with torch.no_grad():
             packer = TernaryE8LatticePacker if bitrate == 1.5 else E8LatticePacker
-            packed, scales, _ = packer.pack(linear.weight, group_size=group_size)
+            packed, scales, _ = packer.pack(linear.weight, group_size=m.group_size)
             m.packed_weight.copy_(packed)
             m.block_scales.copy_(scales)
             if linear.bias is not None:
@@ -740,8 +745,9 @@ def pack_model_e8(
             is_targeted = True
             
         if is_linear and is_targeted:
-            # Only pack if dimensions are compatible with 8D blocks
-            if (module.in_features * module.out_features) % 8 == 0:
+            # Only pack if dimensions are compatible with lattice blocks (16 for 1.5 b/w, 8 for 2.0 b/w)
+            req_div = 16 if bitrate == 1.5 else 8
+            if (module.in_features * module.out_features) % req_div == 0:
                 e8_layer = E8LatticeLinear.from_linear(
                     module,
                     rank=rank,

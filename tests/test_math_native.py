@@ -94,3 +94,18 @@ def test_native_conway_sloane_e8():
         else:
             assert int(torch.round(torch.sum(pt - 0.5)).item()) % 2 == 0
 
+
+def test_native_conway_sloane_e8_half_and_bfloat16():
+    """Verifies that Conway-Sloane E8 projection supports float16 and bfloat16 without error."""
+    torch.manual_seed(42)
+    x_f16 = torch.randn(10, 8, dtype=torch.float16)
+    p_f16 = native.conway_sloane_e8_project_tensor(x_f16)
+    assert p_f16.shape == (10, 8)
+    assert p_f16.dtype == torch.float16
+
+    x_bf16 = torch.randn(10, 8, dtype=torch.bfloat16)
+    p_bf16 = native.conway_sloane_e8_project_tensor(x_bf16)
+    assert p_bf16.shape == (10, 8)
+    assert p_bf16.dtype == torch.bfloat16
+
+

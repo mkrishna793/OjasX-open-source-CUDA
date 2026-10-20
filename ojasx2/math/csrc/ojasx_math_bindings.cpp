@@ -107,10 +107,10 @@ at::Tensor structured_pullback_tensor(
     TORCH_CHECK(v.size(-1) == n, "Last dimension of v must match n");
 
     const auto orig_dtype = v.scalar_type();
-    at::Tensor v_fp32 = v.to(at::kFloat).contiguous();
-    at::Tensor d_fp32 = d.to(at::kFloat).contiguous();
-    at::Tensor U_fp32 = U.to(at::kFloat).contiguous();
-    at::Tensor V_fp32 = V.to(at::kFloat).contiguous();
+    at::Tensor v_fp32 = v.to(at::kCPU, at::kFloat).contiguous();
+    at::Tensor d_fp32 = d.to(at::kCPU, at::kFloat).contiguous();
+    at::Tensor U_fp32 = U.to(at::kCPU, at::kFloat).contiguous();
+    at::Tensor V_fp32 = V.to(at::kCPU, at::kFloat).contiguous();
 
     const int64_t total_elements = v_fp32.numel();
     const int64_t batch_size = total_elements / n;
@@ -148,7 +148,7 @@ at::Tensor structured_pullback_tensor(
         });
     }
 
-    return out_fp32.to(orig_dtype);
+    return out_fp32.to(v.device(), orig_dtype);
 }
 
 // ============================================================================
@@ -168,8 +168,8 @@ at::Tensor halley_invert_activation_tensor(
     TORCH_CHECK(y.sizes() == branch_bit.sizes(), "y and branch_bit must have identical shapes");
     const auto orig_dtype = y.scalar_type();
 
-    at::Tensor y_fp32 = y.to(at::kFloat).contiguous();
-    at::Tensor b_u8 = branch_bit.to(at::kByte).contiguous();
+    at::Tensor y_fp32 = y.to(at::kCPU, at::kFloat).contiguous();
+    at::Tensor b_u8 = branch_bit.to(at::kCPU, at::kByte).contiguous();
     at::Tensor z_fp32 = at::empty_like(y_fp32);
 
     const int64_t numel = y_fp32.numel();
@@ -218,7 +218,7 @@ at::Tensor halley_invert_activation_tensor(
         });
     }
 
-    return z_fp32.to(orig_dtype);
+    return z_fp32.to(y.device(), orig_dtype);
 }
 
 // ============================================================================
@@ -226,12 +226,12 @@ at::Tensor halley_invert_activation_tensor(
 // ============================================================================
 at::Tensor conway_sloane_e8_project_tensor(at::Tensor x) {
     TORCH_CHECK(x.size(-1) == 8, "Last dimension of x must be 8 for E8 lattice");
-    auto x_contig = x.contiguous();
-    auto out = at::empty_like(x_contig);
+    auto x_cpu = x.to(at::kCPU).contiguous();
+    auto out = at::empty_like(x_cpu);
     const int64_t num_blocks = x.numel() / 8;
 
-    AT_DISPATCH_FLOATING_TYPES(x.scalar_type(), "conway_sloane_e8_project_cpu", [&] {
-        const scalar_t* in_ptr = x_contig.data_ptr<scalar_t>();
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, x.scalar_type(), "conway_sloane_e8_project_cpu", [&] {
+        const scalar_t* in_ptr = x_cpu.data_ptr<scalar_t>();
         scalar_t* out_ptr = out.data_ptr<scalar_t>();
 
         at::parallel_for(0, num_blocks, 1024, [&](int64_t begin, int64_t end) {
@@ -243,7 +243,7 @@ at::Tensor conway_sloane_e8_project_tensor(at::Tensor x) {
             }
         });
     });
-    return out;
+    return out.to(x.device());
 }
 
 /**
@@ -262,6 +262,7 @@ at::Tensor fused_e8_gemm_fwd(
     packed_weight = packed_weight.contiguous();
     block_scales = block_scales.contiguous();
     TORCH_CHECK(packed_weight.scalar_type() == at::kByte, "packed_weight must be uint8");
+    TORCH_CHECK(group_size > 0 && group_size % 4 == 0, "group_size must be a positive multiple of 4");
 
     const int64_t K = x.size(-1);
     const int64_t N = packed_weight.size(0);
@@ -328,9 +329,14 @@ at::Tensor fused_e8_gemm_bwd_dx(
     grad_y = grad_y.contiguous();
     packed_weight = packed_weight.contiguous();
     block_scales = block_scales.contiguous();
+    TORCH_CHECK(packed_weight.scalar_type() == at::kByte, "packed_weight must be uint8");
+    TORCH_CHECK(packed_weight.dim() == 2, "packed_weight must be 2D [N, K / 4]");
+    TORCH_CHECK(packed_weight.size(1) == in_features / 4, "packed_weight dim 1 must match in_features / 4");
+    TORCH_CHECK(group_size > 0 && group_size % 4 == 0, "group_size must be a positive multiple of 4");
 
     const int64_t K = in_features;
     const int64_t N = packed_weight.size(0);
+    TORCH_CHECK(grad_y.size(-1) == N, "Last dimension of grad_y must match N");
 
     auto gy_flat = grad_y.reshape({-1, N});
     const int64_t M = gy_flat.size(0);

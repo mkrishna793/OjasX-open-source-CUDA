@@ -78,7 +78,9 @@ def _extract_mask_tile(
             if attn_mask.shape[0] == B * H:
                 m_tile = attn_mask.view(B, H, Sq, Skv)[:, :, r_start:r_end, c_start:c_end]
             else:
-                m_tile = attn_mask[:, r_start:r_end, c_start:c_end].unsqueeze(1)
+                r_sl = slice(r_start, r_end) if attn_mask.size(1) > 1 else slice(None)
+                c_sl = slice(c_start, c_end) if attn_mask.size(2) > 1 else slice(None)
+                m_tile = attn_mask[:, r_sl, c_sl].unsqueeze(1)
             if m_tile.dtype == torch.bool:
                 bool_mask = m_tile
             else:
@@ -624,6 +626,8 @@ class DaggerAttention(nn.Module):
         self.tile_size = tile_size
         self.batch_first = batch_first
         self.return_tuple = return_tuple
+        self.is_sliding = False
+        self.sliding_window = None
 
         # nn.MultiheadAttention duck-typing attributes
         self._qkv_same_embed_dim = False
@@ -688,11 +692,11 @@ class DaggerAttention(nn.Module):
                 "num_key_value_heads",
                 getattr(cfg, "num_key_value_heads", getattr(attn_mod, "n_kv_heads", k_proj.out_features // head_dim)),
             )
-            return_tuple = getattr(
-                attn_mod,
-                "return_tuple",
-                getattr(getattr(attn_mod, "config", None), "return_tuple", False),
-            )
+            cfg = getattr(attn_mod, "config", None)
+            if cfg is not None:
+                return_tuple = getattr(attn_mod, "return_tuple", getattr(cfg, "return_tuple", True))
+            else:
+                return_tuple = getattr(attn_mod, "return_tuple", False)
             instance = cls(
                 dim=dim,
                 num_heads=num_heads,
@@ -705,6 +709,11 @@ class DaggerAttention(nn.Module):
                 o_proj=out_proj,
                 return_tuple=return_tuple,
             )
+            instance.is_sliding = getattr(attn_mod, "is_sliding", False)
+            instance.sliding_window = getattr(
+                attn_mod, "sliding_window", getattr(getattr(attn_mod, "config", None), "sliding_window", None)
+            )
+            instance.layer_idx = getattr(attn_mod, "layer_idx", 0)
             return instance
         raise TypeError(f"Unsupported attention module type for weight preservation: {type(attn_mod)}")
 
@@ -736,10 +745,10 @@ class DaggerAttention(nn.Module):
             if isinstance(pos_emb, (tuple, list)) and len(pos_emb) == 2:
                 rotary_cos, rotary_sin = pos_emb
 
+
         causal = is_causal if is_causal is not None else self.is_causal
         eff_mask = attn_mask if attn_mask is not None else kwargs.get("attention_mask", None)
-        if eff_mask is None and key_padding_mask is not None:
-            eff_mask = key_padding_mask
+        kpm = key_padding_mask if key_padding_mask is not None else kwargs.get("key_padding_mask", None)
 
         # Case 1: Already projected 4D inputs [B, H, S, d]
         if x.ndim == 4 and key is not None and value is not None and key.ndim == 4:
@@ -749,9 +758,10 @@ class DaggerAttention(nn.Module):
                 value,
                 is_causal=causal,
                 attn_mask=eff_mask,
-                key_padding_mask=key_padding_mask,
+                key_padding_mask=kpm,
             )
-            if need_weights is not None or self.return_tuple:
+            ret_tuple = self.return_tuple or (need_weights is not None) or bool(kwargs.get("output_attentions", False))
+            if ret_tuple:
                 return out, None
             return out
 
@@ -759,6 +769,10 @@ class DaggerAttention(nn.Module):
         is_2d = x.dim() == 2
         if is_2d:
             x = x.unsqueeze(1)
+        if key is not None and key.dim() == 2:
+            key = key.unsqueeze(1)
+        if value is not None and value.dim() == 2:
+            value = value.unsqueeze(1)
 
         # Handle batch_first=False [S, B, D] -> [B, S, D]
         if not self.batch_first and x.ndim == 3 and not is_2d:
@@ -781,6 +795,14 @@ class DaggerAttention(nn.Module):
             d_half = self.head_dim // 2
             cos_eff = torch.cat([rotary_cos, rotary_cos], dim=-1) if rotary_cos.shape[-1] == d_half else rotary_cos
             sin_eff = torch.cat([rotary_sin, rotary_sin], dim=-1) if rotary_sin.shape[-1] == d_half else rotary_sin
+            if cos_eff.ndim == 3:
+                cos_eff = cos_eff.unsqueeze(1)
+            elif cos_eff.ndim == 2:
+                cos_eff = cos_eff.unsqueeze(0).unsqueeze(1)
+            if sin_eff.ndim == 3:
+                sin_eff = sin_eff.unsqueeze(1)
+            elif sin_eff.ndim == 2:
+                sin_eff = sin_eff.unsqueeze(0).unsqueeze(1)
             q1, q2 = q[..., :d_half], q[..., d_half : 2 * d_half]
             k1, k2 = k[..., :d_half], k[..., d_half : 2 * d_half]
             q_rot = torch.cat([-q2, q1], dim=-1)
@@ -788,9 +810,18 @@ class DaggerAttention(nn.Module):
             q = q * cos_eff + q_rot * sin_eff
             k = k * cos_eff + k_rot * sin_eff
 
-        if past_key_value is not None:
-            k = torch.cat([past_key_value[0], k], dim=2)
-            v = torch.cat([past_key_value[1], v], dim=2)
+        pkv = past_key_value
+        if pkv is None:
+            pkv = kwargs.get("past_key_values", kwargs.get("past_key_value", None))
+
+        if use_cache and pkv is not None:
+            if hasattr(pkv, "update"):
+                layer_idx = getattr(self, "layer_idx", 0)
+                cache_kwargs = kwargs.get("cache_kwargs", {})
+                k, v = pkv.update(k, v, layer_idx, cache_kwargs)
+            elif isinstance(pkv, (tuple, list)) and len(pkv) >= 2 and isinstance(pkv[0], torch.Tensor):
+                k = torch.cat([pkv[0], k], dim=2)
+                v = torch.cat([pkv[1], v], dim=2)
 
         present_kv = (k, v) if use_cache else None
 
@@ -799,6 +830,7 @@ class DaggerAttention(nn.Module):
             k,
             v,
             attn_mask=eff_mask,
+            key_padding_mask=kpm,
             is_causal=causal,
             tile_size=self.tile_size,
             dropout_p=self.dropout,
@@ -812,10 +844,11 @@ class DaggerAttention(nn.Module):
         elif not self.batch_first:
             out = out.transpose(0, 1)
 
+        ret_tuple = self.return_tuple or (need_weights is not None) or bool(kwargs.get("output_attentions", False))
+        if ret_tuple:
+            return out, None
         if use_cache:
             return out, present_kv
-        if need_weights is not None or self.return_tuple:
-            return out, None
         return out
 
 

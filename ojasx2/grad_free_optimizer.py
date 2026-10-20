@@ -101,7 +101,8 @@ class HolonomicGradFreeOptimizer(Optimizer):
     def _make_hook(self, param: nn.Parameter) -> Any:
         @torch.no_grad()
         def _hook(_p: nn.Parameter) -> None:
-            if not self.enabled:
+            group = self._param_to_group.get(_p, self.param_groups[0])
+            if not (self.enabled and group.get("enabled", True)):
                 return
 
             grad = _p.grad
@@ -109,7 +110,6 @@ class HolonomicGradFreeOptimizer(Optimizer):
                 return
 
             grad_bytes = grad.numel() * grad.element_size()
-            group = self._param_to_group.get(_p, self.param_groups[0])
             grad_accum_steps = int(group.get("grad_accum_steps", self.grad_accum_steps))
 
             st = self.state[_p]
@@ -301,6 +301,9 @@ class HolonomicGradFreeOptimizer(Optimizer):
                         p.grad = None
                     else:
                         p.grad.zero_()
+                if p in self.state:
+                    self.state[p]["grad_accum"] = None
+                    self.state[p]["accum_count"] = 0
 
     def step(self, closure: Optional[Any] = None) -> Optional[float]:
         """Updates applied during backward hook. Calling step() is a valid no-op for API compatibility."""

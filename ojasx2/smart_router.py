@@ -1396,11 +1396,17 @@ class _CheckpointedDecoderLayer(nn.Module):
             return getattr(self.block, name)
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
-        if self.training and any(
+        has_grad_tensor = any(
             isinstance(a, torch.Tensor) and a.requires_grad for a in args
-        ):
+        ) or any(
+            isinstance(v, torch.Tensor) and v.requires_grad for v in kwargs.values()
+        )
+        if self.training and has_grad_tensor:
+            eff_kwargs = dict(kwargs)
+            if "use_cache" in eff_kwargs:
+                eff_kwargs["use_cache"] = False
             return checkpoint(
-                lambda *a: self.block(*a, **kwargs),
+                lambda *a: self.block(*a, **eff_kwargs),
                 *args,
                 use_reentrant=False,
             )
@@ -1521,6 +1527,8 @@ def optimize_model(
 
         # Wrap decoder layers in activation checkpointing (skipping container dictionaries / lists)
         if enable_checkpointing and not has_symplectic:
+            if hasattr(model, "config") and hasattr(model.config, "use_cache"):
+                model.config.use_cache = False
             if hasattr(model, "enable_input_require_grads"):
                 try:
                     model.enable_input_require_grads()
