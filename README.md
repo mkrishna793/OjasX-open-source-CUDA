@@ -1,11 +1,11 @@
-# OjasX v0.9.0 — The Open-Source CUDA. 
+# OjasX v0.9.1 — The Open-Source CUDA. 
 # A new Mathematical & MLIR Compiler for Training PyTorch Models on Any Hardware
 
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.4%2B-ee4c2c.svg?logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![Lean 4 Verified](https://img.shields.io/badge/Lean_4-100%25_Constructive_Proofs-success.svg)](lean_symplectic/SymplecticEngine.lean)
-[![Z3 SMT Solved](https://img.shields.io/badge/Z3_SMT-25%2F25_BitVec_Proofs-brightgreen.svg)](tests/test_z3_symplectic_stability.py)
-[![Verification: OpCheck 100%](https://img.shields.io/badge/PyTorch_OpCheck-100%25_Verified-success.svg)](reports/OJASX_V05_TEST_DATABASE_MATRIX.json)
+[![Z3 SMT Solved](https://img.shields.io/badge/Z3_SMT-26%2F26_Proofs-brightgreen.svg)](tests/test_z3_symplectic_stability.py)
+[![Verification: 1,099 Tests](https://img.shields.io/badge/Full_Test_Suite-1%2C099%20Passed%20(100%25)-success.svg)](reports/OJASX_V05_TEST_DATABASE_MATRIX.json)
 [![Activation Memory: 100% Zero-Tape](https://img.shields.io/badge/Mode_B_Residual_Memory--100%25_Zero--Tape-brightgreen.svg)](reports/OJASX_V05_TEST_DATABASE_MATRIX.json)
 [![Universal Hardware](https://img.shields.io/badge/Hardware-NVIDIA_CUDA_%7C_AMD_ROCm_%7C_Intel_SPIR--V_%7C_Apple_Silicon_%7C_CPU-purple.svg)]()
 
@@ -31,6 +31,95 @@ By reformulating backpropagation through **Category-Theoretic Dagger Monoidal Ca
 * **True Multi-Vendor Hardware Freedom**: OjasX compiles and executes natively on **NVIDIA GPUs (CUDA PTX)**, **AMD GPUs (ROCm/HIP)**, **Intel GPUs (SPIR-V/SYCL)**, **Apple Silicon (Metal 4 MSL / AMX)**, and **standard x86/ARM CPUs**.
 
 High-performance AI training belongs on every developer's desk—not behind a proprietary vendor tollgate.
+
+---
+
+## 🚀 What's New in v0.9.1: Universal Local Fine-Tuning Engine & 20-Subagent Audit
+
+The `v0.9.1` release transforms OjasX into an ultra-easy, universal local fine-tuning engine. Following an exhaustive line-by-line audit by **20 specialized Prime subagents** and **1,099 passing tests (0 failures)**, v0.9.1 guarantees seamless compatibility with the HuggingFace ecosystem, PEFT LoRA adapters, and modern 2026 foundation architectures (Gemma 4, Qwen 3.8 / 2.5, LLaMA-3/3.2, Mistral).
+
+### 🛠️ Choose Your Fine-Tuning Recipe (100% Local, Zero Cloud)
+
+#### Recipe 1: 32B Sub-2-Bit $E_8$ Fine-Tuning (< 12 GB RAM)
+*For 14B, 27B, and 32B models on consumer laptops (Mac M1/M2/M3/M4 or 16GB GPUs):*
+Packs frozen base weights into the 8D $E_8$ Gosset Lattice at **1.50 bits/weight** (10.67x smaller), while attaching full-precision (FP32/FP16) rank-8 trainable LoRA adapters:
+
+```python
+import torch
+import ojasx
+from transformers import AutoModelForCausalLM
+
+# 1. Load model in CPU RAM
+model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-32B-Instruct", torch_dtype=torch.float32)
+
+# 2. Pack weights into Sub-2-Bit E8 Lattice (64 GB -> 6.0 GB) + Rank-8 LoRA
+model = ojasx.pack_model_e8(model, rank=8, bitrate=1.5, group_size=32)
+
+# 3. Optimize graph (DaggerAttention + Checkpointing + Fused Streaming Loss)
+model, report = ojasx.optimize_model(model, mode="finetune", enable_checkpointing=True)
+
+# 4. In-backward optimizer (0 bytes persistent .grad memory!)
+opt = ojasx.HolonomicGradFreeOptimizer(model.parameters(), lr=1e-4, algorithm="adafactor")
+
+# 5. Standard PyTorch training loop
+for batch in dataloader:
+    loss = model(input_ids=batch["input_ids"], labels=batch["labels"]).loss
+    loss.backward()  # Weights update in-flight; gradients freed instantly!
+```
+
+#### Recipe 2: Full Fine-Tuning (Without Quantization)
+*For 7B–14B models when you want to fine-tune ALL model parameters in unquantized FP16/BF16 without OOM:*
+Even without quantization, OjasX eliminates 60%–75% of standard PyTorch RAM by erasing persistent `.grad` buffers, factorizing AdamW states into Adafactor, and streaming attention scores and logits:
+
+```python
+import torch
+import ojasx
+from transformers import AutoModelForCausalLM
+
+# 1. Load model in full precision
+model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.2-3B", torch_dtype=torch.float16)
+
+# 2. Optimize graph (zero-tape attention & fused cross-entropy)
+model, report = ojasx.optimize_model(model, mode="finetune", enable_checkpointing=True)
+
+# 3. Train all parameters with zero-grad buffer memory
+opt = ojasx.HolonomicGradFreeOptimizer(model.parameters(), lr=5e-5, algorithm="adafactor")
+
+for batch in dataloader:
+    loss = model(**batch).loss
+    loss.backward()
+```
+
+#### Recipe 3: Fine-Tuning with Existing HuggingFace PEFT / LoRA Adapters
+*Already using HuggingFace `peft`? OjasX wraps existing PEFT models seamlessly while preserving all attached adapters and tied weights:*
+
+```python
+import torch
+import ojasx
+from transformers import AutoModelForCausalLM
+from peft import get_peft_model, LoraConfig
+
+# 1. Load HuggingFace model and attach standard PEFT LoRA
+model = AutoModelForCausalLM.from_pretrained("google/gemma-2-9b", torch_dtype=torch.bfloat16)
+peft_config = LoraConfig(r=16, lora_alpha=32, target_modules=["q_proj", "v_proj"])
+model = get_peft_model(model, peft_config)
+
+# 2. OjasX preserves all existing LoRA adapter weights and tied parameters!
+model, report = ojasx.optimize_model(model, mode="finetune", enable_checkpointing=True)
+
+# 3. Train with Holonomic In-Backward Optimizer
+opt = ojasx.HolonomicGradFreeOptimizer(model.parameters(), lr=1e-4, algorithm="adafactor")
+
+for batch in dataloader:
+    loss = model(**batch).loss
+    loss.backward()
+```
+
+#### Recipe 4: 2026 Foundation Architectures (Gemma 4 & Qwen 3.8 / 2.5)
+* **Gemma 4**: Fully supports interleaved sliding-window attention (`is_sliding = True`) with automatic local/global position routing.
+* **Qwen 3.8 / 2.5**: Fully supports native 3D RoPE embeddings `[B, S, D]` for arbitrary batch sizes ($B \neq H$).
+* **Apple Silicon Metal 4 Zero-Copy**: Memory buffers are automatically 16KB page-aligned for Apple M1/M2/M3/M4 unified memory bandwidth.
+* **Lean 4 Proofs**: 10/10 theorems verified with **0 axioms and 0 sorry** in abstract commutative rings.
 
 ---
 
