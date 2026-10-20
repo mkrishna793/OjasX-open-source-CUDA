@@ -434,6 +434,97 @@ inline void unpack_2bit_byte(uint8_t byte_val, T scale, T* out4) {
     out4[3] = (static_cast<T>((byte_val >> 6) & 0x03) - static_cast<T>(1.5)) * scale;
 }
 
+/**
+ * Fused on-the-fly register-dequantization GEMM forward:
+ * Y = X @ W_dequant^T + Bias
+ * Eliminates intermediate [N, K] float weight tensor materialization in DRAM.
+ */
+template <typename T>
+inline void fused_e8_gemm_forward(
+    const T* __restrict__ X,
+    const uint8_t* __restrict__ W_packed,
+    const T* __restrict__ Scales,
+    const T* __restrict__ Bias,
+    T* __restrict__ Y,
+    size_t M,
+    size_t K,
+    size_t N,
+    size_t group_size = 32
+) {
+    const size_t packed_k_stride = K / 4;
+    const size_t num_scale_groups = K / group_size;
+
+    for (size_t m = 0; m < M; ++m) {
+        for (size_t n = 0; n < N; ++n) {
+            float acc = (Bias != nullptr) ? static_cast<float>(Bias[n]) : 0.0f;
+            const uint8_t* w_row = W_packed + n * packed_k_stride;
+            const T* s_row = Scales + n * num_scale_groups;
+            const T* x_row = X + m * K;
+
+            for (size_t g = 0; g < num_scale_groups; ++g) {
+                const float scale = static_cast<float>(s_row[g]);
+                const size_t byte_start = (g * group_size) / 4;
+                const size_t bytes_per_group = group_size / 4;
+                float group_acc = 0.0f;
+
+                for (size_t b = 0; b < bytes_per_group; ++b) {
+                    const uint8_t byte_val = w_row[byte_start + b];
+                    const size_t k_idx = g * group_size + b * 4;
+
+                    const float c0 = static_cast<float>(byte_val & 0x03) - 1.5f;
+                    const float c1 = static_cast<float>((byte_val >> 2) & 0x03) - 1.5f;
+                    const float c2 = static_cast<float>((byte_val >> 4) & 0x03) - 1.5f;
+                    const float c3 = static_cast<float>((byte_val >> 6) & 0x03) - 1.5f;
+
+                    group_acc += static_cast<float>(x_row[k_idx + 0]) * c0
+                               + static_cast<float>(x_row[k_idx + 1]) * c1
+                               + static_cast<float>(x_row[k_idx + 2]) * c2
+                               + static_cast<float>(x_row[k_idx + 3]) * c3;
+                }
+                acc += group_acc * scale;
+            }
+            Y[m * N + n] = static_cast<T>(acc);
+        }
+    }
+}
+
+/**
+ * Fused on-the-fly register-dequantization GEMM backward dx:
+ * dX = dY @ W_dequant
+ * Computes input gradients without materializing uncompressed weights.
+ */
+template <typename T>
+inline void fused_e8_gemm_backward_dx(
+    const T* __restrict__ dY,
+    const uint8_t* __restrict__ W_packed,
+    const T* __restrict__ Scales,
+    T* __restrict__ dX,
+    size_t M,
+    size_t K,
+    size_t N,
+    size_t group_size = 32
+) {
+    const size_t packed_k_stride = K / 4;
+    const size_t num_scale_groups = K / group_size;
+
+    for (size_t m = 0; m < M; ++m) {
+        for (size_t k = 0; k < K; ++k) {
+            const size_t g = k / group_size;
+            const size_t b_idx = k / 4;
+            const size_t shift = (k % 4) * 2;
+            float acc = 0.0f;
+
+            for (size_t n = 0; n < N; ++n) {
+                const uint8_t byte_val = W_packed[n * packed_k_stride + b_idx];
+                const float scale = static_cast<float>(Scales[n * num_scale_groups + g]);
+                const float w_val = (static_cast<float>((byte_val >> shift) & 0x03) - 1.5f) * scale;
+                acc += static_cast<float>(dY[m * N + n]) * w_val;
+            }
+            dX[m * K + k] = static_cast<T>(acc);
+        }
+    }
+}
+
 } // namespace lattice
 
 } // namespace ojasx::math

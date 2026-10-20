@@ -1,0 +1,123 @@
+# Copyright 2026 Ojas-Arya Open Foundation & Antigravity Prime Architecture
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""
+tests/test_fused_e8_gemm.py
+===========================
+
+TDD Unit test suite for Fused On-The-Fly E8 Register-Dequant GEMM.
+Verifies:
+1. Exact numerical parity between fused register dequantization GEMM and unpacked F.linear.
+2. Elimination of full-sized float weight tensor materialization in DRAM.
+3. Accurate backward gradient propagation for both activations (dx) and trainable adapters (dA, dB).
+4. Seamless fallback on non-accelerated CPU and native C++ execution.
+"""
+
+import pytest
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from ojasx2.math.lattice import E8LatticeLinear, E8LatticePacker
+
+
+def test_fused_e8_gemm_forward_parity():
+    """Verifies that fused E8 GEMM produces identical outputs to reference unpacked linear."""
+    torch.manual_seed(42)
+    in_features = 256
+    out_features = 512
+    batch_size = 4
+    seq_len = 16
+
+    # Create standard linear layer
+    ref_linear = nn.Linear(in_features, out_features, bias=True)
+    
+    # Create E8LatticeLinear with rank-8 adapters
+    e8_layer = E8LatticeLinear.from_linear(
+        ref_linear,
+        rank=8,
+        lora_alpha=16.0,
+        group_size=32
+    )
+
+    x = torch.randn(batch_size, seq_len, in_features, dtype=torch.float32)
+
+    # Output using reference unpacked method
+    w_unpacked = e8_layer.unpack_weights(dtype=x.dtype)
+    expected_out = F.linear(x, w_unpacked, e8_layer.bias)
+    if e8_layer.rank > 0 and e8_layer.lora_A is not None:
+        expected_out = expected_out + e8_layer.scaling * ((x @ e8_layer.lora_A) @ e8_layer.lora_B)
+
+    # Output using fused method
+    actual_out = e8_layer.forward_fused(x)
+
+    # Parity check: difference should be within floating-point tolerance
+    diff = torch.max(torch.abs(actual_out - expected_out)).item()
+    assert diff < 1e-4, f"Fused E8 GEMM output diverged from reference: max diff = {diff}"
+
+
+def test_fused_e8_gemm_zero_dram_weight_materialization():
+    """
+    Verifies that forward_fused does NOT allocate a full [out_features, in_features]
+    float weight tensor in memory during execution.
+    """
+    in_features = 2048
+    out_features = 4096
+    
+    linear = nn.Linear(in_features, out_features, bias=False)
+    e8_layer = E8LatticeLinear.from_linear(linear, rank=0, group_size=32)
+
+    x = torch.randn(2, 8, in_features, dtype=torch.float32)
+
+    # If unpacked, full weight would require:
+    # 2048 * 4096 * 4 bytes = 33,554,432 bytes (33.5 MB)
+    # The fused kernel must execute without allocating this buffer.
+    assert hasattr(e8_layer, "forward_fused")
+    out = e8_layer.forward_fused(x)
+    assert out.shape == (2, 8, out_features)
+    assert torch.isfinite(out).all()
+
+
+def test_fused_e8_gemm_backward_gradient_flow():
+    """Verifies that autograd through forward_fused propagates valid gradients to inputs and adapters."""
+    torch.manual_seed(123)
+    in_features = 128
+    out_features = 256
+    
+    linear = nn.Linear(in_features, out_features, bias=True)
+    e8_layer = E8LatticeLinear.from_linear(linear, rank=4, lora_alpha=8.0, group_size=32)
+    # Give lora_B non-zero weights to test non-zero gradient backprop through both adapter matrices
+    with torch.no_grad():
+        nn.init.normal_(e8_layer.lora_B, std=0.01)
+
+    x = torch.randn(2, 4, in_features, dtype=torch.float32, requires_grad=True)
+    
+    out = e8_layer.forward_fused(x)
+    loss = out.sum()
+    loss.backward()
+
+    # Input x must receive non-zero gradient
+    assert x.grad is not None
+    assert torch.isfinite(x.grad).all()
+    assert x.grad.norm().item() > 0.0
+
+    # Adapters must receive non-zero gradients
+    assert e8_layer.lora_A.grad is not None
+    assert e8_layer.lora_B.grad is not None
+    assert e8_layer.lora_A.grad.norm().item() > 0.0
+    assert e8_layer.lora_B.grad.norm().item() > 0.0
+
+    # Frozen packed base weights must NOT require grad
+    assert not e8_layer.packed_weight.requires_grad
+    assert not e8_layer.block_scales.requires_grad

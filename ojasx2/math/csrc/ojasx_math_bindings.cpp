@@ -246,6 +246,128 @@ at::Tensor conway_sloane_e8_project_tensor(at::Tensor x) {
     return out;
 }
 
+/**
+ * Fused on-the-fly register-dequantization GEMM forward:
+ * Y = X @ W_dequant^T + Bias
+ * Eliminates intermediate [N, K] float weight tensor materialization in DRAM.
+ */
+at::Tensor fused_e8_gemm_fwd(
+    at::Tensor x,
+    at::Tensor packed_weight,
+    at::Tensor block_scales,
+    c10::optional<at::Tensor> bias,
+    int64_t group_size = 32
+) {
+    x = x.contiguous();
+    packed_weight = packed_weight.contiguous();
+    block_scales = block_scales.contiguous();
+    TORCH_CHECK(packed_weight.scalar_type() == at::kByte, "packed_weight must be uint8");
+
+    const int64_t K = x.size(-1);
+    const int64_t N = packed_weight.size(0);
+    const int64_t packed_k = packed_weight.size(1);
+    TORCH_CHECK(packed_k == K / 4, "packed_weight dim 1 must match in_features / 4");
+
+    auto x_flat = x.reshape({-1, K});
+    const int64_t M = x_flat.size(0);
+
+    auto out_shape = x.sizes().vec();
+    out_shape.back() = N;
+    at::Tensor y = at::empty(out_shape, x.options());
+    auto y_flat = y.reshape({M, N});
+
+    at::Tensor scales_contig = block_scales.to(x.scalar_type()).contiguous();
+    at::Tensor bias_contig;
+    const void* bias_ptr = nullptr;
+    if (bias.has_value() && bias->defined()) {
+        bias_contig = bias->to(x.scalar_type()).contiguous();
+        bias_ptr = bias_contig.data_ptr();
+    }
+
+    const uint8_t* w_ptr = packed_weight.data_ptr<uint8_t>();
+    const void* s_data_ptr = scales_contig.data_ptr();
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, x.scalar_type(), "fused_e8_gemm_fwd", [&] {
+        const scalar_t* x_ptr = x_flat.data_ptr<scalar_t>();
+        const scalar_t* s_ptr = reinterpret_cast<const scalar_t*>(s_data_ptr);
+        const scalar_t* b_ptr = reinterpret_cast<const scalar_t*>(bias_ptr);
+        scalar_t* y_ptr = y_flat.data_ptr<scalar_t>();
+
+        at::parallel_for(0, M, 1, [&](int64_t start, int64_t end) {
+            for (int64_t m = start; m < end; ++m) {
+                ojasx::math::lattice::fused_e8_gemm_forward<scalar_t>(
+                    x_ptr + m * K,
+                    w_ptr,
+                    s_ptr,
+                    b_ptr,
+                    y_ptr + m * N,
+                    1,
+                    static_cast<size_t>(K),
+                    static_cast<size_t>(N),
+                    static_cast<size_t>(group_size)
+                );
+            }
+        });
+    });
+
+    return y;
+}
+
+/**
+ * Fused on-the-fly register-dequantization GEMM backward dx:
+ * dX = dY @ W_dequant
+ * Computes input gradients without materializing uncompressed weights.
+ */
+at::Tensor fused_e8_gemm_bwd_dx(
+    at::Tensor grad_y,
+    at::Tensor packed_weight,
+    at::Tensor block_scales,
+    int64_t in_features,
+    int64_t group_size = 32
+) {
+    grad_y = grad_y.contiguous();
+    packed_weight = packed_weight.contiguous();
+    block_scales = block_scales.contiguous();
+
+    const int64_t K = in_features;
+    const int64_t N = packed_weight.size(0);
+
+    auto gy_flat = grad_y.reshape({-1, N});
+    const int64_t M = gy_flat.size(0);
+
+    auto out_shape = grad_y.sizes().vec();
+    out_shape.back() = K;
+    at::Tensor grad_x = at::empty(out_shape, grad_y.options());
+    auto gx_flat = grad_x.reshape({M, K});
+
+    at::Tensor scales_contig = block_scales.to(grad_y.scalar_type()).contiguous();
+    const uint8_t* w_ptr = packed_weight.data_ptr<uint8_t>();
+    const void* s_data_ptr = scales_contig.data_ptr();
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(at::kHalf, at::kBFloat16, grad_y.scalar_type(), "fused_e8_gemm_bwd_dx", [&] {
+        const scalar_t* gy_ptr = gy_flat.data_ptr<scalar_t>();
+        const scalar_t* s_ptr = reinterpret_cast<const scalar_t*>(s_data_ptr);
+        scalar_t* gx_ptr = gx_flat.data_ptr<scalar_t>();
+
+        at::parallel_for(0, M, 1, [&](int64_t start, int64_t end) {
+            for (int64_t m = start; m < end; ++m) {
+                ojasx::math::lattice::fused_e8_gemm_backward_dx<scalar_t>(
+                    gy_ptr + m * N,
+                    w_ptr,
+                    s_ptr,
+                    gx_ptr + m * K,
+                    1,
+                    static_cast<size_t>(K),
+                    static_cast<size_t>(N),
+                    static_cast<size_t>(group_size)
+                );
+            }
+        });
+    });
+
+    return grad_x;
+}
+
 } // namespace ojasx_math
 
 // ============================================================================
@@ -274,6 +396,14 @@ PYBIND11_MODULE(ojasx_math_native, m) {
           "Fast O(8) algebraic Conway-Sloane snapping to 8D E8 Gosset lattice in C++20",
           py::arg("x"));
 
+    m.def("fused_e8_gemm_fwd", &ojasx_math::fused_e8_gemm_fwd,
+          "Fused on-the-fly register-dequantization GEMM forward without DRAM weight allocation",
+          py::arg("x"), py::arg("packed_weight"), py::arg("block_scales"), py::arg("bias") = py::none(), py::arg("group_size") = 32);
+
+    m.def("fused_e8_gemm_bwd_dx", &ojasx_math::fused_e8_gemm_bwd_dx,
+          "Fused on-the-fly register-dequantization GEMM backward dx without DRAM weight allocation",
+          py::arg("grad_y"), py::arg("packed_weight"), py::arg("block_scales"), py::arg("in_features"), py::arg("group_size") = 32);
+
     m.def("is_metal_available", &ojasx::math::metal::is_metal_available,
           "Check whether Apple Silicon Metal 4 GPU acceleration is available");
 }
@@ -286,6 +416,8 @@ TORCH_LIBRARY(ojasx_math_native, m) {
     m.def("structured_pullback_tensor(Tensor v, Tensor d, Tensor U, Tensor V, bool prefer_metal=True) -> Tensor");
     m.def("halley_invert_activation_tensor(Tensor y, Tensor branch_bit, str act='silu', int iters=3, bool prefer_metal=True) -> Tensor");
     m.def("conway_sloane_e8_project_tensor(Tensor x) -> Tensor");
+    m.def("fused_e8_gemm_fwd(Tensor x, Tensor packed_weight, Tensor block_scales, Tensor? bias=None, int group_size=32) -> Tensor");
+    m.def("fused_e8_gemm_bwd_dx(Tensor grad_y, Tensor packed_weight, Tensor block_scales, int in_features, int group_size=32) -> Tensor");
 }
 
 TORCH_LIBRARY_IMPL(ojasx_math_native, CompositeExplicitAutograd, m) {
@@ -293,4 +425,6 @@ TORCH_LIBRARY_IMPL(ojasx_math_native, CompositeExplicitAutograd, m) {
     m.impl("structured_pullback_tensor", ojasx_math::structured_pullback_tensor);
     m.impl("halley_invert_activation_tensor", ojasx_math::halley_invert_activation_tensor);
     m.impl("conway_sloane_e8_project_tensor", ojasx_math::conway_sloane_e8_project_tensor);
+    m.impl("fused_e8_gemm_fwd", ojasx_math::fused_e8_gemm_fwd);
+    m.impl("fused_e8_gemm_bwd_dx", ojasx_math::fused_e8_gemm_bwd_dx);
 }

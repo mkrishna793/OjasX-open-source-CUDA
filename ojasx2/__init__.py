@@ -157,13 +157,14 @@ from .math.lattice import (
     E8LatticeLinear,
     E8QuantizationAwareLinear,
     E8LatticePacker,
+    TernaryE8LatticePacker,
     conway_sloane_e8_project,
     pack_model_e8,
     fast_walsh_hadamard_transform,
     randomized_hadamard_transform,
 )
 
-__version__ = "0.8.1"
+__version__ = "0.9.0"
 
 # Launch non-blocking background update check (0ms import overhead, cached)
 notify_if_update_available_background()

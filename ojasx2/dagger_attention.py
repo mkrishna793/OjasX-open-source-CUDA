@@ -667,6 +667,7 @@ class DaggerAttention(nn.Module):
             q_proj = attn_mod.q_proj
             k_proj = attn_mod.k_proj
             v_proj = attn_mod.v_proj
+            out_proj = getattr(attn_mod, "o_proj", getattr(attn_mod, "out_proj", None))
             dim = q_proj.in_features
             cfg = getattr(attn_mod, "config", None)
             head_dim = getattr(attn_mod, "head_dim", getattr(cfg, "head_dim", None))
@@ -687,6 +688,11 @@ class DaggerAttention(nn.Module):
                 "num_key_value_heads",
                 getattr(cfg, "num_key_value_heads", getattr(attn_mod, "n_kv_heads", k_proj.out_features // head_dim)),
             )
+            return_tuple = getattr(
+                attn_mod,
+                "return_tuple",
+                getattr(getattr(attn_mod, "config", None), "return_tuple", False),
+            )
             instance = cls(
                 dim=dim,
                 num_heads=num_heads,
@@ -697,7 +703,7 @@ class DaggerAttention(nn.Module):
                 k_proj=k_proj,
                 v_proj=v_proj,
                 o_proj=out_proj,
-                return_tuple=True,
+                return_tuple=return_tuple,
             )
             return instance
         raise TypeError(f"Unsupported attention module type for weight preservation: {type(attn_mod)}")

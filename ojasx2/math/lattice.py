@@ -46,6 +46,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+try:
+    from .csrc import ojasx_math_native as _native
+    _HAS_NATIVE = hasattr(_native, "fused_e8_gemm_fwd")
+except Exception:
+    _native = None
+    _HAS_NATIVE = False
+
 
 # ==============================================================================
 # 1. Randomized Incoherence Processing (Fast Walsh-Hadamard Transform)
@@ -280,20 +287,215 @@ class E8LatticePacker:
 
 
 # ==============================================================================
+# 3b. Ternary E8 (1.50-Bit) Packing & Unpacking Engine
+# ==============================================================================
+
+_TERNARY_RANK_TO_COORDS: Optional[torch.Tensor] = None
+_TERNARY_RAW_TO_RANK: Optional[torch.Tensor] = None
+_POWERS_OF_3: Optional[torch.Tensor] = None
+
+def _get_ternary_e8_luts() -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    global _TERNARY_RANK_TO_COORDS, _TERNARY_RAW_TO_RANK, _POWERS_OF_3
+    if _TERNARY_RANK_TO_COORDS is None:
+        coords_list = []
+        raw_to_rank = torch.zeros(6561, dtype=torch.int64)
+        rank = 0
+        for i in range(3**8):
+            temp = i
+            digits = []
+            for _ in range(8):
+                digits.append((temp % 3) - 1)
+                temp //= 3
+            if sum(digits) % 2 == 0:
+                raw_to_rank[i] = rank
+                coords_list.append(digits)
+                rank += 1
+        _TERNARY_RANK_TO_COORDS = torch.tensor(coords_list, dtype=torch.int8)
+        _TERNARY_RAW_TO_RANK = raw_to_rank
+        _POWERS_OF_3 = torch.tensor([3**i for i in range(8)], dtype=torch.int64)
+    return _TERNARY_RANK_TO_COORDS, _TERNARY_RAW_TO_RANK, _POWERS_OF_3
+
+
+class TernaryE8LatticePacker:
+    """
+    Packs weight matrices into 1.50 bits/weight using the even-parity
+    Ternary E8 Gosset sub-lattice D8 ∩ {-1, 0, +1}^8.
+    
+    Contains exactly 3,281 valid 8D lattice points which index into 12 bits.
+    Pairs two 8D blocks (16 weights) into 3 bytes:
+        (24 bits / 16 weights) = 1.500 bits / weight.
+    """
+    @staticmethod
+    def pack(
+        w: torch.Tensor,
+        group_size: int = 32
+    ) -> Tuple[torch.Tensor, torch.Tensor, Tuple[int, int]]:
+        orig_shape = w.shape
+        m, n = orig_shape
+        total_elements = m * n
+        if group_size % 16 != 0:
+            group_size = 32 if total_elements % 32 == 0 else 16
+
+        w_groups = w.view(-1, group_size).to(torch.float32)
+        scales = torch.norm(w_groups, dim=-1, keepdim=True) / math.sqrt(group_size) + 1e-8
+        v = (w_groups / scales).view(-1, 8)
+
+        # 1. Ternary projection with even parity
+        q = torch.clamp(torch.round(v), -1.0, 1.0)
+        parity = torch.sum(q, dim=-1, keepdim=True).long() % 2
+        alt_q = torch.where(q == 0.0, torch.where(v >= 0.0, torch.ones_like(q), -torch.ones_like(q)), torch.zeros_like(q))
+        penalty = (alt_q - v)**2 - (q - v)**2
+        worst = torch.argmin(penalty, dim=-1, keepdim=True)
+        q_even = torch.where(parity == 1, q.scatter(-1, worst, alt_q.gather(-1, worst)), q)
+
+        # 2. Map to 12-bit index
+        rank_to_coords, raw_to_rank, powers = _get_ternary_e8_luts()
+        digits = (q_even.long() + 1).cpu()
+        raw_codes = (digits * powers).sum(dim=-1)
+        codes = raw_to_rank[raw_codes]
+
+        # 3. Pack two 12-bit codes into 3 bytes (16 weights -> 3 bytes)
+        codes_pairs = codes.view(-1, 2)
+        c0 = codes_pairs[:, 0]
+        c1 = codes_pairs[:, 1]
+
+        b0 = (c0 & 0xFF).to(torch.uint8)
+        b1 = (((c0 >> 8) & 0x0F) | ((c1 & 0x0F) << 4)).to(torch.uint8)
+        b2 = ((c1 >> 4) & 0xFF).to(torch.uint8)
+
+        packed = torch.stack([b0, b1, b2], dim=-1).flatten().to(w.device)
+        return packed, scales.squeeze(-1).to(torch.float16), (m, n)
+
+    @staticmethod
+    def unpack(
+        packed_codes: torch.Tensor,
+        scales: torch.Tensor,
+        shape: Tuple[int, int],
+        dtype: torch.dtype = torch.float32
+    ) -> torch.Tensor:
+        rank_to_coords, _, _ = _get_ternary_e8_luts()
+        device = packed_codes.device
+
+        triplets = packed_codes.cpu().view(-1, 3).long()
+        c0 = triplets[:, 0] | ((triplets[:, 1] & 0x0F) << 8)
+        c1 = ((triplets[:, 1] >> 4) & 0x0F) | (triplets[:, 2] << 4)
+
+        codes = torch.stack([c0, c1], dim=-1).flatten()
+        coords = rank_to_coords[codes].to(dtype).to(device)
+
+        total_elements = shape[0] * shape[1]
+        group_size = total_elements // scales.numel()
+        coords_grouped = coords.view(-1, group_size)
+        scales_expanded = scales.to(dtype).view(-1, 1)
+        w_recon = (coords_grouped * scales_expanded).view(shape)
+        return w_recon
+
+
+# ==============================================================================
+# 3c. Fused Register-Dequant GEMM Autograd Function
+# ==============================================================================
+
+class _FusedE8GEMMFunction(torch.autograd.Function):
+    """
+    Fused on-the-fly register-dequantization GEMM operator.
+    Eliminates intermediate float weight tensor materialization in DRAM.
+    """
+    @staticmethod
+    def forward(ctx, x, packed_weight, block_scales, bias, out_features, in_features, group_size, bitrate):
+        ctx.save_for_backward(x, packed_weight, block_scales)
+        ctx.in_features = in_features
+        ctx.out_features = out_features
+        ctx.group_size = group_size
+        ctx.bitrate = bitrate
+        ctx.has_bias = (bias is not None)
+
+        x_orig_shape = x.shape
+        x_2d = x.reshape(-1, in_features).contiguous()
+
+        # Native C++20 acceleration when available on CPU and bitrate == 2.0 for micro-batches
+        if _HAS_NATIVE and bitrate == 2.0 and x.is_cpu and x.dtype in (torch.float32, torch.float16, torch.bfloat16) and x_2d.shape[0] <= 64:
+            packed_2d = packed_weight.reshape(out_features, in_features // 4).contiguous()
+            scales_2d = block_scales.reshape(out_features, -1).contiguous()
+            y_2d = _native.fused_e8_gemm_fwd(x_2d, packed_2d, scales_2d, bias, group_size)
+            return y_2d.reshape(*x_orig_shape[:-1], out_features)
+
+        # Tile-chunked streaming fallback (never allocates full W in DRAM)
+        chunk_size = 256
+        y_chunks = []
+        packer = E8LatticePacker if bitrate == 2.0 else TernaryE8LatticePacker
+        bytes_per_row = (in_features * int(bitrate * 8)) // 64
+        scales_per_row = in_features // group_size
+
+        for n_start in range(0, out_features, chunk_size):
+            n_end = min(n_start + chunk_size, out_features)
+            n_chunk = n_end - n_start
+
+            p_chunk = packed_weight[n_start * bytes_per_row : n_end * bytes_per_row]
+            s_chunk = block_scales[n_start * scales_per_row : n_end * scales_per_row]
+
+            w_tile = packer.unpack(p_chunk, s_chunk, (n_chunk, in_features), dtype=x.dtype)
+            b_tile = bias[n_start:n_end] if bias is not None else None
+            y_tile = F.linear(x_2d, w_tile, b_tile)
+            y_chunks.append(y_tile)
+
+        y_2d = torch.cat(y_chunks, dim=-1)
+        return y_2d.reshape(*x_orig_shape[:-1], out_features)
+
+    @staticmethod
+    def backward(ctx, grad_y):
+        x, packed_weight, block_scales = ctx.saved_tensors
+        in_features = ctx.in_features
+        out_features = ctx.out_features
+        group_size = ctx.group_size
+        bitrate = ctx.bitrate
+
+        gy_2d = grad_y.reshape(-1, out_features).contiguous()
+
+        # Native C++20 backward path for micro-batches
+        if _HAS_NATIVE and bitrate == 2.0 and grad_y.is_cpu and grad_y.dtype in (torch.float32, torch.float16, torch.bfloat16) and gy_2d.shape[0] <= 64:
+            packed_2d = packed_weight.reshape(out_features, in_features // 4).contiguous()
+            scales_2d = block_scales.reshape(out_features, -1).contiguous()
+            grad_x_2d = _native.fused_e8_gemm_bwd_dx(gy_2d, packed_2d, scales_2d, in_features, group_size)
+            grad_x = grad_x_2d.reshape_as(x)
+        else:
+            chunk_size = 256
+            packer = E8LatticePacker if bitrate == 2.0 else TernaryE8LatticePacker
+            bytes_per_row = (in_features * int(bitrate * 8)) // 64
+            scales_per_row = in_features // group_size
+            grad_x_2d = torch.zeros(gy_2d.shape[0], in_features, dtype=x.dtype, device=x.device)
+
+            for n_start in range(0, out_features, chunk_size):
+                n_end = min(n_start + chunk_size, out_features)
+                n_chunk = n_end - n_start
+
+                p_chunk = packed_weight[n_start * bytes_per_row : n_end * bytes_per_row]
+                s_chunk = block_scales[n_start * scales_per_row : n_end * scales_per_row]
+                w_tile = packer.unpack(p_chunk, s_chunk, (n_chunk, in_features), dtype=x.dtype)
+
+                gy_chunk = gy_2d[:, n_start:n_end]
+                grad_x_2d += gy_chunk.matmul(w_tile)
+
+            grad_x = grad_x_2d.reshape_as(x)
+
+        grad_bias = gy_2d.sum(dim=0) if ctx.has_bias else None
+        return grad_x, None, None, grad_bias, None, None, None, None
+
+
+# ==============================================================================
 # 4. E8LatticeLinear: Low-Memory 2-Bit Linear Layer with Full-Precision Subspace
 # ==============================================================================
 
 class E8LatticeLinear(nn.Module):
     """
-    Linear layer where base weights are packed into the 2.0-bit E8 lattice (8x memory drop)
+    Linear layer where base weights are packed into the 2.0-bit or 1.5-bit E8 lattice
     with an optional full-precision low-rank trainable subspace (A @ B^T) for training:
     
         y = x @ W_E8^T + (alpha / rank) * (x @ A) @ B^T + bias
         
     During Training:
-    - Base weights W_E8 remain frozen in 2.0-bit packed format (consumes 17.5 GB for 70B model).
+    - Base weights W_E8 remain frozen in 2.0-bit (or 1.5-bit) packed format.
     - Only tiny low-rank matrices A and B (rank 16 or 32) receive gradients.
-    - Activations can be reconstructed with OjasX Symplectic Inversion.
+    - Fused register dequantization GEMM eliminates intermediate weight tensor DRAM spikes.
     - Total training RAM drops by >85% while retaining full-precision learning capacity!
     """
     
@@ -305,6 +507,7 @@ class E8LatticeLinear(nn.Module):
         rank: int = 0,
         lora_alpha: float = 16.0,
         group_size: int = 8,
+        bitrate: float = 2.0,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None
     ) -> None:
@@ -315,13 +518,20 @@ class E8LatticeLinear(nn.Module):
         self.lora_alpha = lora_alpha
         self.scaling = (lora_alpha / rank) if rank > 0 else 0.0
         self.group_size = group_size
+        self.bitrate = bitrate
         
         total_elements = out_features * in_features
-        eff_group = group_size if total_elements % group_size == 0 else 8
+        eff_group = group_size if total_elements % group_size == 0 else (16 if bitrate == 1.5 else 8)
         num_scales = total_elements // eff_group
-        num_bytes = total_elements // 4
         
-        # Packed 2.0-bit weight storage (uint8)
+        if bitrate == 1.5:
+            # 1.50 bits/weight: 3 bytes per 16 weights
+            num_bytes = (total_elements * 3) // 16
+        else:
+            # 2.00 bits/weight: 1 byte per 4 weights
+            num_bytes = total_elements // 4
+        
+        # Packed weight storage (uint8)
         self.register_buffer(
             "packed_weight",
             torch.zeros(num_bytes, dtype=torch.uint8, device=device)
@@ -354,6 +564,7 @@ class E8LatticeLinear(nn.Module):
         rank: int = 0,
         lora_alpha: float = 16.0,
         group_size: int = 8,
+        bitrate: float = 2.0,
     ) -> E8LatticeLinear:
         """Constructs an E8LatticeLinear by packing an existing nn.Linear module."""
         m = cls(
@@ -363,11 +574,13 @@ class E8LatticeLinear(nn.Module):
             rank=rank,
             lora_alpha=lora_alpha,
             group_size=group_size,
+            bitrate=bitrate,
             device=linear.weight.device,
             dtype=linear.weight.dtype
         )
         with torch.no_grad():
-            packed, scales, _ = E8LatticePacker.pack(linear.weight, group_size=group_size)
+            packer = TernaryE8LatticePacker if bitrate == 1.5 else E8LatticePacker
+            packed, scales, _ = packer.pack(linear.weight, group_size=group_size)
             m.packed_weight.copy_(packed)
             m.block_scales.copy_(scales)
             if linear.bias is not None:
@@ -375,24 +588,37 @@ class E8LatticeLinear(nn.Module):
         return m
 
     def unpack_weights(self, dtype: torch.dtype = torch.float32) -> torch.Tensor:
-        """Unpacks 2-bit E8 lattice weights into continuous tensor in registers/SRAM."""
-        return E8LatticePacker.unpack(
+        """Unpacks E8 lattice weights into continuous tensor in registers/SRAM."""
+        packer = TernaryE8LatticePacker if self.bitrate == 1.5 else E8LatticePacker
+        return packer.unpack(
             self.packed_weight,
             self.block_scales,
             (self.out_features, self.in_features),
             dtype=dtype
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        w_recon = self.unpack_weights(dtype=x.dtype)
-        out = F.linear(x, w_recon, self.bias)
-        
-        # Add low-rank trainable subspace if enabled
+    def forward_fused(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Fused on-the-fly register-dequantization forward pass:
+        Eliminates intermediate [N, K] float weight tensor materialization in DRAM.
+        """
+        out = _FusedE8GEMMFunction.apply(
+            x,
+            self.packed_weight,
+            self.block_scales,
+            self.bias,
+            self.out_features,
+            self.in_features,
+            self.group_size,
+            self.bitrate,
+        )
         if self.rank > 0 and self.lora_A is not None and self.lora_B is not None:
             lora_out = (x @ self.lora_A) @ self.lora_B
             out = out + self.scaling * lora_out
-            
         return out
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.forward_fused(x)
 
 
 # ==============================================================================
@@ -470,13 +696,14 @@ def pack_model_e8(
     rank: int = 0,
     lora_alpha: float = 16.0,
     group_size: int = 32,
+    bitrate: float = 2.0,
     target_modules: Optional[Union[list[str], tuple[str, ...], str]] = None,
     exclude_modules: Optional[Union[list[str], tuple[str, ...]]] = None,
     inplace: bool = True
 ) -> nn.Module:
     """
     Recursively scans and packs all nn.Linear modules in a PyTorch model into
-    2.0-bit E8LatticeLinear layers, reducing raw weight memory by 8.0x.
+    E8LatticeLinear layers (2.0-bit or 1.5-bit ternary), reducing raw weight memory by up to 10.7x.
     
     Compatible with any HuggingFace model (e.g. LLaMA, Qwen, Mistral, Gemma)
     and PyTorch architectures.
@@ -486,12 +713,13 @@ def pack_model_e8(
         rank: If > 0, attaches low-rank full-precision trainable adapters for fine-tuning.
         lora_alpha: Scaling hyperparameter for low-rank adapter.
         group_size: Quantization group size (8, 32, or 64). Default 32.
+        bitrate: Lattice bitrate (2.0 for standard E8, 1.5 for Sub-2-Bit Ternary E8).
         target_modules: Specific module names or substrings to pack (e.g. ["q_proj", "v_proj"]).
         exclude_modules: Specific module names to skip (e.g. ["lm_head"]).
         inplace: Modify model in-place.
         
     Returns:
-        Optimized model with 8x smaller weight footprint and trainable adapters.
+        Optimized model with up to 10.7x smaller weight footprint and trainable adapters.
     """
     target_model = model if inplace else copy.deepcopy(model)
     
@@ -518,7 +746,8 @@ def pack_model_e8(
                     module,
                     rank=rank,
                     lora_alpha=lora_alpha,
-                    group_size=group_size
+                    group_size=group_size,
+                    bitrate=bitrate,
                 )
                 setattr(target_model, name, e8_layer)
         else:
@@ -527,6 +756,7 @@ def pack_model_e8(
                 rank=rank,
                 lora_alpha=lora_alpha,
                 group_size=group_size,
+                bitrate=bitrate,
                 target_modules=target_modules,
                 exclude_modules=exclude_modules,
                 inplace=True
