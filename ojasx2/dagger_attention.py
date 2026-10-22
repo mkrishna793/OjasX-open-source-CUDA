@@ -498,11 +498,43 @@ def holonomic_dagger_attention(
     attn_mask: Optional[torch.Tensor] = None,
     key_padding_mask: Optional[torch.Tensor] = None,
     tile_size: int = 128,
+    prefer_native_sdpa: bool = False,
 ) -> torch.Tensor:
     """Functional entrypoint for Holonomic Dagger Attention.
 
+    Routes to hardware-fused FlashAttention / Apple Metal SDPA when compatible
+    (0 bytes [B, H, S, S] in DRAM, zero Python tile-loop overhead).
     Returns the attention output tensor [B, H, S_q, d].
     """
+    if (
+        prefer_native_sdpa
+        and hasattr(F, "scaled_dot_product_attention")
+        and key_padding_mask is None
+        and attn_mask is None
+        and q.numel() > 0
+        and not torch.compiler.is_compiling()
+    ):
+        H, H_kv = q.shape[1], k.shape[1]
+        if H == H_kv:
+            return F.scaled_dot_product_attention(
+                q, k, v, attn_mask=None, is_causal=is_causal, scale=sm_scale
+            )
+        elif H % H_kv == 0:
+            try:
+                return F.scaled_dot_product_attention(
+                    q, k, v, attn_mask=None, is_causal=is_causal, scale=sm_scale, enable_gqa=True
+                )
+            except TypeError:
+                rep = H // H_kv
+                return F.scaled_dot_product_attention(
+                    q,
+                    k.repeat_interleave(rep, dim=1),
+                    v.repeat_interleave(rep, dim=1),
+                    attn_mask=None,
+                    is_causal=is_causal,
+                    scale=sm_scale,
+                )
+
     if attn_mask is not None or key_padding_mask is not None or tile_size != 128:
         return _HolonomicDaggerAttentionFunction.apply(
             q, k, v, is_causal, sm_scale, attn_mask, key_padding_mask, tile_size

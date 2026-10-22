@@ -506,21 +506,40 @@ inline void fused_e8_gemm_backward_dx(
 ) {
     const size_t packed_k_stride = K / 4;
     const size_t num_scale_groups = K / group_size;
+    const size_t bytes_per_group = group_size / 4;
+
+    std::vector<float> dx_acc(K, 0.0f);
 
     for (size_t m = 0; m < M; ++m) {
-        for (size_t k = 0; k < K; ++k) {
-            const size_t g = (num_scale_groups > 0) ? std::min(k / group_size, num_scale_groups - 1) : 0;
-            const size_t b_idx = k / 4;
-            const size_t shift = (k % 4) * 2;
-            float acc = 0.0f;
+        std::fill(dx_acc.begin(), dx_acc.end(), 0.0f);
+        const T* dy_row = dY + m * N;
 
-            for (size_t n = 0; n < N; ++n) {
-                const uint8_t byte_val = W_packed[n * packed_k_stride + b_idx];
-                const float scale = static_cast<float>(Scales[n * num_scale_groups + g]);
-                const float w_val = (static_cast<float>((byte_val >> shift) & 0x03) - 1.5f) * scale;
-                acc += static_cast<float>(dY[m * N + n]) * w_val;
+        // Stream row-by-row over N so W_packed is read sequentially from L1 cache
+        for (size_t n = 0; n < N; ++n) {
+            const float dy_val = static_cast<float>(dy_row[n]);
+            if (dy_val == 0.0f) continue;
+
+            const uint8_t* w_row = W_packed + n * packed_k_stride;
+            const T* s_row = Scales + n * num_scale_groups;
+
+            for (size_t g = 0; g < num_scale_groups; ++g) {
+                const float dy_scaled = dy_val * static_cast<float>(s_row[g]);
+                const size_t byte_start = g * bytes_per_group;
+                const size_t k_base = g * group_size;
+
+                for (size_t b = 0; b < bytes_per_group; ++b) {
+                    const uint8_t byte_val = w_row[byte_start + b];
+                    const size_t k_idx = k_base + b * 4;
+
+                    dx_acc[k_idx + 0] += dy_scaled * (static_cast<float>(byte_val & 0x03) - 1.5f);
+                    dx_acc[k_idx + 1] += dy_scaled * (static_cast<float>((byte_val >> 2) & 0x03) - 1.5f);
+                    dx_acc[k_idx + 2] += dy_scaled * (static_cast<float>((byte_val >> 4) & 0x03) - 1.5f);
+                    dx_acc[k_idx + 3] += dy_scaled * (static_cast<float>((byte_val >> 6) & 0x03) - 1.5f);
+                }
             }
-            dX[m * K + k] = static_cast<T>(acc);
+        }
+        for (size_t k = 0; k < K; ++k) {
+            dX[m * K + k] = static_cast<T>(dx_acc[k]);
         }
     }
 }
@@ -631,36 +650,51 @@ inline void fused_ternary_e8_gemm_backward_dx(
     const int8_t* rank_to_coords = get_ternary_rank_to_coords();
     const size_t packed_k_stride = (K * 3) / 16;
     const size_t num_scale_groups = K / group_size;
+    const size_t blocks_per_group = group_size / 16;
+
+    std::vector<float> dx_acc(K, 0.0f);
 
     for (size_t m = 0; m < M; ++m) {
-        for (size_t k = 0; k < K; ++k) {
-            const size_t g = (num_scale_groups > 0) ? std::min(k / group_size, num_scale_groups - 1) : 0;
-            const size_t blk16 = k / 16;
-            const size_t rem = k % 16;
-            const size_t byte_idx = blk16 * 3;
-            const bool is_high_8 = (rem >= 8);
-            const size_t coord_offset = rem % 8;
-            float acc = 0.0f;
+        std::fill(dx_acc.begin(), dx_acc.end(), 0.0f);
+        const T* dy_row = dY + m * N;
 
-            for (size_t n = 0; n < N; ++n) {
-                const uint8_t* w_row = W_packed + n * packed_k_stride;
-                const uint8_t b0 = w_row[byte_idx + 0];
-                const uint8_t b1 = w_row[byte_idx + 1];
-                const uint8_t b2 = w_row[byte_idx + 2];
+        // Sequential L1-friendly row traversal over N
+        for (size_t n = 0; n < N; ++n) {
+            const float dy_val = static_cast<float>(dy_row[n]);
+            if (dy_val == 0.0f) continue;
 
-                uint32_t code;
-                if (!is_high_8) {
-                    code = static_cast<uint32_t>(b0) | (static_cast<uint32_t>(b1 & 0x0F) << 8);
-                } else {
-                    code = static_cast<uint32_t>((b1 >> 4) & 0x0F) | (static_cast<uint32_t>(b2) << 4);
+            const uint8_t* w_row = W_packed + n * packed_k_stride;
+            const T* s_row = Scales + n * num_scale_groups;
+
+            for (size_t g = 0; g < num_scale_groups; ++g) {
+                const float dy_scaled = dy_val * static_cast<float>(s_row[g]);
+                const size_t byte_start = (g * group_size * 3) / 16;
+                const size_t k_group_base = g * group_size;
+
+                for (size_t blk = 0; blk < blocks_per_group; ++blk) {
+                    const size_t b_idx = byte_start + blk * 3;
+                    const uint8_t b0 = w_row[b_idx + 0];
+                    const uint8_t b1 = w_row[b_idx + 1];
+                    const uint8_t b2 = w_row[b_idx + 2];
+
+                    const uint32_t c0 = static_cast<uint32_t>(b0) | (static_cast<uint32_t>(b1 & 0x0F) << 8);
+                    const uint32_t c1 = static_cast<uint32_t>((b1 >> 4) & 0x0F) | (static_cast<uint32_t>(b2) << 4);
+
+                    const int8_t* coords0 = rank_to_coords + c0 * 8;
+                    const int8_t* coords1 = rank_to_coords + c1 * 8;
+                    const size_t k_base = k_group_base + blk * 16;
+
+                    for (size_t d = 0; d < 8; ++d) {
+                        dx_acc[k_base + d] += dy_scaled * static_cast<float>(coords0[d]);
+                    }
+                    for (size_t d = 0; d < 8; ++d) {
+                        dx_acc[k_base + 8 + d] += dy_scaled * static_cast<float>(coords1[d]);
+                    }
                 }
-
-                const int8_t coord_val = rank_to_coords[code * 8 + coord_offset];
-                const float scale = static_cast<float>(Scales[n * num_scale_groups + g]);
-                const float w_val = static_cast<float>(coord_val) * scale;
-                acc += static_cast<float>(dY[m * N + n]) * w_val;
             }
-            dX[m * K + k] = static_cast<T>(acc);
+        }
+        for (size_t k = 0; k < K; ++k) {
+            dX[m * K + k] = static_cast<T>(dx_acc[k]);
         }
     }
 }

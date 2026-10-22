@@ -158,13 +158,19 @@ from .math.lattice import (
     E8QuantizationAwareLinear,
     E8LatticePacker,
     TernaryE8LatticePacker,
+    RootE8LatticePacker,
     conway_sloane_e8_project,
     pack_model_e8,
+    fwht_block32,
     fast_walsh_hadamard_transform,
     randomized_hadamard_transform,
 )
+from .tilelang_kernels import (
+    is_tilelang_available,
+    dispatch_tilelang_e8_gemm,
+)
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 # Launch non-blocking background update check (0ms import overhead, cached)
 notify_if_update_available_background()

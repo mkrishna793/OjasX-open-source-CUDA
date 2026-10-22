@@ -29,7 +29,8 @@ def test_parse_version():
 def test_get_current_version():
     ver = get_current_version()
     assert isinstance(ver, str)
-    assert ver == "0.9.0"
+    import ojasx2
+    assert ver == ojasx2.__version__
 
 
 def test_get_repo_root():
@@ -39,23 +40,23 @@ def test_get_repo_root():
 
 
 def test_format_update_banner():
-    banner = format_update_banner("0.9.0", "0.9.1", is_git=True)
+    banner = format_update_banner("0.11.0", "0.11.1", is_git=True)
     assert "OjasX Update Available" in banner
-    assert "v0.9.0 → v0.9.1" in banner
+    assert "v0.11.0 → v0.11.1" in banner
     assert "ojasx update" in banner
 
 
 @patch("ojasx2.updater.fetch_latest_release_info")
 def test_check_for_updates_available(mock_fetch):
     mock_fetch.return_value = {
-        "tag_name": "0.9.1",
-        "name": "OjasX v0.9.1",
-        "published_at": "2026-10-19T18:00:00Z",
+        "tag_name": "0.12.0",
+        "name": "OjasX v0.12.0",
+        "published_at": "2026-10-25T18:00:00Z",
     }
     has_update, latest_ver, meta = check_for_updates(force=True)
     assert has_update is True
-    assert latest_ver == "0.9.1"
-    assert meta["name"] == "OjasX v0.9.1"
+    assert latest_ver == "0.12.0"
+    assert meta["name"] == "OjasX v0.12.0"
 
 
 @patch("ojasx2.updater.fetch_latest_release_info")
