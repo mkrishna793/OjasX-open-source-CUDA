@@ -164,7 +164,7 @@ from .math.lattice import (
     randomized_hadamard_transform,
 )
 
-__version__ = "0.9.1"
+__version__ = "0.10.0"
 
 # Launch non-blocking background update check (0ms import overhead, cached)
 notify_if_update_available_background()

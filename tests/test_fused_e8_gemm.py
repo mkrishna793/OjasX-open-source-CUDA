@@ -121,3 +121,59 @@ def test_fused_e8_gemm_backward_gradient_flow():
     # Frozen packed base weights must NOT require grad
     assert not e8_layer.packed_weight.requires_grad
     assert not e8_layer.block_scales.requires_grad
+
+
+def test_fused_ternary_1_5bit_gemm_parity():
+    """Verifies that fused 1.5-bit Ternary E8 GEMM produces identical output to reference unpacked linear."""
+    torch.manual_seed(42)
+    in_features = 128
+    out_features = 256
+    batch_size = 3
+    seq_len = 8
+
+    ref_linear = nn.Linear(in_features, out_features, bias=True)
+    layer = E8LatticeLinear.from_linear(ref_linear, rank=4, bitrate=1.5, group_size=32)
+
+    x = torch.randn(batch_size, seq_len, in_features, dtype=torch.float32)
+
+    # Reference unpacked
+    w_unpacked = layer.unpack_weights(dtype=x.dtype)
+    expected_out = F.linear(x, w_unpacked, layer.bias)
+    if layer.rank > 0 and layer.lora_A is not None:
+        expected_out = expected_out + layer.scaling * ((x @ layer.lora_A) @ layer.lora_B)
+
+    actual_out = layer.forward_fused(x)
+    diff = torch.max(torch.abs(actual_out - expected_out)).item()
+    assert diff < 1e-4, f"Fused 1.5-bit Ternary GEMM diverged from unpacked: max diff = {diff}"
+
+
+def test_native_cpp_ternary_gemm_parity():
+    """Verifies C++20 native fused_ternary_e8_gemm_fwd produces exact match to unpacked output."""
+    try:
+        from ojasx2.math.csrc import ojasx_math_native as _native
+        if not hasattr(_native, "fused_ternary_e8_gemm_fwd"):
+            pytest.skip("Native C++ ternary kernel not compiled in this build")
+    except Exception:
+        pytest.skip("ojasx_math_native not available")
+
+    torch.manual_seed(99)
+    in_features = 64
+    out_features = 128
+    group_size = 32
+
+    ref_linear = nn.Linear(in_features, out_features, bias=True)
+    layer = E8LatticeLinear.from_linear(ref_linear, rank=0, bitrate=1.5, group_size=group_size)
+
+    x = torch.randn(2, in_features, dtype=torch.float32)
+
+    packed_2d = layer.packed_weight.reshape(out_features, (in_features * 3) // 16).contiguous()
+    scales_2d = layer.block_scales.reshape(out_features, -1).contiguous()
+    
+    y_cpp = _native.fused_ternary_e8_gemm_fwd(x, packed_2d, scales_2d, layer.bias, group_size)
+    
+    w_unpacked = layer.unpack_weights(dtype=x.dtype)
+    y_expected = F.linear(x, w_unpacked, layer.bias)
+
+    diff = torch.max(torch.abs(y_cpp - y_expected)).item()
+    assert diff < 1e-4, f"Native C++ ternary GEMM output diverged: max diff = {diff}"
+

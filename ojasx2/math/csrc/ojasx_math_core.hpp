@@ -525,6 +525,146 @@ inline void fused_e8_gemm_backward_dx(
     }
 }
 
+// Coordinate LUT for Ternary E8 (D8 \cap {-1, 0, +1}^8, 3281 points x 8 coords)
+inline const int8_t* get_ternary_rank_to_coords() {
+    static std::vector<int8_t> coords_table;
+    static bool initialized = false;
+    if (!initialized) {
+        coords_table.reserve(3281 * 8);
+        for (int i = 0; i < 6561; ++i) {
+            int temp = i;
+            int sum = 0;
+            int8_t digits[8];
+            for (int d = 0; d < 8; ++d) {
+                digits[d] = static_cast<int8_t>((temp % 3) - 1);
+                sum += digits[d];
+                temp /= 3;
+            }
+            if ((sum % 2 + 2) % 2 == 0) {
+                for (int d = 0; d < 8; ++d) {
+                    coords_table.push_back(digits[d]);
+                }
+            }
+        }
+        initialized = true;
+    }
+    return coords_table.data();
+}
+
+/**
+ * Fused on-the-fly register-dequantization GEMM forward for 1.50 b/w Ternary E8:
+ * Y = X @ W_dequant^T + Bias
+ * Eliminates intermediate [N, K] float weight tensor materialization in DRAM.
+ */
+template <typename T>
+inline void fused_ternary_e8_gemm_forward(
+    const T* __restrict__ X,
+    const uint8_t* __restrict__ W_packed,
+    const T* __restrict__ Scales,
+    const T* __restrict__ Bias,
+    T* __restrict__ Y,
+    size_t M,
+    size_t K,
+    size_t N,
+    size_t group_size = 32
+) {
+    const int8_t* rank_to_coords = get_ternary_rank_to_coords();
+    const size_t packed_k_stride = (K * 3) / 16;
+    const size_t num_scale_groups = K / group_size;
+    const size_t blocks_per_group = group_size / 16;
+
+    for (size_t m = 0; m < M; ++m) {
+        for (size_t n = 0; n < N; ++n) {
+            float acc = (Bias != nullptr) ? static_cast<float>(Bias[n]) : 0.0f;
+            const uint8_t* w_row = W_packed + n * packed_k_stride;
+            const T* s_row = Scales + n * num_scale_groups;
+            const T* x_row = X + m * K;
+
+            for (size_t g = 0; g < num_scale_groups; ++g) {
+                const float scale = static_cast<float>(s_row[g]);
+                const size_t byte_start = (g * group_size * 3) / 16;
+                float group_acc = 0.0f;
+
+                for (size_t blk = 0; blk < blocks_per_group; ++blk) {
+                    const size_t b_idx = byte_start + blk * 3;
+                    const uint8_t b0 = w_row[b_idx + 0];
+                    const uint8_t b1 = w_row[b_idx + 1];
+                    const uint8_t b2 = w_row[b_idx + 2];
+
+                    const uint32_t c0 = static_cast<uint32_t>(b0) | (static_cast<uint32_t>(b1 & 0x0F) << 8);
+                    const uint32_t c1 = static_cast<uint32_t>((b1 >> 4) & 0x0F) | (static_cast<uint32_t>(b2) << 4);
+
+                    const int8_t* coords0 = rank_to_coords + c0 * 8;
+                    const int8_t* coords1 = rank_to_coords + c1 * 8;
+                    const size_t k_base = g * group_size + blk * 16;
+
+                    for (size_t d = 0; d < 8; ++d) {
+                        group_acc += static_cast<float>(x_row[k_base + d]) * static_cast<float>(coords0[d]);
+                    }
+                    for (size_t d = 0; d < 8; ++d) {
+                        group_acc += static_cast<float>(x_row[k_base + 8 + d]) * static_cast<float>(coords1[d]);
+                    }
+                }
+                acc += group_acc * scale;
+            }
+            Y[m * N + n] = static_cast<T>(acc);
+        }
+    }
+}
+
+/**
+ * Fused on-the-fly register-dequantization GEMM backward dx for 1.50 b/w Ternary E8:
+ * dX = dY @ W_dequant
+ * Computes input gradients without materializing uncompressed weights.
+ */
+template <typename T>
+inline void fused_ternary_e8_gemm_backward_dx(
+    const T* __restrict__ dY,
+    const uint8_t* __restrict__ W_packed,
+    const T* __restrict__ Scales,
+    T* __restrict__ dX,
+    size_t M,
+    size_t K,
+    size_t N,
+    size_t group_size = 32
+) {
+    const int8_t* rank_to_coords = get_ternary_rank_to_coords();
+    const size_t packed_k_stride = (K * 3) / 16;
+    const size_t num_scale_groups = K / group_size;
+
+    for (size_t m = 0; m < M; ++m) {
+        for (size_t k = 0; k < K; ++k) {
+            const size_t g = (num_scale_groups > 0) ? std::min(k / group_size, num_scale_groups - 1) : 0;
+            const size_t blk16 = k / 16;
+            const size_t rem = k % 16;
+            const size_t byte_idx = blk16 * 3;
+            const bool is_high_8 = (rem >= 8);
+            const size_t coord_offset = rem % 8;
+            float acc = 0.0f;
+
+            for (size_t n = 0; n < N; ++n) {
+                const uint8_t* w_row = W_packed + n * packed_k_stride;
+                const uint8_t b0 = w_row[byte_idx + 0];
+                const uint8_t b1 = w_row[byte_idx + 1];
+                const uint8_t b2 = w_row[byte_idx + 2];
+
+                uint32_t code;
+                if (!is_high_8) {
+                    code = static_cast<uint32_t>(b0) | (static_cast<uint32_t>(b1 & 0x0F) << 8);
+                } else {
+                    code = static_cast<uint32_t>((b1 >> 4) & 0x0F) | (static_cast<uint32_t>(b2) << 4);
+                }
+
+                const int8_t coord_val = rank_to_coords[code * 8 + coord_offset];
+                const float scale = static_cast<float>(Scales[n * num_scale_groups + g]);
+                const float w_val = static_cast<float>(coord_val) * scale;
+                acc += static_cast<float>(dY[m * N + n]) * w_val;
+            }
+            dX[m * K + k] = static_cast<T>(acc);
+        }
+    }
+}
+
 } // namespace lattice
 
 } // namespace ojasx::math

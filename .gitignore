@@ -54,3 +54,7 @@ rocq/*.cache
 .venv/
 .prime-research/
 
+
+*.aux
+*.glob
+

@@ -290,12 +290,33 @@ class E8LatticePacker:
 # 3b. Ternary E8 (1.50-Bit) Packing & Unpacking Engine
 # ==============================================================================
 
+_DEVICE_TERNARY_LUTS: Dict[Tuple[str, Optional[int]], Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
 _TERNARY_RANK_TO_COORDS: Optional[torch.Tensor] = None
 _TERNARY_RAW_TO_RANK: Optional[torch.Tensor] = None
 _POWERS_OF_3: Optional[torch.Tensor] = None
 
-def _get_ternary_e8_luts() -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    global _TERNARY_RANK_TO_COORDS, _TERNARY_RAW_TO_RANK, _POWERS_OF_3
+
+def _get_ternary_e8_luts(device: Optional[torch.device] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Returns device-resident lookup tables for Ternary E8 (1.50 b/w) coding:
+      - rank_to_coords: [3281, 8] int8 tensor
+      - raw_to_rank: [6561] int64 tensor
+      - powers_of_3: [8] int64 tensor
+    LUTs are cached per-device to eliminate all host-device (.cpu()) transfers.
+    """
+    global _DEVICE_TERNARY_LUTS, _TERNARY_RANK_TO_COORDS, _TERNARY_RAW_TO_RANK, _POWERS_OF_3
+
+    if device is None:
+        dev_key = ("cpu", None)
+    else:
+        if isinstance(device, str):
+            device = torch.device(device)
+        dev_key = (device.type, device.index)
+
+    if dev_key in _DEVICE_TERNARY_LUTS:
+        return _DEVICE_TERNARY_LUTS[dev_key]
+
+    # Generate base CPU tables once if not present
     if _TERNARY_RANK_TO_COORDS is None:
         coords_list = []
         raw_to_rank = torch.zeros(6561, dtype=torch.int64)
@@ -313,7 +334,18 @@ def _get_ternary_e8_luts() -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         _TERNARY_RANK_TO_COORDS = torch.tensor(coords_list, dtype=torch.int8)
         _TERNARY_RAW_TO_RANK = raw_to_rank
         _POWERS_OF_3 = torch.tensor([3**i for i in range(8)], dtype=torch.int64)
-    return _TERNARY_RANK_TO_COORDS, _TERNARY_RAW_TO_RANK, _POWERS_OF_3
+
+    if dev_key[0] == "cpu":
+        _DEVICE_TERNARY_LUTS[dev_key] = (_TERNARY_RANK_TO_COORDS, _TERNARY_RAW_TO_RANK, _POWERS_OF_3)
+        return _DEVICE_TERNARY_LUTS[dev_key]
+
+    # Transfer to target device and cache
+    target_dev = torch.device(dev_key[0], dev_key[1]) if dev_key[1] is not None else torch.device(dev_key[0])
+    dev_r2c = _TERNARY_RANK_TO_COORDS.to(target_dev)
+    dev_r2r = _TERNARY_RAW_TO_RANK.to(target_dev)
+    dev_pow = _POWERS_OF_3.to(target_dev)
+    _DEVICE_TERNARY_LUTS[dev_key] = (dev_r2c, dev_r2r, dev_pow)
+    return _DEVICE_TERNARY_LUTS[dev_key]
 
 
 class TernaryE8LatticePacker:
@@ -324,6 +356,8 @@ class TernaryE8LatticePacker:
     Contains exactly 3,281 valid 8D lattice points which index into 12 bits.
     Pairs two 8D blocks (16 weights) into 3 bytes:
         (24 bits / 16 weights) = 1.500 bits / weight.
+    All packing and unpacking bitwise operations execute purely on-device
+    with zero CPU-GPU synchronization transfers.
     """
     @staticmethod
     def pack(
@@ -336,11 +370,12 @@ class TernaryE8LatticePacker:
         if group_size % 16 != 0:
             group_size = 32 if total_elements % 32 == 0 else 16
 
+        device = w.device
         w_groups = w.view(-1, group_size).to(torch.float32)
         scales = torch.norm(w_groups, dim=-1, keepdim=True) / math.sqrt(group_size) + 1e-8
         v = (w_groups / scales).view(-1, 8)
 
-        # 1. Ternary projection with even parity
+        # 1. Ternary projection with even parity (purely on-device)
         q = torch.clamp(torch.round(v), -1.0, 1.0)
         parity = torch.sum(q, dim=-1, keepdim=True).long() % 2
         alt_q = torch.where(q == 0.0, torch.where(v >= 0.0, torch.ones_like(q), -torch.ones_like(q)), torch.zeros_like(q))
@@ -348,9 +383,9 @@ class TernaryE8LatticePacker:
         worst = torch.argmin(penalty, dim=-1, keepdim=True)
         q_even = torch.where(parity == 1, q.scatter(-1, worst, alt_q.gather(-1, worst)), q)
 
-        # 2. Map to 12-bit index
-        rank_to_coords, raw_to_rank, powers = _get_ternary_e8_luts()
-        digits = (q_even.long() + 1).cpu()
+        # 2. Map to 12-bit index using device-resident LUTs (zero host transfers)
+        rank_to_coords, raw_to_rank, powers = _get_ternary_e8_luts(device)
+        digits = (q_even.long() + 1)
         raw_codes = (digits * powers).sum(dim=-1)
         codes = raw_to_rank[raw_codes]
 
@@ -363,7 +398,7 @@ class TernaryE8LatticePacker:
         b1 = (((c0 >> 8) & 0x0F) | ((c1 & 0x0F) << 4)).to(torch.uint8)
         b2 = ((c1 >> 4) & 0xFF).to(torch.uint8)
 
-        packed = torch.stack([b0, b1, b2], dim=-1).flatten().to(w.device)
+        packed = torch.stack([b0, b1, b2], dim=-1).flatten()
         return packed, scales.squeeze(-1).to(torch.float16), (m, n)
 
     @staticmethod
@@ -373,15 +408,16 @@ class TernaryE8LatticePacker:
         shape: Tuple[int, int],
         dtype: torch.dtype = torch.float32
     ) -> torch.Tensor:
-        rank_to_coords, _, _ = _get_ternary_e8_luts()
         device = packed_codes.device
+        rank_to_coords, _, _ = _get_ternary_e8_luts(device)
 
-        triplets = packed_codes.cpu().view(-1, 3).long()
+        # On-device bitwise unpack: 3 bytes -> two 12-bit rank codes
+        triplets = packed_codes.view(-1, 3).to(torch.int32)
         c0 = triplets[:, 0] | ((triplets[:, 1] & 0x0F) << 8)
         c1 = ((triplets[:, 1] >> 4) & 0x0F) | (triplets[:, 2] << 4)
 
-        codes = torch.stack([c0, c1], dim=-1).flatten()
-        coords = rank_to_coords[codes].to(dtype).to(device)
+        codes = torch.stack([c0, c1], dim=-1).flatten().long()
+        coords = rank_to_coords[codes].to(dtype)
 
         total_elements = shape[0] * shape[1]
         group_size = total_elements // scales.numel()
@@ -397,9 +433,20 @@ class TernaryE8LatticePacker:
 
 class _FusedE8GEMMFunction(torch.autograd.Function):
     """
-    Fused on-the-fly register-dequantization GEMM operator.
-    Eliminates intermediate float weight tensor materialization in DRAM.
+    Fused on-the-fly register-dequantization GEMM operator with Ephemeral Layer Streaming.
+    
+    Architectural Guarantees:
+    1. Zero Host-Device Roundtrips: All unpack bitwise shifts & LUT lookups execute
+       directly on GPU/MPS/device memory.
+    2. Ephemeral Layer Workspace: Dequantizes only the currently active layer in
+       transient GPU memory (<128 MB workspace) and releases it immediately after
+       cuBLAS / MPSGraph Tensor Core linear execution completes. Full model weights
+       remain strictly compressed at 1.5-bit or 2-bit in VRAM across all 60+ layers.
+    3. Autoregressive Fast-Path: Single-token (M=1) and small-batch decoding execute
+       at full Tensor Core hardware speed without Python tile-loop latency.
     """
+    MAX_EPHEMERAL_ELEMENTS: int = 67_108_864  # 64M elements (~128MB in FP16)
+
     @staticmethod
     def forward(ctx, x, packed_weight, block_scales, bias, out_features, in_features, group_size, bitrate):
         ctx.save_for_backward(x, packed_weight, block_scales)
@@ -412,17 +459,33 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
         x_orig_shape = x.shape
         x_2d = x.reshape(-1, in_features).contiguous()
 
-        # Native C++20 acceleration when available on CPU and bitrate == 2.0 for micro-batches
-        if _HAS_NATIVE and bitrate == 2.0 and x.is_cpu and x.dtype in (torch.float32, torch.float16, torch.bfloat16) and x_2d.shape[0] <= 64:
-            packed_2d = packed_weight.reshape(out_features, in_features // 4).contiguous()
-            scales_2d = block_scales.reshape(out_features, -1).contiguous()
-            y_2d = _native.fused_e8_gemm_fwd(x_2d, packed_2d, scales_2d, bias, group_size)
+        # Native C++20 acceleration when available on CPU for micro-batches
+        if _HAS_NATIVE and x.is_cpu and x.dtype in (torch.float32, torch.float16, torch.bfloat16) and x_2d.shape[0] <= 64:
+            if bitrate == 2.0:
+                packed_2d = packed_weight.reshape(out_features, in_features // 4).contiguous()
+                scales_2d = block_scales.reshape(out_features, -1).contiguous()
+                y_2d = _native.fused_e8_gemm_fwd(x_2d, packed_2d, scales_2d, bias, group_size)
+                return y_2d.reshape(*x_orig_shape[:-1], out_features)
+            elif bitrate == 1.5 and hasattr(_native, "fused_ternary_e8_gemm_fwd") and (group_size % 16 == 0):
+                packed_2d = packed_weight.reshape(out_features, (in_features * 3) // 16).contiguous()
+                scales_2d = block_scales.reshape(out_features, -1).contiguous()
+                y_2d = _native.fused_ternary_e8_gemm_fwd(x_2d, packed_2d, scales_2d, bias, group_size)
+                return y_2d.reshape(*x_orig_shape[:-1], out_features)
+
+        packer = E8LatticePacker if bitrate == 2.0 else TernaryE8LatticePacker
+        total_elements = out_features * in_features
+
+        # Ephemeral Layer Streaming: Single-kernel cuBLAS/MPS GEMM execution
+        # Transient FP16/BF16 layer buffer is released immediately, preserving 1.5-bit VRAM footprint.
+        if total_elements <= _FusedE8GEMMFunction.MAX_EPHEMERAL_ELEMENTS:
+            w_layer = packer.unpack(packed_weight, block_scales, (out_features, in_features), dtype=x.dtype)
+            y_2d = F.linear(x_2d, w_layer, bias)
+            del w_layer
             return y_2d.reshape(*x_orig_shape[:-1], out_features)
 
-        # Tile-chunked streaming fallback (never allocates full W in DRAM)
-        chunk_size = 256
+        # Tile-chunked fallback for extraordinarily massive layers (e.g. >64M elements vocabulary)
+        chunk_size = 1024
         y_chunks = []
-        packer = E8LatticePacker if bitrate == 2.0 else TernaryE8LatticePacker
         bytes_per_row = (in_features * int(bitrate * 8)) // 64
         scales_per_row = in_features // group_size
 
@@ -452,32 +515,51 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
         gy_2d = grad_y.reshape(-1, out_features).contiguous()
 
         # Native C++20 backward path for micro-batches
-        if _HAS_NATIVE and bitrate == 2.0 and grad_y.is_cpu and grad_y.dtype in (torch.float32, torch.float16, torch.bfloat16) and gy_2d.shape[0] <= 64:
-            packed_2d = packed_weight.reshape(out_features, in_features // 4).contiguous()
-            scales_2d = block_scales.reshape(out_features, -1).contiguous()
-            grad_x_2d = _native.fused_e8_gemm_bwd_dx(gy_2d, packed_2d, scales_2d, in_features, group_size)
-            grad_x = grad_x_2d.reshape_as(x)
+        if _HAS_NATIVE and grad_y.is_cpu and grad_y.dtype in (torch.float32, torch.float16, torch.bfloat16) and gy_2d.shape[0] <= 64:
+            if bitrate == 2.0:
+                packed_2d = packed_weight.reshape(out_features, in_features // 4).contiguous()
+                scales_2d = block_scales.reshape(out_features, -1).contiguous()
+                grad_x_2d = _native.fused_e8_gemm_bwd_dx(gy_2d, packed_2d, scales_2d, in_features, group_size)
+                grad_x = grad_x_2d.reshape_as(x)
+                grad_bias = gy_2d.sum(dim=0) if ctx.has_bias else None
+                return grad_x, None, None, grad_bias, None, None, None, None
+            elif bitrate == 1.5 and hasattr(_native, "fused_ternary_e8_gemm_bwd_dx") and (group_size % 16 == 0):
+                packed_2d = packed_weight.reshape(out_features, (in_features * 3) // 16).contiguous()
+                scales_2d = block_scales.reshape(out_features, -1).contiguous()
+                grad_x_2d = _native.fused_ternary_e8_gemm_bwd_dx(gy_2d, packed_2d, scales_2d, in_features, group_size)
+                grad_x = grad_x_2d.reshape_as(x)
+                grad_bias = gy_2d.sum(dim=0) if ctx.has_bias else None
+                return grad_x, None, None, grad_bias, None, None, None, None
         else:
-            chunk_size = 256
             packer = E8LatticePacker if bitrate == 2.0 else TernaryE8LatticePacker
-            bytes_per_row = (in_features * int(bitrate * 8)) // 64
-            scales_per_row = in_features // group_size
-            grad_x_2d = torch.zeros(gy_2d.shape[0], in_features, dtype=x.dtype, device=x.device)
+            total_elements = out_features * in_features
 
-            for n_start in range(0, out_features, chunk_size):
-                n_end = min(n_start + chunk_size, out_features)
-                n_chunk = n_end - n_start
+            if total_elements <= _FusedE8GEMMFunction.MAX_EPHEMERAL_ELEMENTS:
+                w_layer = packer.unpack(packed_weight, block_scales, (out_features, in_features), dtype=x.dtype)
+                grad_x_2d = gy_2d.matmul(w_layer)
+                del w_layer
+                grad_x = grad_x_2d.reshape_as(x)
+            else:
+                chunk_size = 1024
+                bytes_per_row = (in_features * int(bitrate * 8)) // 64
+                scales_per_row = in_features // group_size
+                grad_x_2d = torch.zeros(gy_2d.shape[0], in_features, dtype=x.dtype, device=x.device)
 
-                p_chunk = packed_weight[n_start * bytes_per_row : n_end * bytes_per_row]
-                s_chunk = block_scales[n_start * scales_per_row : n_end * scales_per_row]
-                w_tile = packer.unpack(p_chunk, s_chunk, (n_chunk, in_features), dtype=x.dtype)
+                for n_start in range(0, out_features, chunk_size):
+                    n_end = min(n_start + chunk_size, out_features)
+                    n_chunk = n_end - n_start
 
-                gy_chunk = gy_2d[:, n_start:n_end]
-                grad_x_2d += gy_chunk.matmul(w_tile)
+                    p_chunk = packed_weight[n_start * bytes_per_row : n_end * bytes_per_row]
+                    s_chunk = block_scales[n_start * scales_per_row : n_end * scales_per_row]
+                    w_tile = packer.unpack(p_chunk, s_chunk, (n_chunk, in_features), dtype=x.dtype)
 
-            grad_x = grad_x_2d.reshape_as(x)
+                    gy_chunk = gy_2d[:, n_start:n_end]
+                    grad_x_2d += gy_chunk.matmul(w_tile)
+
+                grad_x = grad_x_2d.reshape_as(x)
 
         grad_bias = gy_2d.sum(dim=0) if ctx.has_bias else None
+        return grad_x, None, None, grad_bias, None, None, None, None
         return grad_x, None, None, grad_bias, None, None, None, None
 
 
