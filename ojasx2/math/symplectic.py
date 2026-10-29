@@ -336,21 +336,18 @@ class StormerVerletIntegrator:
 
             f_l, g_l = _extract_stage_fg(stages[l])
 
-            # Exit half-step of stage l
             if l == L - 1:
                 rec_q.sub_(f_l(rec_p.to(orig_dtype)).to(acc_dtype), alpha=0.5 * step_dt)
+            else:
+                f_next, _ = _extract_stage_fg(stages[l + 1])
+                fl_val = f_l(rec_p.to(orig_dtype)).to(acc_dtype)
+                fnext_val = f_next(rec_p.to(orig_dtype)).to(acc_dtype)
+                rec_q.sub_(fl_val + fnext_val, alpha=0.5 * step_dt)
 
-            # Reverse full momentum step
             rec_p.sub_(g_l(rec_q.to(orig_dtype)).to(acc_dtype), alpha=step_dt)
 
-            # Reverse FSAL fused half-step
-            if l > 0:
-                f_prev, _ = _extract_stage_fg(stages[l - 1])
-                fl_val = f_l(rec_p.to(orig_dtype)).to(acc_dtype)
-                fprev_val = f_prev(rec_p.to(orig_dtype)).to(acc_dtype)
-                rec_q.sub_(fl_val + fprev_val, alpha=0.5 * step_dt)
-            else:
-                rec_q.sub_(f_l(rec_p.to(orig_dtype)).to(acc_dtype), alpha=0.5 * step_dt)
+        f_0, _ = _extract_stage_fg(stages[0])
+        rec_q.sub_(f_0(rec_p.to(orig_dtype)).to(acc_dtype), alpha=0.5 * step_dt)
 
         return rec_q.to(orig_dtype), rec_p.to(orig_dtype)
 
