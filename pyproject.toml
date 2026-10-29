@@ -42,6 +42,9 @@ ojasx-doctor = "ojasx2.doctor:main"
 holonomic = "ojasx2.holonomic_math_compiler:holonomic_backend"
 holonomic_aot = "ojasx2.aot_holonomic_compiler:holonomic_aot_backend"
 
+[tool.setuptools]
+py-modules = ["ojasx"]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["ojasx2", "ojasx2.*"]

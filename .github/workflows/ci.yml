@@ -22,6 +22,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure Git Safe Directory
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -37,13 +43,17 @@ jobs:
           pip install -e .
 
       - name: Run Exhaustive Mathematical Tests & CI Verification
+        env:
+          PYTHONPATH: .
+          CI: "true"
+          OJASX_DISABLE_UPDATE_CHECK: "1"
         run: |
-          pytest tests/test_v011_5_findings.py \
-                 tests/test_ojasx_exhaustive.py \
-                 tests/test_tilelang_and_root_e8.py \
-                 tests/test_e8_lattice.py \
-                 tests/test_dagger_attention.py \
-                 tests/test_fused_cross_entropy.py \
-                 tests/test_symplectic_numerical_mechanics.py \
-                 tests/test_z3_symplectic_stability.py \
-                 -v
+          python -m pytest tests/test_v011_5_findings.py \
+                           tests/test_ojasx_exhaustive.py \
+                           tests/test_tilelang_and_root_e8.py \
+                           tests/test_e8_lattice.py \
+                           tests/test_dagger_attention.py \
+                           tests/test_fused_cross_entropy.py \
+                           tests/test_symplectic_numerical_mechanics.py \
+                           tests/test_z3_symplectic_stability.py \
+                           -v

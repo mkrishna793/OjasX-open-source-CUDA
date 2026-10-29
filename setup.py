@@ -243,6 +243,7 @@ class OjasXDistribution(Distribution):
 
 if __name__ == "__main__":
     setup(
+        py_modules=["ojasx"],
         packages=find_packages(
             where=".",
             include=["ojasx2", "ojasx2.*"],
