@@ -540,7 +540,10 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
         else:
             x_rot = x
 
-        ctx.save_for_backward(x_rot, packed_weight, block_scales)
+        ctx.save_for_backward(packed_weight, block_scales)
+        ctx.x_shape = x_rot.shape
+        ctx.x_dtype = x_rot.dtype
+        ctx.x_device = x_rot.device
         ctx.in_features = in_features
         ctx.out_features = out_features
         ctx.group_size = group_size
@@ -607,7 +610,10 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_y: torch.Tensor):
-        x_rot, packed_weight, block_scales = ctx.saved_tensors
+        packed_weight, block_scales = ctx.saved_tensors
+        x_shape = ctx.x_shape
+        x_dtype = ctx.x_dtype
+        x_device = ctx.x_device
         in_features = ctx.in_features
         out_features = ctx.out_features
         group_size = ctx.group_size
@@ -627,7 +633,7 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
                 packed_2d = packed_weight.reshape(out_features, in_features // 4).contiguous()
                 scales_2d = block_scales.reshape(out_features, -1).contiguous()
                 grad_x_2d = _native.fused_e8_gemm_bwd_dx(gy_2d, packed_2d, scales_2d, in_features, group_size)
-                grad_x = grad_x_2d.reshape_as(x_rot)
+                grad_x = grad_x_2d.reshape(x_shape)
                 if use_hadamard and in_features % 32 == 0:
                     grad_x = fwht_block32(grad_x)
                 grad_bias = gy_2d.sum(dim=0) if ctx.has_bias else None
@@ -636,7 +642,7 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
                 packed_2d = packed_weight.reshape(out_features, (in_features * 3) // 16).contiguous()
                 scales_2d = block_scales.reshape(out_features, -1).contiguous()
                 grad_x_2d = _native.fused_ternary_e8_gemm_bwd_dx(gy_2d, packed_2d, scales_2d, in_features, group_size)
-                grad_x = grad_x_2d.reshape_as(x_rot)
+                grad_x = grad_x_2d.reshape(x_shape)
                 if use_hadamard and in_features % 32 == 0:
                     grad_x = fwht_block32(grad_x)
                 grad_bias = gy_2d.sum(dim=0) if ctx.has_bias else None
@@ -648,25 +654,25 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
         if total_elements <= _FusedE8GEMMFunction.MAX_EPHEMERAL_ELEMENTS:
             w_layer = packer.unpack(
                 packed_weight, block_scales, (out_features, in_features),
-                dtype=x_rot.dtype, use_workspace=True,
+                dtype=x_dtype, use_workspace=True,
             )
             grad_x_2d = gy_2d.matmul(w_layer)
-            grad_x = grad_x_2d.reshape_as(x_rot)
+            grad_x = grad_x_2d.reshape(x_shape)
         else:
             chunk_size = 1024
             bytes_per_row = int(in_features * bitrate) // 8
             scales_per_row = in_features // group_size
-            grad_x_2d = torch.zeros(gy_2d.shape[0], in_features, dtype=x_rot.dtype, device=x_rot.device)
+            grad_x_2d = torch.zeros(gy_2d.shape[0], in_features, dtype=x_dtype, device=x_device)
 
             for n_start in range(0, out_features, chunk_size):
                 n_end = min(n_start + chunk_size, out_features)
                 n_chunk = n_end - n_start
                 p_chunk = packed_weight[n_start * bytes_per_row : n_end * bytes_per_row]
                 s_chunk = block_scales[n_start * scales_per_row : n_end * scales_per_row]
-                w_tile = packer.unpack(p_chunk, s_chunk, (n_chunk, in_features), dtype=x_rot.dtype, use_workspace=True)
+                w_tile = packer.unpack(p_chunk, s_chunk, (n_chunk, in_features), dtype=x_dtype, use_workspace=True)
                 grad_x_2d.add_(gy_2d[:, n_start:n_end].matmul(w_tile))
 
-            grad_x = grad_x_2d.reshape_as(x_rot)
+            grad_x = grad_x_2d.reshape(x_shape)
 
         if use_hadamard and in_features % 32 == 0:
             grad_x = fwht_block32(grad_x)
