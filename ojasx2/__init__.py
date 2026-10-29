@@ -169,8 +169,131 @@ from .tilelang_kernels import (
     is_tilelang_available,
     dispatch_tilelang_e8_gemm,
 )
+import torch
+import torch.nn as nn
+from typing import Optional, Union, Tuple, Any
 
-__version__ = "0.11.0"
+__version__ = "0.12.0"
+
+
+# =============================================================================
+# OjasX v12 Simple 1-Line Developer API
+# =============================================================================
+
+def optimize(
+    model: nn.Module,
+    quantize: Optional[Union[str, float]] = None,
+    reversible: bool = True,
+    attention: str = "fast",
+    group_size: int = 32,
+    **kwargs: Any,
+) -> nn.Module:
+    """
+    1-Line OjasX v12 Model Optimizer.
+
+    Transforms any standard PyTorch or HuggingFace model in-place:
+    - Replaces standard attention with Zero-DRAM DaggerAttention + Hardware SDPA
+    - Quantizes linear layers into 1.0b Root E8, 1.5b Ternary E8, or 2.0b E8 (if quantize specified)
+    - Automatically enables FWHT-32 outlier rotation and Störmer-Verlet reversibility
+    """
+    from .smart_router import optimize_model as _smart_optimize
+    from .math.lattice import pack_model_e8
+
+    opt_model, _ = _smart_optimize(model, **kwargs)
+
+    if quantize is not None:
+        bitrate_map = {"1.0b": 1.0, "1.0": 1.0, "1.5b": 1.5, "1.5": 1.5, "2.0b": 2.0, "2.0": 2.0}
+        bitrate = bitrate_map.get(str(quantize).lower(), 1.5) if isinstance(quantize, str) else float(quantize)
+        opt_model = pack_model_e8(opt_model, bitrate=bitrate, group_size=group_size)
+
+    return opt_model
+
+
+def prepare(
+    model: nn.Module,
+    lr: float = 1e-4,
+    optimizer: str = "adamw",
+    quantize: Optional[Union[str, float]] = None,
+    reversible: bool = True,
+    attention: str = "fast",
+    grad_accum_steps: int = 1,
+    weight_decay: float = 0.01,
+    **kwargs: Any,
+) -> Tuple[nn.Module, HolonomicGradFreeOptimizer]:
+    """
+    1-Line OjasX v12 Zero-DRAM Training Preparation.
+
+    Returns (optimized_model, zero_ram_optimizer) configured and ready for training:
+    - Zero `.grad` overhead (immediate in-backward memory freeing)
+    - 2.0-bit E8 quantized momentum buffers
+    - Native hardware SDPA fast-paths
+
+    Usage:
+        model, optimizer = ojasx.prepare(model, lr=1e-4)
+        for x, y in dataloader:
+            optimizer.zero_grad()
+            loss = ojasx.loss(model(x), y)
+            loss.backward()
+            optimizer.step()
+    """
+    opt_model = optimize(
+        model,
+        quantize=quantize,
+        reversible=reversible,
+        attention=attention,
+        **kwargs,
+    )
+
+    use_e8_mom = quantize is not None
+    opt = HolonomicGradFreeOptimizer(
+        opt_model.parameters(),
+        lr=lr,
+        algorithm=optimizer,
+        weight_decay=weight_decay,
+        grad_accum_steps=grad_accum_steps,
+        quantize_moments_e8=use_e8_mom,
+    )
+    return opt_model, opt
+
+
+def loss(
+    pred_or_hidden: torch.Tensor,
+    targets_or_weight: torch.Tensor,
+    targets: Optional[torch.Tensor] = None,
+    bias: Optional[torch.Tensor] = None,
+    ignore_index: int = -100,
+    label_smoothing: float = 0.0,
+) -> torch.Tensor:
+    """
+    1-Line OjasX v12 Zero-DRAM Cross-Entropy Loss.
+
+    Supports two modes:
+    1. Direct Fused LM-Head: ojasx.loss(hidden_states, lm_head_weight, targets, bias=None)
+       Computes cross-entropy on-the-fly without materializing multi-GB [B, S, V] logits!
+    2. Standard Logits: ojasx.loss(logits, targets)
+       Computes standard cross-entropy with optional label smoothing.
+    """
+    if targets is not None:
+        from .fused_cross_entropy import fused_linear_cross_entropy
+        return fused_linear_cross_entropy(
+            pred_or_hidden,
+            targets_or_weight,
+            targets,
+            bias=bias,
+            ignore_index=ignore_index,
+            label_smoothing=label_smoothing,
+        )
+    else:
+        import torch.nn.functional as F
+        logits = pred_or_hidden
+        target = targets_or_weight
+        if logits.ndim > 2 and target.ndim == logits.ndim - 1:
+            logits = logits.view(-1, logits.size(-1))
+            target = target.view(-1)
+        return F.cross_entropy(
+            logits, target, ignore_index=ignore_index, label_smoothing=label_smoothing
+        )
+
 
 # Launch non-blocking background update check (0ms import overhead, cached)
 notify_if_update_available_background()

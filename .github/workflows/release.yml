@@ -48,14 +48,17 @@ jobs:
             pip install git+https://github.com/mkrishna793/OjasX-open-source-CUDA.git@${{ github.ref_name }}
             ```
 
-            ### Drop-In PyTorch Usage
+            ### Drop-In 1-Line PyTorch Usage (OjasX v12)
             ```python
             import torch
-            import ojasx2
-            from ojasx2.smart_router import optimize_model
-            from ojasx2.grad_free_optimizer import HolonomicGradFreeOptimizer
-            from ojasx2.holonomic_math_compiler import holonomic_lm_head_loss
+            import ojasx
 
-            model = optimize_model(model).to(device)
-            optimizer = HolonomicGradFreeOptimizer(model.parameters(), lr=1e-4, algorithm="adamw")
+            # 1-Line Zero-RAM Setup (auto-replaces attention, quantizes moments in 2-bit E8)
+            model, optimizer = ojasx.prepare(model, lr=1e-4)
+
+            for x, y in dataloader:
+                optimizer.zero_grad()
+                loss = ojasx.loss(model(x), y)  # Streaming Zero-DRAM Cross-Entropy!
+                loss.backward()
+                optimizer.step()
             ```

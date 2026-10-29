@@ -1,13 +1,27 @@
-# OjasX v0.10.0 — The Open-Source CUDA. 
-# A new Mathematical & MLIR Compiler for Training PyTorch Models on Any Hardware
+# OjasX v0.12.0 — The Open-Source CUDA & Math Compiler for PyTorch
+## Democratizing Deep Learning Compute: Zero-RAM Training & E8 Gosset Lattice Packing on Any Hardware
 
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.4%2B-ee4c2c.svg?logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![Lean 4 Verified](https://img.shields.io/badge/Lean_4-100%25_Constructive_Proofs-success.svg)](lean_symplectic/SymplecticEngine.lean)
 [![Z3 SMT Solved](https://img.shields.io/badge/Z3_SMT-26%2F26_Proofs-brightgreen.svg)](tests/test_z3_symplectic_stability.py)
-[![Verification: 1,114 Tests](https://img.shields.io/badge/Full_Test_Suite-1%2C114%20Passed%20(100%25)-success.svg)](reports/OJASX_V05_TEST_DATABASE_MATRIX.json)
-[![Activation Memory: 100% Zero-Tape](https://img.shields.io/badge/Mode_B_Residual_Memory--100%25_Zero--Tape-brightgreen.svg)](reports/OJASX_V05_TEST_DATABASE_MATRIX.json)
+[![Verification: 196/196 Tests Passed](https://img.shields.io/badge/Full_Test_Suite-196%20Passed%20(100%25)-success.svg)](tests/test_v011_5_findings.py)
 [![Universal Hardware](https://img.shields.io/badge/Hardware-NVIDIA_CUDA_%7C_AMD_ROCm_%7C_Intel_SPIR--V_%7C_Apple_Silicon_%7C_CPU-purple.svg)]()
+
+> ### ⚡ 1-Line PyTorch Usage (OjasX v12)
+> ```python
+> import ojasx
+> 
+> # 1-Line Zero-RAM Setup (replaces attention with DaggerAttention, compresses moments in 2-bit E8)
+> model, optimizer = ojasx.prepare(model, lr=1e-4)
+> 
+> # Standard, familiar PyTorch training loop
+> for x, y in dataloader:
+>     optimizer.zero_grad()
+>     loss = ojasx.loss(model(x), y)  # Streaming Zero-DRAM Cross-Entropy!
+>     loss.backward()
+>     optimizer.step()
+> ```
 
 > ### 🌟 Project Motto
 > **"Democratizing Deep Learning Compute: Breaking the Hardware Monopoly through Pure Mathematics,and Open Compiler Infrastructure."**

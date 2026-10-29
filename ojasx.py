@@ -21,4 +21,7 @@ Enables seamless `import ojasx` across all user scripts and workflows.
 
 from ojasx2 import *
 import ojasx2 as _ojasx2
+from ojasx2 import prepare, optimize, loss
+
 __version__ = _ojasx2.__version__
+__all__ = _ojasx2.__all__ if hasattr(_ojasx2, "__all__") else ["prepare", "optimize", "loss", "__version__"]
