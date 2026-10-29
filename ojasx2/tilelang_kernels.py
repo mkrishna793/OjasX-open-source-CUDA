@@ -91,9 +91,18 @@ def _build_tl_e8_2bit_gemm(
                 T.clear(C_frag)
 
                 for ko in T.Pipelined(T.ceildiv(K, block_K), num_stages=2):
-                    T.copy(X[by * block_M, ko * block_K], X_shared)
-                    T.copy(W_packed[bx * block_N, ko * packed_block_K], W_pack_shared)
-                    T.copy(Scales[bx * block_N, ko * groups_per_block], S_shared)
+                    T.copy(
+                        X[by * block_M : (by + 1) * block_M, ko * block_K : (ko + 1) * block_K],
+                        X_shared,
+                    )
+                    T.copy(
+                        W_packed[bx * block_N : (bx + 1) * block_N, ko * packed_block_K : (ko + 1) * packed_block_K],
+                        W_pack_shared,
+                    )
+                    T.copy(
+                        Scales[bx * block_N : (bx + 1) * block_N, ko * groups_per_block : (ko + 1) * groups_per_block],
+                        S_shared,
+                    )
 
                     # In-SRAM bitwise unpacking: 1 byte -> 4 E8 coordinates
                     for i, j_byte in T.Parallel(block_N, packed_block_K):
@@ -108,7 +117,10 @@ def _build_tl_e8_2bit_gemm(
 
                     T.gemm(X_shared, W_deq_shared, C_frag, transpose_B=True)
 
-                T.copy(C_frag, Y[by * block_M, bx * block_N])
+                T.copy(
+                    C_frag,
+                    Y[by * block_M : (by + 1) * block_M, bx * block_N : (bx + 1) * block_N],
+                )
 
         return main
 
@@ -161,9 +173,18 @@ def _build_tl_ternary_e8_1_5bit_gemm(
                 T.clear(C_frag)
 
                 for ko in T.Pipelined(T.ceildiv(K, block_K), num_stages=2):
-                    T.copy(X[by * block_M, ko * block_K], X_shared)
-                    T.copy(W_packed[bx * block_N, ko * packed_block_K], W_pack_shared)
-                    T.copy(Scales[bx * block_N, ko * groups_per_block], S_shared)
+                    T.copy(
+                        X[by * block_M : (by + 1) * block_M, ko * block_K : (ko + 1) * block_K],
+                        X_shared,
+                    )
+                    T.copy(
+                        W_packed[bx * block_N : (bx + 1) * block_N, ko * packed_block_K : (ko + 1) * packed_block_K],
+                        W_pack_shared,
+                    )
+                    T.copy(
+                        Scales[bx * block_N : (bx + 1) * block_N, ko * groups_per_block : (ko + 1) * groups_per_block],
+                        S_shared,
+                    )
 
                     # Unpack 3 bytes -> two 12-bit Ternary E8 rank codes -> 16 weights
                     for i, blk16 in T.Parallel(block_N, blocks16_per_tile):
@@ -189,7 +210,10 @@ def _build_tl_ternary_e8_1_5bit_gemm(
 
                     T.gemm(X_shared, W_deq_shared, C_frag, transpose_B=True)
 
-                T.copy(C_frag, Y[by * block_M, bx * block_N])
+                T.copy(
+                    C_frag,
+                    Y[by * block_M : (by + 1) * block_M, bx * block_N : (bx + 1) * block_N],
+                )
 
         return main
 
