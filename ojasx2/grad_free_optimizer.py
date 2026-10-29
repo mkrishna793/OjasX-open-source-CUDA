@@ -3,8 +3,9 @@ ojasx2/grad_free_optimizer.py
 
 Upgraded Fused Backward-to-Optimizer Engine (`HolonomicGradFreeOptimizer`).
 - Zero persistent `.grad` memory AND zero `grad_accum` buffer memory for AdamW/Adafactor.
-- Running cross-layer global gradient norm tracker.
-- Optional 2.0-bit E8 Lattice compression for first-moment momentum states.
+- Auto-latching cross-layer global gradient norm tracker (even when `.step()` is omitted).
+- Arbitrary-shape 2.0-bit E8 Lattice compression for first-moment momentum states (with automatic tail padding).
+- Non-finite (`NaN`/`Inf`) gradient guard for mixed-precision stability.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import math
 from typing import Any, Dict, Iterable, List, Optional, Union
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.optim import Optimizer
 
 from .math.lattice import E8LatticePacker
@@ -33,6 +35,7 @@ class HolonomicGradFreeOptimizer(Optimizer):
         max_grad_norm: Optional[float] = None,
         grad_accum_steps: int = 1,
         quantize_moments_e8: bool = False,
+        skip_if_nonfinite: bool = True,
         enabled: bool = True,
     ) -> None:
         algo_lower = algorithm.lower()
@@ -44,13 +47,16 @@ class HolonomicGradFreeOptimizer(Optimizer):
         self.algorithm = "adafactor" if algo_lower == "low_memory_adamw" else algo_lower
         self.grad_accum_steps = int(grad_accum_steps)
         self.quantize_moments_e8 = bool(quantize_moments_e8)
+        self.skip_if_nonfinite = bool(skip_if_nonfinite)
         self.enabled = bool(enabled)
         self._param_to_group: Dict[nn.Parameter, Dict[str, Any]] = {}
         self._handles: List[Any] = []
         self.last_step_freed_bytes: int = 0
         self.last_step_updated_params: int = 0
+        self.skipped_nonfinite_updates: int = 0
         self._running_global_norm_sq: float = 0.0
         self._prev_global_norm: float = 0.0
+        self._hooks_fired_in_cycle: int = 0
 
         defaults = dict(
             lr=float(lr),
@@ -62,10 +68,14 @@ class HolonomicGradFreeOptimizer(Optimizer):
             max_grad_norm=float(max_grad_norm) if max_grad_norm is not None else None,
             grad_accum_steps=int(grad_accum_steps),
             quantize_moments_e8=bool(quantize_moments_e8),
+            skip_if_nonfinite=bool(skip_if_nonfinite),
             enabled=bool(enabled),
         )
 
         super().__init__(params, defaults)
+
+    def _trainable_param_count(self) -> int:
+        return sum(1 for g in self.param_groups for p in g["params"] if p.requires_grad)
 
     def _refresh_param_groups_and_hooks(self) -> None:
         self.remove_hooks()
@@ -97,20 +107,25 @@ class HolonomicGradFreeOptimizer(Optimizer):
         if "exp_avg_packed" in st:
             packed = st["exp_avg_packed"]
             scales = st["exp_avg_scales"]
-            in_dim = 32
-            out_dim = target_shape.numel() // in_dim
+            padded_rows = st.get("exp_avg_padded_rows", target_shape.numel() // 32)
             unpacked = E8LatticePacker.unpack(
-                packed, scales, (out_dim, in_dim), dtype=dtype
+                packed, scales, (padded_rows, 32), dtype=dtype
             )
-            return unpacked.view(target_shape)
+            return unpacked.reshape(-1)[: target_shape.numel()].view(target_shape)
         return st["exp_avg"].to(dtype)
 
     @staticmethod
     def _pack_exp_avg(st: Dict[str, Any], tensor: torch.Tensor, use_e8: bool, storage_dtype: torch.dtype) -> None:
-        if use_e8 and tensor.numel() >= 32 and tensor.numel() % 32 == 0:
-            packed, scales, _ = E8LatticePacker.pack(tensor.view(-1, 32), group_size=32)
+        if use_e8 and tensor.numel() >= 8:
+            flat = tensor.reshape(-1)
+            pad_len = (-flat.numel()) % 32
+            if pad_len > 0:
+                flat = F.pad(flat, (0, pad_len))
+            padded_rows = flat.numel() // 32
+            packed, scales, _ = E8LatticePacker.pack(flat.view(padded_rows, 32), group_size=32)
             st["exp_avg_packed"] = packed
             st["exp_avg_scales"] = scales
+            st["exp_avg_padded_rows"] = padded_rows
             st.pop("exp_avg", None)
         else:
             if "exp_avg" not in st or st["exp_avg"] is None:
@@ -132,14 +147,20 @@ class HolonomicGradFreeOptimizer(Optimizer):
             grad_bytes = grad.numel() * grad.element_size()
             grad_accum_steps = int(group.get("grad_accum_steps", self.grad_accum_steps))
             use_e8_mom = bool(group.get("quantize_moments_e8", self.quantize_moments_e8))
+            skip_nonfinite = bool(group.get("skip_if_nonfinite", self.skip_if_nonfinite))
+
+            if skip_nonfinite and not bool(torch.isfinite(grad).all()):
+                _p.grad = None
+                self.last_step_freed_bytes += grad_bytes
+                self.skipped_nonfinite_updates += 1
+                return
 
             st = self.state[_p]
 
-            # Track global norm components across layers
-            grad_sq_norm = float(torch.linalg.vector_norm(grad).square().item())
+            grad_sq_norm = float(torch.linalg.vector_norm(grad.float()).square().item())
             self._running_global_norm_sq += grad_sq_norm
+            self._hooks_fired_in_cycle += 1
 
-            # Micro-step accumulation without extra DRAM allocation
             if grad_accum_steps > 1:
                 st["accum_count"] = st.get("accum_count", 0) + 1
                 scaled_grad = grad / float(grad_accum_steps)
@@ -161,7 +182,6 @@ class HolonomicGradFreeOptimizer(Optimizer):
                 _p.grad = None
                 self.last_step_freed_bytes += grad_bytes
 
-            # Dynamic hyperparameter retrieval (100% lr_scheduler compatible)
             lr = float(group["lr"])
             weight_decay = float(group.get("weight_decay", 0.0))
             betas = group.get("betas", (0.9, 0.999))
@@ -172,18 +192,16 @@ class HolonomicGradFreeOptimizer(Optimizer):
             if algo == "low_memory_adamw":
                 algo = "adafactor"
 
-            # Global / Local gradient norm clipping
             if max_grad_norm is not None and max_grad_norm > 0:
                 if self._prev_global_norm > 0:
                     effective_norm = self._prev_global_norm
                 else:
-                    effective_norm = float(torch.linalg.vector_norm(effective_grad).item())
+                    effective_norm = float(torch.linalg.vector_norm(effective_grad.float()).item())
                 if effective_norm > max_grad_norm:
                     effective_grad = effective_grad * (max_grad_norm / (effective_norm + 1e-6))
 
             st["step"] = st.get("step", 0) + 1
             step = st["step"]
-
             is_half = _p.dtype in (torch.float16, torch.bfloat16)
 
             if algo == "sgd":
@@ -307,12 +325,20 @@ class HolonomicGradFreeOptimizer(Optimizer):
 
             self.last_step_updated_params += 1
 
+            # Auto-latch global norm when all trainable parameters have fired in this backward pass
+            total_trainable = self._trainable_param_count()
+            if total_trainable > 0 and self._hooks_fired_in_cycle >= total_trainable:
+                self._prev_global_norm = math.sqrt(self._running_global_norm_sq)
+                self._running_global_norm_sq = 0.0
+                self._hooks_fired_in_cycle = 0
+
         return _hook
 
     def reset_step_metrics(self) -> None:
         if self._running_global_norm_sq > 0.0:
             self._prev_global_norm = math.sqrt(self._running_global_norm_sq)
             self._running_global_norm_sq = 0.0
+        self._hooks_fired_in_cycle = 0
         self.last_step_freed_bytes = 0
         self.last_step_updated_params = 0
 
@@ -330,7 +356,6 @@ class HolonomicGradFreeOptimizer(Optimizer):
                     self.state[p]["accum_count"] = 0
 
     def step(self, closure: Optional[Any] = None) -> Optional[float]:
-        """Updates applied during backward hook. Calling step() resets step metrics and executes closure if provided."""
         self.reset_step_metrics()
         loss = None
         if closure is not None:
@@ -339,7 +364,6 @@ class HolonomicGradFreeOptimizer(Optimizer):
         return loss
 
     def persistent_grad_bytes(self) -> int:
-        """Returns bytes currently occupied by persistent `.grad` tensors (should be 0 after backward)."""
         total = 0
         for group in self.param_groups:
             for p in group["params"]:
@@ -377,9 +401,4 @@ class HolonomicGradFreeOptimizer(Optimizer):
 
     @property
     def params(self) -> List[nn.Parameter]:
-        """Convenience property returning all trainable parameters across all groups."""
-        res = []
-        for group in self.param_groups:
-            for p in group["params"]:
-                res.append(p)
-        return res
+        return [p for group in self.param_groups for p in group["params"]]

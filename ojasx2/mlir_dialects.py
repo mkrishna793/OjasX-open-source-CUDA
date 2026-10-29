@@ -1107,6 +1107,7 @@ class HolonomicToSubgraphPass:
             new_ops: List[MLIROperation] = []
             val_remap: Dict[str, MLIRValue] = {}
             for op in func.body.operations:
+                prev_len = len(new_ops)
                 # Remap operands if previous ops were transformed
                 remapped_operands = [val_remap.get(o.name, o) for o in op.operands]
 
@@ -1115,10 +1116,11 @@ class HolonomicToSubgraphPass:
                         # Decompose morphism into contraction and residual lifetime
                         x, w = remapped_operands[0], remapped_operands[1]
                         ret_type = op.results[0].type
+                        cost_val = _calc_contraction_flops(x, w, 65536)
                         c_op = SubgraphDialect.contraction(
                             tensors=[x, w],
                             order="x @ w.T",
-                            cost_metric=65536,
+                            cost_metric=cost_val,
                             result_type=ret_type,
                             val_idx=val_counter,
                         )
@@ -1347,6 +1349,10 @@ class HolonomicToSubgraphPass:
                         )
                     )
 
+                if "fx_node" in op.attributes:
+                    for added_new_op in new_ops[prev_len:]:
+                        added_new_op.attributes["fx_node"] = op.attributes["fx_node"]
+
             new_func = MLIRFunction(
                 name=func.name,
                 args=list(func.args),
@@ -1377,6 +1383,7 @@ class SubgraphToTilePass:
             new_ops: List[MLIROperation] = []
             val_remap: Dict[str, MLIRValue] = {}
             for op in func.body.operations:
+                prev_len = len(new_ops)
                 remapped_operands = [val_remap.get(o.name, o) for o in op.operands]
 
                 if op.dialect == "ojasx.subgraph" and op.op_name in (
@@ -1451,6 +1458,10 @@ class SubgraphToTilePass:
                             regions=list(op.regions),
                         )
                     )
+
+                if "fx_node" in op.attributes:
+                    for added_new_op in new_ops[prev_len:]:
+                        added_new_op.attributes["fx_node"] = op.attributes["fx_node"]
 
             new_func = MLIRFunction(
                 name=func.name,
@@ -1886,6 +1897,44 @@ def _trace_or_build_fx_graph(
     return fx.GraphModule(gm_or_model, graph), gm_or_model
 
 
+def _infer_node_tensor_type(gm: GraphModule, node: Node, default_shape: Tuple[Union[int, str], ...] = ("?", 128)) -> TensorType:
+    """Extracts TensorType from FX ShapeProp metadata or get_attr parameters."""
+    tmeta = node.meta.get("tensor_meta") or node.meta.get("val")
+    if tmeta is not None and hasattr(tmeta, "shape"):
+        shape = tuple(int(d) if isinstance(d, int) else "?" for d in tmeta.shape)
+        dt = getattr(tmeta, "dtype", torch.float32)
+        width = 16 if dt in (torch.float16, torch.bfloat16) else (64 if dt == torch.float64 else 32)
+        return TensorType(shape if shape else default_shape, FloatType(width))
+    if node.op == "get_attr":
+        try:
+            atoms = str(node.target).split(".")
+            obj: Any = gm
+            for a in atoms:
+                obj = getattr(obj, a, None)
+            if isinstance(obj, torch.Tensor):
+                return TensorType(tuple(int(d) for d in obj.shape), FloatType(32))
+        except Exception:
+            pass
+    return TensorType(default_shape, FloatType(32))
+
+
+def _calc_contraction_flops(x_val: MLIRValue, w_val: MLIRValue, default_cost: int = 65536) -> int:
+    try:
+        t_x = x_val.type
+        t_w = w_val.type
+        if isinstance(t_x, TensorType) and isinstance(t_w, TensorType):
+            m = 1
+            for d in t_x.shape[:-1]:
+                if isinstance(d, int):
+                    m *= d
+            k = t_x.shape[-1] if isinstance(t_x.shape[-1], int) else 128
+            n = t_w.shape[0] if isinstance(t_w.shape[0], int) else (t_w.shape[-1] if isinstance(t_w.shape[-1], int) else 256)
+            return max(1, 2 * m * n * k)
+    except Exception:
+        pass
+    return default_cost
+
+
 def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
     """Constructs an ojasx.holonomic MLIRModule from a PyTorch FX GraphModule.
 
@@ -1907,9 +1956,8 @@ def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
 
     for node in gm.graph.nodes:
         if node.op == "placeholder":
-            shape: Tuple[Union[int, str], ...] = ("?", 128)
-            dtype = FloatType(32)
-            arg_val = MLIRValue(f"%{node.name}", TensorType(shape, dtype))
+            arg_type = _infer_node_tensor_type(gm, node, ("?", 128))
+            arg_val = MLIRValue(f"%{node.name}", arg_type)
             _register_arg(arg_val)
 
     body_ops: List[MLIROperation] = []
@@ -1924,9 +1972,11 @@ def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
 
     for node in gm.graph.nodes:
         if node.op == "get_attr":
-            attr_val = _register_arg(MLIRValue(f"%{node.name}", TensorType(("?", 128), FloatType(32))))
+            attr_type = _infer_node_tensor_type(gm, node, ("?", 128))
+            attr_val = _register_arg(MLIRValue(f"%{node.name}", attr_type))
             node_to_val[node] = attr_val
         elif node.op in ("call_function", "call_module", "call_method"):
+            prev_op_len = len(body_ops)
             target_str = str(node.target)
             fn_self = getattr(node.target, "__self__", None)
             if fn_self is not None and hasattr(fn_self, "__name__"):
@@ -2096,8 +2146,15 @@ def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
             elif "linear" in t_low or "gemm" in t_low or "matmul" in t_low:
                 default_in = args[0] if args else _register_arg(MLIRValue("%0", TensorType(("?", 128), FloatType(32))))
                 in_val = node_to_val.get(node.args[0], default_in) if len(node.args) > 0 else default_in
-                w_val = _register_arg(MLIRValue(f"%lin_w_{val_idx}", TensorType((256, 128), FloatType(32))))
-                op = HolonomicDialect.morphism([in_val, w_val], primal="@linear_fwd", pullback="@linear_bwd", result_type=TensorType(("?", 256), FloatType(32)), val_idx=val_idx)
+                if node.op == "call_module" and submod is not None and hasattr(submod, "weight") and isinstance(submod.weight, torch.Tensor):
+                    w_shape = tuple(int(d) for d in submod.weight.shape)
+                    res_features = submod.weight.shape[0]
+                else:
+                    w_shape = (256, 128)
+                    res_features = 256
+                w_val = _register_arg(MLIRValue(f"%lin_w_{val_idx}", TensorType(w_shape, FloatType(32))))
+                res_type = _infer_node_tensor_type(gm, node, ("?", res_features))
+                op = HolonomicDialect.morphism([in_val, w_val], primal="@linear_fwd", pullback="@linear_bwd", result_type=res_type, val_idx=val_idx)
                 val_idx += 1
                 body_ops.append(op)
                 node_to_val[node] = op.results[0]
@@ -2117,6 +2174,10 @@ def fx_to_holonomic_mlir(gm: GraphModule, name: str = "fx_graph") -> MLIRModule:
             else:
                 if len(node.args) > 0:
                     node_to_val[node] = get_val(node.args[0])
+
+            # Tag any newly added operations with the originating FX node name for live dispatch tracking
+            for added_op in body_ops[prev_op_len:]:
+                added_op.attributes["fx_node"] = StringAttr(node.name)
 
     func = MLIRFunction(
         name="forward",

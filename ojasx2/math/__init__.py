@@ -1,49 +1,8 @@
 """
-ojasx2/math
+ojasx2/math/__init__.py
 
-Canonical Mathematical Subsystem for OjasX
-==========================================
-Clean, audited mathematical formulations across the three core pillars:
-
-1. Symplectic Manifold Mechanics (Sp(2D, R)):
-   - 2nd-order Störmer-Verlet integrator with FSAL (First-Same-As-Last) composition.
-   - Dual-stream Liouville volume preservation (det J = 1).
-   - Persistent FP32/FP64 state accumulators bounding 64+ layer drift to < 1e-4.
-   - Symplectic Squeeze scaling in Sp(2D, R) with dyadic power-of-2 exponent shifting.
-   Exports:
-       StormerVerletIntegrator, SymplecticManifold, symplectic_step, SymplecticSqueeze,
-       symplectic_squeeze, audit_symplectic_reversibility
-
-2. Structured Low-Rank Adjoints:
-   - Unified StructuredDerivative: J = diag(d) + U V^T with O(n r) pushforward/pullback.
-   - Softmax:   J = diag(p) - p p^T               (r=1, 4n FLOPs)
-   - RMSNorm:   J = diag(g*r) - (g*r*z/n) z^T      (r=1, 4n FLOPs)
-   - LayerNorm: J = diag(g*r) - u1 1^T - u2 z^T    (r=2, 8n FLOPs)
-   Exports:
-       StructuredDerivative, diagonal_derivative, softmax_derivative,
-       rmsnorm_derivative, layernorm_derivative, softmax_pullback,
-       rmsnorm_pullback, layernorm_pullback
-
-3. Halley-Padé 3rd-Order Root Inversion & 1-Bit Sign Packing:
-   - Halley's rational iteration achieving < 1e-7 error in 2-4 FMA steps.
-   - 1-bit boolean sign packing (pack_branch_bit / unpack_branch_bit) giving 32x memory savings.
-   - HalleyInverseFunction autograd operator with 0 bytes activation tape storage.
-   - Supports SiLU, GELU (exact & tanh), QuickGELU, Sigmoid, Tanh, ReLU, LeakyReLU, ReLU2.
-   Exports:
-       halley_invert_activation, HalleyInverseFunction, pack_branch_bit,
-       unpack_branch_bit, pack_mask, unpack_mask, halley_activation,
-       halley_activation_cotangent, get_activation_min_z
-
-4. Streaming Linear Operators:
-   - Tiled Dagger Attention: Online softmax tiling with 0 bytes [B,H,S,S] DRAM materialization.
-   - Fused Linear Cross-Entropy: Streaming loss directly from H and W without [M, V] logits in DRAM.
-   Exports:
-       tiled_dagger_attention, fused_linear_cross_entropy
-
-5. Native C++/Metal Hardware Acceleration Hooks:
-   - Probes native compiled C++ tile kernels and Metal shaders with graceful fallback.
-   Exports:
-       has_native_backend, get_native_backend
+Canonical Mathematical Subsystem for OjasX (Unified Package Export).
+Exposes all 5 mathematical pillars plus reference block/residual algebra without shadowing.
 """
 
 from __future__ import annotations
@@ -65,16 +24,23 @@ from .symplectic import (
     audit_symplectic_reversibility,
 )
 
-# 2. Structured Low-Rank Adjoints
+# 2. Structured Low-Rank Adjoints & Reference Algebra
 from .adjoints import (
     StructuredDerivative,
     diagonal_derivative,
+    activation_derivative,
     softmax_derivative,
     rmsnorm_derivative,
+    rmsnorm_input_derivative,
     layernorm_derivative,
+    layernorm_input_derivative,
+    NormalizationResidual,
+    normalization_residual,
     softmax_pullback,
     rmsnorm_pullback,
     layernorm_pullback,
+    rank7_reference,
+    winograd_reference,
 )
 
 # 3. Halley-Padé 3rd-Order Root Inversion
@@ -98,45 +64,34 @@ from .streaming import (
 
 # 5. E8 Lattice Sphere Packing & Quantization
 from .lattice import (
+    fwht_block32,
     fast_walsh_hadamard_transform,
     randomized_hadamard_transform,
     conway_sloane_e8_project,
     E8LatticePacker,
     TernaryE8LatticePacker,
+    RootE8LatticePacker,
     E8LatticeLinear,
     E8QuantizationAwareLinear,
     pack_model_e8,
 )
 
 
-# =============================================================================
-# 5. Native C++/Metal Acceleration Hooks
-# =============================================================================
-
 def has_native_backend() -> bool:
-    """
-    Query whether native C++ or Metal acceleration is loaded and operational.
-    Returns True if either the compiled C++ tile kernel dylib, math native C++/Metal module,
-    or OpenReg guard is loaded.
-    """
     if os.environ.get("OJASX_DISABLE_NATIVE") == "1":
         return False
-
     try:
         from ojasx2.math.csrc import ojasx_math_native
         if ojasx_math_native is not None:
             return True
     except Exception:
         pass
-
     try:
         from ojasx2.tile_hal import tile_kernel_status
-        status = tile_kernel_status()
-        if status.get("native_loaded", False):
+        if tile_kernel_status().get("native_loaded", False):
             return True
     except Exception:
         pass
-
     csrc_dir = Path(__file__).resolve().parent.parent / "csrc"
     ext = ".dylib" if sys.platform == "darwin" else (".so" if sys.platform.startswith("linux") else ".dll")
     tile_lib = csrc_dir / f"libojasx_tile_kernels{ext}"
@@ -145,9 +100,6 @@ def has_native_backend() -> bool:
 
 
 def get_native_backend() -> Dict[str, Any]:
-    """
-    Return comprehensive telemetry on native C++, Metal, and hardware acceleration backends.
-    """
     native_loaded = False
     tilelang_loaded = False
     math_native_loaded = False
@@ -177,12 +129,10 @@ def get_native_backend() -> Dict[str, Any]:
     tile_lib = csrc_dir / f"libojasx_tile_kernels{ext}"
     openreg_lib = csrc_dir / f"libojasx_openreg{ext}"
     metal_mm = csrc_dir / "ojasx_tilelang_metal.mm"
-    math_csrc_dir = Path(__file__).resolve().parent / "csrc"
-    math_lib = math_csrc_dir / f"ojasx_math_native{ext}"
+    math_lib = Path(__file__).resolve().parent / "csrc" / f"ojasx_math_native{ext}"
 
     mps_avail = hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
     cuda_avail = torch.cuda.is_available()
-
     has_native = (
         (native_loaded or math_native_loaded or tile_lib.exists() or math_lib.exists())
         and os.environ.get("OJASX_DISABLE_NATIVE") != "1"
@@ -206,23 +156,27 @@ def get_native_backend() -> Dict[str, Any]:
 
 
 __all__ = [
-    # Symplectic
     "SymplecticManifold",
     "StormerVerletIntegrator",
     "symplectic_step",
     "SymplecticSqueeze",
     "symplectic_squeeze",
     "audit_symplectic_reversibility",
-    # Adjoints
     "StructuredDerivative",
     "diagonal_derivative",
+    "activation_derivative",
     "softmax_derivative",
     "rmsnorm_derivative",
+    "rmsnorm_input_derivative",
     "layernorm_derivative",
+    "layernorm_input_derivative",
+    "NormalizationResidual",
+    "normalization_residual",
     "softmax_pullback",
     "rmsnorm_pullback",
     "layernorm_pullback",
-    # Inversion
+    "rank7_reference",
+    "winograd_reference",
     "get_activation_min_z",
     "pack_branch_bit",
     "unpack_branch_bit",
@@ -232,18 +186,17 @@ __all__ = [
     "halley_activation_cotangent",
     "HalleyInverseFunction",
     "halley_activation",
-    # Streaming
     "tiled_dagger_attention",
     "fused_linear_cross_entropy",
-    # Acceleration
     "has_native_backend",
     "get_native_backend",
-    # E8 Lattice
+    "fwht_block32",
     "fast_walsh_hadamard_transform",
     "randomized_hadamard_transform",
     "conway_sloane_e8_project",
     "E8LatticePacker",
     "TernaryE8LatticePacker",
+    "RootE8LatticePacker",
     "E8LatticeLinear",
     "E8QuantizationAwareLinear",
     "pack_model_e8",

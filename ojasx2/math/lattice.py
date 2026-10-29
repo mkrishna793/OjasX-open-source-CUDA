@@ -1,32 +1,15 @@
-# Copyright 2026 Ojas-Arya Open Foundation & Antigravity Prime Architecture
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """
 ojasx2.math.lattice
 ===================
 
 Canonical 8D E8 Lattice Sphere Packing and Vector Quantization Engine.
 
-Supports three lattice bitrates:
- - bitrate = 2.0 : E8LatticePacker (8.0x compression over FP16)
- - bitrate = 1.5 : TernaryE8LatticePacker on D8 cap {-1, 0, +1}^8 (10.67x compression)
- - bitrate = 1.0 : RootE8LatticePacker on the 240 E8 Roots + 16 axes (16.0x compression)
-
-Includes:
- - Block-32 Fast Walsh-Hadamard Transform (FWHT) incoherence rotation.
- - Reusable Ephemeral Layer Workspace (0 allocator fragmentation across 60+ layers).
- - DeepSeek TileLang (@tilelang.jit) SRAM-fused GEMM integration.
+Upgraded with:
+ - Thread- and CUDA-stream-safe ephemeral scratchpad (`_get_ephemeral_workspace`).
+ - Automatic tail-padding and exact unpadded slicing in `E8LatticePacker` (2.0-bit),
+   `TernaryE8LatticePacker` (1.5-bit), and `RootE8LatticePacker` (1.0-bit) so arbitrary
+   matrix shapes (M, N) are supported seamlessly.
+ - Mixed-precision LoRA dtype alignment in `E8LatticeLinear`.
 """
 
 from __future__ import annotations
@@ -34,6 +17,7 @@ from __future__ import annotations
 import copy
 import itertools
 import math
+import threading
 from typing import Dict, Optional, Tuple, Union
 
 import torch
@@ -55,20 +39,31 @@ except Exception:
 
 
 # ==============================================================================
-# 0. Reusable Ephemeral Layer Scratchpad Manager
+# 0. Thread- & Stream-Safe Reusable Ephemeral Layer Scratchpad Manager
 # ==============================================================================
 
-_EPHEMERAL_WORKSPACES: Dict[Tuple[str, Optional[int], torch.dtype], torch.Tensor] = {}
+_EPHEMERAL_WORKSPACES: Dict[Tuple[str, Optional[int], torch.dtype, int, int], torch.Tensor] = {}
+_WORKSPACE_LOCK = threading.Lock()
 
 
 def _get_ephemeral_workspace(numel: int, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
-    """Returns a persistent single-layer scratchpad buffer on `device` so that
-    60+ layer models never allocate or fragment new memory per layer."""
-    key = (device.type, device.index, dtype)
+    """Returns a thread-local and CUDA-stream-local scratchpad buffer on `device`."""
+    tid = threading.get_ident()
+    stream_id = 0
+    if device.type == "cuda" and torch.cuda.is_available():
+        try:
+            stream_id = int(torch.cuda.current_stream(device).stream_id)
+        except Exception:
+            stream_id = 0
+
+    key = (device.type, device.index, dtype, tid, stream_id)
     buf = _EPHEMERAL_WORKSPACES.get(key)
     if buf is None or buf.numel() < numel:
-        buf = torch.empty(numel, dtype=dtype, device=device)
-        _EPHEMERAL_WORKSPACES[key] = buf
+        with _WORKSPACE_LOCK:
+            buf = _EPHEMERAL_WORKSPACES.get(key)
+            if buf is None or buf.numel() < numel:
+                buf = torch.empty(numel, dtype=dtype, device=device)
+                _EPHEMERAL_WORKSPACES[key] = buf
     return buf[:numel]
 
 
@@ -77,11 +72,9 @@ def _get_ephemeral_workspace(numel: int, dtype: torch.dtype, device: torch.devic
 # ==============================================================================
 
 def fwht_block32(x: torch.Tensor) -> torch.Tensor:
-    """Fast in-register 32-point Walsh-Hadamard Transform along the last dimension.
-    Self-inverse orthogonal rotation (H_32^T = H_32, H_32 @ H_32 = I_32).
-    Executes in 5 butterfly stages of pure additions/subtractions."""
+    """Fast in-register 32-point Walsh-Hadamard Transform along the last dimension."""
     orig_shape = x.shape
-    if orig_shape[-1] % 32 != 0:
+    if orig_shape[-1] == 0 or orig_shape[-1] % 32 != 0:
         return x
     h = x.reshape(-1, 16, 2)
     h = torch.stack([h[..., 0] + h[..., 1], h[..., 0] - h[..., 1]], dim=-1).reshape(-1, 8, 2, 2)
@@ -155,6 +148,8 @@ def conway_sloane_e8_project(x: torch.Tensor, prefer_native: bool = True) -> tor
     orig_shape = x.shape
     if orig_shape[-1] != 8:
         raise ValueError(f"Last dimension must be 8 for E8 lattice (got {orig_shape[-1]}).")
+    if x.numel() == 0:
+        return x.clone()
 
     x_flat = x.contiguous().view(-1, 8)
 
@@ -165,7 +160,6 @@ def conway_sloane_e8_project(x: torch.Tensor, prefer_native: bool = True) -> tor
         except Exception:
             pass
 
-    # Candidate 1: Nearest point in D8 (integers with even sum)
     f1 = torch.round(x_flat)
     sum1 = torch.sum(f1, dim=-1, keepdim=True).long()
     err1 = torch.abs(x_flat - f1)
@@ -175,7 +169,6 @@ def conway_sloane_e8_project(x: torch.Tensor, prefer_native: bool = True) -> tor
     f1_fixed = f1.scatter(-1, worst1, f1.gather(-1, worst1) + sign1.gather(-1, worst1))
     c1 = torch.where((sum1 % 2 != 0), f1_fixed, f1)
 
-    # Candidate 2: Nearest point in D8 + 0.5 (half-integers with even sum)
     x_shift = x_flat - 0.5
     f2 = torch.round(x_shift)
     sum2 = torch.sum(f2, dim=-1, keepdim=True).long()
@@ -198,7 +191,7 @@ def conway_sloane_e8_project(x: torch.Tensor, prefer_native: bool = True) -> tor
 # ==============================================================================
 
 class E8LatticePacker:
-    """Packs weight matrices into 2.0 bits/weight (4 weights per uint8 byte)."""
+    """Packs weight matrices into 2.0 bits/weight (4 weights per uint8 byte) with auto-padding."""
 
     @staticmethod
     def pack(
@@ -208,17 +201,18 @@ class E8LatticePacker:
         orig_shape = w.shape
         m, n = orig_shape
         total_elements = m * n
-        if group_size % 8 != 0:
-            raise ValueError(f"group_size ({group_size}) must be a multiple of 8.")
-        if total_elements % group_size != 0:
-            group_size = 8
+        if group_size <= 0 or group_size % 8 != 0:
+            raise ValueError(f"group_size ({group_size}) must be a positive multiple of 8.")
 
-        w_groups = w.view(-1, group_size).to(torch.float32)
+        flat = w.reshape(-1).to(torch.float32)
+        pad_len = (-total_elements) % group_size
+        if pad_len > 0:
+            flat = F.pad(flat, (0, pad_len))
+
+        w_groups = flat.view(-1, group_size)
         scales = torch.norm(w_groups, dim=-1, keepdim=True) / math.sqrt(group_size) + 1e-8
         w_norm = (w_groups / scales).view(-1, 8)
 
-        # Project onto the half-integer E8 coset D8 + 0.5 in {-1.5, -0.5, +0.5, +1.5}
-        # preserving exact 2-bit parity
         x_shift = w_norm - 0.5
         f2 = torch.clamp(torch.round(x_shift), -2.0, 1.0)
         sum2 = torch.sum(f2, dim=-1, keepdim=True).long()
@@ -252,10 +246,11 @@ class E8LatticePacker:
         c3 = (packed_codes >> 6) & 0x03
 
         total_elements = shape[0] * shape[1]
-        group_size = total_elements // scales.numel()
+        padded_elements = packed_codes.numel() * 4
+        group_size = padded_elements // max(1, scales.numel())
         codes_unpacked = torch.stack([c0, c1, c2, c3], dim=-1).view(-1, group_size)
 
-        if use_workspace:
+        if use_workspace and padded_elements == total_elements:
             out = _get_ephemeral_workspace(total_elements, dtype, packed_codes.device).view(-1, group_size)
             out.copy_(codes_unpacked)
             out.sub_(1.5)
@@ -263,7 +258,8 @@ class E8LatticePacker:
             return out.view(shape)
 
         w_e8 = codes_unpacked.to(dtype) - 1.5
-        return (w_e8 * scales.to(dtype).view(-1, 1)).view(shape)
+        full = (w_e8 * scales.to(dtype).view(-1, 1)).reshape(-1)
+        return full[:total_elements].view(shape)
 
 
 # ==============================================================================
@@ -277,7 +273,6 @@ _POWERS_OF_3: Optional[torch.Tensor] = None
 
 
 def _get_ternary_e8_luts(device: Optional[torch.device] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Returns device-resident lookup tables for Ternary E8 (1.50 b/w) coding."""
     global _DEVICE_TERNARY_LUTS, _TERNARY_RANK_TO_COORDS, _TERNARY_RAW_TO_RANK, _POWERS_OF_3
 
     if device is None:
@@ -331,11 +326,16 @@ class TernaryE8LatticePacker:
         orig_shape = w.shape
         m, n = orig_shape
         total_elements = m * n
-        if group_size % 16 != 0:
-            group_size = 32 if total_elements % 32 == 0 else 16
+        if group_size <= 0 or group_size % 16 != 0:
+            group_size = 16
 
         device = w.device
-        w_groups = w.view(-1, group_size).to(torch.float32)
+        flat = w.reshape(-1).to(torch.float32)
+        pad_len = (-total_elements) % group_size
+        if pad_len > 0:
+            flat = F.pad(flat, (0, pad_len))
+
+        w_groups = flat.view(-1, group_size)
         scales = torch.norm(w_groups, dim=-1, keepdim=True) / math.sqrt(group_size) + 1e-8
         v = (w_groups / scales).view(-1, 8)
 
@@ -377,7 +377,6 @@ class TernaryE8LatticePacker:
         device = packed_codes.device
         rank_to_coords, _, _ = _get_ternary_e8_luts(device)
 
-        # Vectorized 12-bit extraction using int32 (avoids 64-bit .long() allocation)
         triplets = packed_codes.view(-1, 3)
         b0 = triplets[:, 0].to(torch.int32)
         b1 = triplets[:, 1].to(torch.int32)
@@ -389,20 +388,22 @@ class TernaryE8LatticePacker:
         codes[:, 1] = ((b1 >> 4) & 0x0F) | (b2 << 4)
 
         total_elements = shape[0] * shape[1]
-        group_size = total_elements // scales.numel()
+        padded_elements = num_pairs * 16
+        group_size = padded_elements // max(1, scales.numel())
         coords = rank_to_coords[codes.view(-1)].view(-1, group_size)
 
-        if use_workspace:
+        if use_workspace and padded_elements == total_elements:
             out = _get_ephemeral_workspace(total_elements, dtype, device).view(-1, group_size)
             out.copy_(coords)
             out.mul_(scales.to(dtype).view(-1, 1))
             return out.view(shape)
 
-        return (coords.to(dtype) * scales.to(dtype).view(-1, 1)).view(shape)
+        full = (coords.to(dtype) * scales.to(dtype).view(-1, 1)).reshape(-1)
+        return full[:total_elements].view(shape)
 
 
 # ==============================================================================
-# 3c. Root E8 (1.00-Bit) Packing & Unpacking Engine (240 E8 Roots + 16 Axes = 256)
+# 3c. Root E8 (1.00-Bit) Packing & Unpacking Engine
 # ==============================================================================
 
 _DEVICE_ROOT_E8_LUTS: Dict[Tuple[str, Optional[int]], torch.Tensor] = {}
@@ -410,11 +411,6 @@ _ROOT_E8_TABLE_CPU: Optional[torch.Tensor] = None
 
 
 def _get_root_e8_lut(device: Optional[torch.device] = None) -> torch.Tensor:
-    """Returns the 256x8 E8 First-Shell Root codebook on `device`:
-    - 112 integer roots of D8: permutations of (+-1, +-1, 0, 0, 0, 0, 0, 0)
-    - 128 half-integer roots of D8 + 0.5: (+-0.5)^8 with even number of minus signs
-    - 16 signed coordinate axes (+-sqrt(2) * e_i)
-    Total = 256 points in R^8 -> 1 uint8 byte per 8 weights = 1.00 bit/weight!"""
     global _DEVICE_ROOT_E8_LUTS, _ROOT_E8_TABLE_CPU
     if device is None:
         dev_key = ("cpu", None)
@@ -428,7 +424,6 @@ def _get_root_e8_lut(device: Optional[torch.device] = None) -> torch.Tensor:
 
     if _ROOT_E8_TABLE_CPU is None:
         pts = []
-        # 1. 112 integer roots (+-1, +-1, 0^6)
         for i in range(8):
             for j in range(i + 1, 8):
                 for s1 in (-1.0, 1.0):
@@ -437,18 +432,15 @@ def _get_root_e8_lut(device: Optional[torch.device] = None) -> torch.Tensor:
                         vec[i] = s1
                         vec[j] = s2
                         pts.append(vec)
-        # 2. 128 half-integer roots (+-0.5)^8 with even number of -0.5s
         for signs in itertools.product((-0.5, 0.5), repeat=8):
             if sum(1 for s in signs if s < 0) % 2 == 0:
                 pts.append(list(signs))
-        # 3. 16 principal axes (+-sqrt(2) * e_i)
         rt2 = math.sqrt(2.0)
         for i in range(8):
             for s in (-rt2, rt2):
                 vec = [0.0] * 8
                 vec[i] = s
                 pts.append(vec)
-        # Scale by 2.0 so all root norms are normalized to unit variance per coordinate
         _ROOT_E8_TABLE_CPU = torch.tensor(pts, dtype=torch.float32) * 2.0
 
     if dev_key[0] == "cpu":
@@ -472,17 +464,21 @@ class RootE8LatticePacker:
         orig_shape = w.shape
         m, n = orig_shape
         total_elements = m * n
-        if group_size % 8 != 0 or total_elements % group_size != 0:
+        if group_size <= 0 or group_size % 8 != 0:
             group_size = 8
 
         device = w.device
-        lut = _get_root_e8_lut(device)  # [256, 8]
-        w_groups = w.view(-1, group_size).to(torch.float32)
-        scales = torch.norm(w_groups, dim=-1, keepdim=True) / math.sqrt(group_size) + 1e-8
-        v = (w_groups / scales).view(-1, 8)  # [num_blocks8, 8]
+        lut = _get_root_e8_lut(device)
+        flat = w.reshape(-1).to(torch.float32)
+        pad_len = (-total_elements) % group_size
+        if pad_len > 0:
+            flat = F.pad(flat, (0, pad_len))
 
-        # Maximum inner-product search over the 256 equal-norm E8 root vectors
-        dots = torch.matmul(v, lut.t())  # [num_blocks8, 256]
+        w_groups = flat.view(-1, group_size)
+        scales = torch.norm(w_groups, dim=-1, keepdim=True) / math.sqrt(group_size) + 1e-8
+        v = (w_groups / scales).view(-1, 8)
+
+        dots = torch.matmul(v, lut.t())
         packed = torch.argmax(dots, dim=-1).to(torch.uint8)
         return packed, scales.squeeze(-1).to(torch.float16), (m, n)
 
@@ -495,18 +491,20 @@ class RootE8LatticePacker:
         use_workspace: bool = False,
     ) -> torch.Tensor:
         device = packed_codes.device
-        lut = _get_root_e8_lut(device).to(dtype)  # [256, 8]
+        lut = _get_root_e8_lut(device).to(dtype)
         total_elements = shape[0] * shape[1]
-        group_size = total_elements // scales.numel()
+        padded_elements = packed_codes.numel() * 8
+        group_size = padded_elements // max(1, scales.numel())
         coords = lut[packed_codes.to(torch.int32)].view(-1, group_size)
 
-        if use_workspace:
+        if use_workspace and padded_elements == total_elements:
             out = _get_ephemeral_workspace(total_elements, dtype, device).view(-1, group_size)
             out.copy_(coords)
             out.mul_(scales.to(dtype).view(-1, 1))
             return out.view(shape)
 
-        return (coords * scales.to(dtype).view(-1, 1)).view(shape)
+        full = (coords * scales.to(dtype).view(-1, 1)).reshape(-1)
+        return full[:total_elements].view(shape)
 
 
 def _get_packer_for_bitrate(bitrate: float):
@@ -522,12 +520,7 @@ def _get_packer_for_bitrate(bitrate: float):
 # ==============================================================================
 
 class _FusedE8GEMMFunction(torch.autograd.Function):
-    """Fused on-the-fly register-dequantization GEMM operator with:
-    1. DeepSeek TileLang (@tilelang.jit) SRAM-resident kernel dispatch.
-    2. Native C++20 SIMD / OpenMP fast-path for micro-batches.
-    3. Zero-allocation reusable ephemeral workspace for cuBLAS / MPSGraph Tensor Cores."""
-
-    MAX_EPHEMERAL_ELEMENTS: int = 67_108_864  # 64M elements (~128MB in FP16)
+    MAX_EPHEMERAL_ELEMENTS: int = 67_108_864
 
     @staticmethod
     def forward(
@@ -558,7 +551,6 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
         x_orig_shape = x_rot.shape
         x_2d = x_rot.reshape(-1, in_features).contiguous()
 
-        # Path 1: DeepSeek TileLang SRAM-resident JIT kernel (0 bytes DRAM unpack!)
         lut_coords = _get_ternary_e8_luts(x.device)[0] if bitrate == 1.5 else None
         y_tl = dispatch_tilelang_e8_gemm(
             x_2d, packed_weight, block_scales, bias,
@@ -567,20 +559,24 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
         if y_tl is not None:
             return y_tl.reshape(*x_orig_shape[:-1], out_features)
 
-        # Path 2: Native C++20 SIMD acceleration on CPU for micro-batches
-        if _HAS_NATIVE and x.is_cpu and x.dtype in (torch.float32, torch.float16, torch.bfloat16) and x_2d.shape[0] <= 64:
-            if bitrate == 2.0:
+        if (
+            _HAS_NATIVE
+            and x.is_cpu
+            and x.dtype in (torch.float32, torch.float16, torch.bfloat16)
+            and x_2d.shape[0] <= 64
+            and (out_features * in_features) % group_size == 0
+        ):
+            if bitrate == 2.0 and in_features % 4 == 0:
                 packed_2d = packed_weight.reshape(out_features, in_features // 4).contiguous()
                 scales_2d = block_scales.reshape(out_features, -1).contiguous()
                 y_2d = _native.fused_e8_gemm_fwd(x_2d, packed_2d, scales_2d, bias, group_size)
                 return y_2d.reshape(*x_orig_shape[:-1], out_features)
-            elif bitrate == 1.5 and hasattr(_native, "fused_ternary_e8_gemm_fwd") and (group_size % 16 == 0):
+            elif bitrate == 1.5 and hasattr(_native, "fused_ternary_e8_gemm_fwd") and (group_size % 16 == 0) and (in_features % 16 == 0):
                 packed_2d = packed_weight.reshape(out_features, (in_features * 3) // 16).contiguous()
                 scales_2d = block_scales.reshape(out_features, -1).contiguous()
                 y_2d = _native.fused_ternary_e8_gemm_fwd(x_2d, packed_2d, scales_2d, bias, group_size)
                 return y_2d.reshape(*x_orig_shape[:-1], out_features)
 
-        # Path 3: Zero-Allocation Ephemeral Workspace Tensor Core GEMM
         packer = _get_packer_for_bitrate(bitrate)
         total_elements = out_features * in_features
 
@@ -589,10 +585,10 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
                 packed_weight, block_scales, (out_features, in_features),
                 dtype=x_2d.dtype, use_workspace=True,
             )
-            y_2d = F.linear(x_2d, w_layer, bias)
+            b_cast = bias.to(x_2d.dtype) if bias is not None else None
+            y_2d = F.linear(x_2d, w_layer, b_cast)
             return y_2d.reshape(*x_orig_shape[:-1], out_features)
 
-        # Path 4: Tile-chunked fallback for massive layers (>64M elements)
         chunk_size = 1024
         y_chunks = []
         bytes_per_row = int(in_features * bitrate) // 8
@@ -604,7 +600,7 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
             p_chunk = packed_weight[n_start * bytes_per_row : n_end * bytes_per_row]
             s_chunk = block_scales[n_start * scales_per_row : n_end * scales_per_row]
             w_tile = packer.unpack(p_chunk, s_chunk, (n_chunk, in_features), dtype=x_2d.dtype, use_workspace=True)
-            b_tile = bias[n_start:n_end] if bias is not None else None
+            b_tile = bias[n_start:n_end].to(x_2d.dtype) if bias is not None else None
             y_chunks.append(F.linear(x_2d, w_tile, b_tile))
 
         return torch.cat(y_chunks, dim=-1).reshape(*x_orig_shape[:-1], out_features)
@@ -620,8 +616,14 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
 
         gy_2d = grad_y.reshape(-1, out_features).contiguous()
 
-        if _HAS_NATIVE and grad_y.is_cpu and grad_y.dtype in (torch.float32, torch.float16, torch.bfloat16) and gy_2d.shape[0] <= 64:
-            if bitrate == 2.0:
+        if (
+            _HAS_NATIVE
+            and grad_y.is_cpu
+            and grad_y.dtype in (torch.float32, torch.float16, torch.bfloat16)
+            and gy_2d.shape[0] <= 64
+            and (out_features * in_features) % group_size == 0
+        ):
+            if bitrate == 2.0 and in_features % 4 == 0:
                 packed_2d = packed_weight.reshape(out_features, in_features // 4).contiguous()
                 scales_2d = block_scales.reshape(out_features, -1).contiguous()
                 grad_x_2d = _native.fused_e8_gemm_bwd_dx(gy_2d, packed_2d, scales_2d, in_features, group_size)
@@ -630,7 +632,7 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
                     grad_x = fwht_block32(grad_x)
                 grad_bias = gy_2d.sum(dim=0) if ctx.has_bias else None
                 return grad_x, None, None, grad_bias, None, None, None, None, None
-            elif bitrate == 1.5 and hasattr(_native, "fused_ternary_e8_gemm_bwd_dx") and (group_size % 16 == 0):
+            elif bitrate == 1.5 and hasattr(_native, "fused_ternary_e8_gemm_bwd_dx") and (group_size % 16 == 0) and (in_features % 16 == 0):
                 packed_2d = packed_weight.reshape(out_features, (in_features * 3) // 16).contiguous()
                 scales_2d = block_scales.reshape(out_features, -1).contiguous()
                 grad_x_2d = _native.fused_ternary_e8_gemm_bwd_dx(gy_2d, packed_2d, scales_2d, in_features, group_size)
@@ -678,8 +680,7 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
 # ==============================================================================
 
 class E8LatticeLinear(nn.Module):
-    """Linear layer with base weights packed into the 8D E8 lattice (1.0, 1.5, or 2.0 b/w),
-    optional FWHT incoherence rotation, and full-precision low-rank trainable adapters."""
+    """Linear layer with base weights packed into the 8D E8 lattice (1.0, 1.5, or 2.0 b/w)."""
 
     def __init__(
         self,
@@ -705,17 +706,20 @@ class E8LatticeLinear(nn.Module):
 
         total_elements = out_features * in_features
         if self.bitrate == 1.5:
-            eff_group = group_size if (group_size >= 16 and total_elements % group_size == 0) else 16
-            num_bytes = (total_elements * 3) // 16
+            eff_group = group_size if (group_size >= 16 and group_size % 16 == 0) else 16
+            padded_elements = total_elements + ((-total_elements) % eff_group)
+            num_bytes = (padded_elements * 3) // 16
         elif self.bitrate == 1.0:
-            eff_group = group_size if (group_size >= 8 and total_elements % group_size == 0) else 8
-            num_bytes = total_elements // 8
+            eff_group = group_size if (group_size >= 8 and group_size % 8 == 0) else 8
+            padded_elements = total_elements + ((-total_elements) % eff_group)
+            num_bytes = padded_elements // 8
         else:
-            eff_group = group_size if total_elements % group_size == 0 else 8
-            num_bytes = total_elements // 4
+            eff_group = group_size if (group_size >= 8 and group_size % 8 == 0) else 8
+            padded_elements = total_elements + ((-total_elements) % eff_group)
+            num_bytes = padded_elements // 4
 
         self.group_size = eff_group
-        num_scales = total_elements // eff_group
+        num_scales = padded_elements // eff_group
 
         self.register_buffer("packed_weight", torch.zeros(num_bytes, dtype=torch.uint8, device=device))
         self.register_buffer("block_scales", torch.ones(num_scales, dtype=torch.float16, device=device))
@@ -791,7 +795,9 @@ class E8LatticeLinear(nn.Module):
             self.use_hadamard,
         )
         if self.rank > 0 and self.lora_A is not None and self.lora_B is not None:
-            out = out + self.scaling * ((x @ self.lora_A) @ self.lora_B)
+            lora_a = self.lora_A.to(x.dtype) if self.lora_A.dtype != x.dtype else self.lora_A
+            lora_b = self.lora_B.to(x.dtype) if self.lora_B.dtype != x.dtype else self.lora_B
+            out = out + self.scaling * ((x @ lora_a) @ lora_b)
         return out
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -806,10 +812,13 @@ class _E8STEFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, w: torch.Tensor) -> torch.Tensor:
         orig_shape = w.shape
-        w_flat = w.view(-1, 8)
+        total = w.numel()
+        pad_len = (-total) % 8
+        flat = F.pad(w.reshape(-1), (0, pad_len)) if pad_len > 0 else w.reshape(-1)
+        w_flat = flat.view(-1, 8)
         scales = torch.norm(w_flat, dim=-1, keepdim=True) / math.sqrt(8) + 1e-8
         w_e8 = conway_sloane_e8_project(w_flat / scales)
-        return (w_e8 * scales).view(orig_shape)
+        return (w_e8 * scales).reshape(-1)[:total].view(orig_shape)
 
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:
@@ -858,8 +867,7 @@ def pack_model_e8(
     exclude_modules: Optional[Union[list[str], tuple[str, ...]]] = None,
     inplace: bool = True,
 ) -> nn.Module:
-    """Recursively packs all nn.Linear modules in a model into E8LatticeLinear layers
-    (2.0-bit, 1.5-bit Ternary E8, or 1.0-bit Root E8)."""
+    """Recursively packs all nn.Linear modules in a model into E8LatticeLinear layers."""
     target_model = model if inplace else copy.deepcopy(model)
     if isinstance(target_modules, str):
         target_modules = [target_modules]
@@ -870,17 +878,15 @@ def pack_model_e8(
         is_targeted = True if target_modules is None else any(t in name for t in target_modules)
 
         if isinstance(module, nn.Linear) and is_targeted:
-            req_div = 16 if bitrate == 1.5 else 8
-            if (module.in_features * module.out_features) % req_div == 0:
-                e8_layer = E8LatticeLinear.from_linear(
-                    module,
-                    rank=rank,
-                    lora_alpha=lora_alpha,
-                    group_size=group_size,
-                    bitrate=bitrate,
-                    use_hadamard=use_hadamard,
-                )
-                setattr(target_model, name, e8_layer)
+            e8_layer = E8LatticeLinear.from_linear(
+                module,
+                rank=rank,
+                lora_alpha=lora_alpha,
+                group_size=group_size,
+                bitrate=bitrate,
+                use_hadamard=use_hadamard,
+            )
+            setattr(target_model, name, e8_layer)
         else:
             pack_model_e8(
                 module,

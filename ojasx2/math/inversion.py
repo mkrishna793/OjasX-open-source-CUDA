@@ -431,6 +431,10 @@ def halley_activation_cotangent(
             sech2 = 1.0 - tsp.pow(2)
             phi_p = tsp + z * sig * sech2
             return dy * phi_p
+        elif norm_act == "quickgelu":
+            sig = torch.sigmoid(1.702 * z)
+            phi_p = sig * (1.0 + 1.702 * z * (1.0 - sig))
+            return dy * phi_p
         else:
             return dy
 
@@ -465,7 +469,10 @@ class HalleyInverseFunction(torch.autograd.Function):
         ctx.orig_dtype = x.dtype
 
         z_star = get_activation_min_z(ctx.act)
-        branch_bit = x >= z_star
+        if ctx.act in ("relu", "leaky_relu", "relu2", "squared_relu"):
+            branch_bit = x > 0.0
+        else:
+            branch_bit = x >= z_star
         packed_branch = pack_branch_bit(branch_bit)
 
         y = _forward_activation(x, ctx.act, neg_slope)

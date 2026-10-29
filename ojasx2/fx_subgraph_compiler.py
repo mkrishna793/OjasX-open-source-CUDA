@@ -1643,8 +1643,15 @@ class HolonomicSubgraphTransformer(Transformer):
         return None
 
     @staticmethod
+    def _resolve_submodule(gm: GraphModule, target: str) -> Optional[nn.Module]:
+        try:
+            return gm.get_submodule(target)
+        except Exception:
+            return getattr(gm, target, None)
+
+    @staticmethod
     def _get_act_details(gm: GraphModule, node: Optional[Node]) -> Tuple[bool, str, float]:
-        """Returns (is_act, act_name, neg_slope)."""
+        """Returns (is_act, act_name, neg_slope) with nested submodule support."""
         if node is None or not isinstance(node, Node):
             return False, "", 0.0
         if node.op == "call_function":
@@ -1685,7 +1692,7 @@ class HolonomicSubgraphTransformer(Transformer):
             elif node.target in ("sigmoid", "tanh", "relu", "silu", "mish"):
                 return True, node.target, 0.0
         elif node.op == "call_module":
-            mod = getattr(gm, node.target, None)
+            mod = HolonomicSubgraphTransformer._resolve_submodule(gm, str(node.target))
             if isinstance(mod, nn.ReLU):
                 return True, "relu", 0.0
             elif isinstance(mod, nn.LeakyReLU):
@@ -2257,23 +2264,23 @@ class HolonomicSubgraphTransformer(Transformer):
                         t_wv = self._get_node_param(gm, w_v)
 
                         if t_wq is not None and t_wk is not None and t_wv is not None:
-                            fused_w = torch.cat([t_wq, t_wk, t_wv], dim=0)
-                            cnt_idx = f"{self.stats.holonomic_residual_subgraph_count}_{self.stats.symplectic_subgraph_count}"
-                            fused_w_name = f"_fused_attn_qkv_{cnt_idx}"
-                            req_grad = any(getattr(t, "requires_grad", False) for t in (t_wq, t_wk, t_wv))
-                            gm.register_parameter(fused_w_name, nn.Parameter(fused_w, requires_grad=req_grad))
-                            w_attn_qkv = self._get_or_create_attr(gm.graph, fused_w_name)
+                            with graph.inserting_before(node):
+                                w_attn_qkv = graph.call_function(torch.cat, args=([w_q, w_k, w_v], 0))
 
                             t_bq = self._get_node_param(gm, b_q) if b_q is not None else None
                             t_bk = self._get_node_param(gm, b_k) if b_k is not None else None
                             t_bv = self._get_node_param(gm, b_v) if b_v is not None else None
 
-                            if any(b is not None for b in (t_bq, t_bk, t_bv)):
+                            if b_q is not None and b_k is not None and b_v is not None:
+                                with graph.inserting_before(node):
+                                    b_attn_qkv = graph.call_function(torch.cat, args=([b_q, b_k, b_v], 0))
+                            elif any(b is not None for b in (t_bq, t_bk, t_bv)):
                                 dev, dt = t_wq.device, t_wq.dtype
                                 t_bq = t_bq if t_bq is not None else torch.zeros(t_wq.shape[0], device=dev, dtype=dt)
                                 t_bk = t_bk if t_bk is not None else torch.zeros(t_wk.shape[0], device=dev, dtype=dt)
                                 t_bv = t_bv if t_bv is not None else torch.zeros(t_wv.shape[0], device=dev, dtype=dt)
                                 fused_b = torch.cat([t_bq, t_bk, t_bv], dim=0)
+                                cnt_idx = f"{self.stats.holonomic_residual_subgraph_count}_{self.stats.symplectic_subgraph_count}"
                                 fused_b_name = f"_fused_attn_b_{cnt_idx}"
                                 b_req_grad = any(getattr(t, "requires_grad", False) for t in (t_bq, t_bk, t_bv))
                                 gm.register_parameter(fused_b_name, nn.Parameter(fused_b, requires_grad=b_req_grad))
@@ -2768,13 +2775,13 @@ def build_channel_coupling_graph(gm: GraphModule) -> UnionFind:
 
     for node in graph.nodes:
         if node.op == "call_module":
-            submod = getattr(gm, node.target, None)
+            submod = HolonomicSubgraphTransformer._resolve_submodule(gm, str(node.target))
             if isinstance(submod, nn.Linear):
                 # Out channel key
                 out_key = f"{node.name}:out"
                 for user in node.users:
                     if user.op == "call_module":
-                        user_mod = getattr(gm, user.target, None)
+                        user_mod = HolonomicSubgraphTransformer._resolve_submodule(gm, str(user.target))
                         if isinstance(user_mod, (nn.ReLU, nn.GELU, nn.SiLU, nn.LayerNorm)):
                             uf.union(out_key, f"{user.name}:out")
                     elif user.op == "call_function" and user.target in (
@@ -2809,7 +2816,7 @@ def prune_dead_channels_fx(
 
     for node in list(graph.nodes):
         if node.op == "call_module":
-            submod = getattr(gm, node.target, None)
+            submod = HolonomicSubgraphTransformer._resolve_submodule(gm, str(node.target))
             if isinstance(submod, nn.Linear):
                 weight = submod.weight.data
                 # Compute channel saliency for output channels
@@ -2832,7 +2839,7 @@ def prune_dead_channels_fx(
                         safe_consumers = False
                         break
                     elif u.op == "call_module":
-                        u_mod = getattr(gm, u.target, None)
+                        u_mod = HolonomicSubgraphTransformer._resolve_submodule(gm, str(u.target))
                         if isinstance(u_mod, nn.Linear):
                             has_linear_consumer = True
                         elif isinstance(u_mod, (nn.ReLU, nn.GELU, nn.SiLU, nn.LayerNorm)):
@@ -2867,7 +2874,7 @@ def prune_dead_channels_fx(
                         visited_nodes.add(curr)
 
                         if curr.op == "call_module":
-                            curr_mod = getattr(gm, curr.target, None)
+                            curr_mod = HolonomicSubgraphTransformer._resolve_submodule(gm, str(curr.target))
                             if isinstance(curr_mod, nn.Linear):
                                 curr_mod.weight = nn.Parameter(curr_mod.weight.data[:, keep_mask])
                                 curr_mod.in_features = int(keep_mask.sum().item())
