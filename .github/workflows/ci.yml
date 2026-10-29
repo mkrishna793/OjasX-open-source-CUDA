@@ -20,14 +20,14 @@ jobs:
         python-version: ["3.11"]
 
     steps:
+      - name: Configure Git Safe Directory
+        run: |
+          git config --global --add safe.directory "*" || true
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Configure Git Safe Directory
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -48,6 +48,7 @@ jobs:
           CI: "true"
           OJASX_DISABLE_UPDATE_CHECK: "1"
         run: |
+          set -o pipefail
           python -m pytest tests/test_v011_5_findings.py \
                            tests/test_ojasx_exhaustive.py \
                            tests/test_tilelang_and_root_e8.py \
@@ -56,4 +57,19 @@ jobs:
                            tests/test_fused_cross_entropy.py \
                            tests/test_symplectic_numerical_mechanics.py \
                            tests/test_z3_symplectic_stability.py \
-                           -v
+                           -v --tb=short 2>&1 | tee test_run.log
+
+      - name: Publish Test Summary
+        if: always()
+        run: |
+          echo "### Test Execution Output" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -n 120 test_run.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload Test Log Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-test-log
+          path: test_run.log
