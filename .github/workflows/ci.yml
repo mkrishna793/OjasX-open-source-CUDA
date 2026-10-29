@@ -59,6 +59,13 @@ jobs:
                            tests/test_z3_symplectic_stability.py \
                            -v --tb=short 2>&1 | tee test_run.log
 
+      - name: Annotate Failure
+        if: failure()
+        run: |
+          tail -n 60 test_run.log | while IFS= read -r line; do
+            echo "::error title=Pytest::$line"
+          done
+
       - name: Publish Test Summary
         if: always()
         run: |
