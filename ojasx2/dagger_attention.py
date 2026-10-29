@@ -579,6 +579,7 @@ def dagger_tiled_attention(
     dropout_p: float = 0.0,
     training: bool = False,
     key_padding_mask: Optional[torch.Tensor] = None,
+    prefer_native_sdpa: bool = True,
 ) -> torch.Tensor:
     """
     Tiled online-softmax attention over (B, H_q, N_q, D) and (B, H_kv, N_kv, D).
@@ -594,6 +595,7 @@ def dagger_tiled_attention(
         attn_mask=attn_mask,
         key_padding_mask=key_padding_mask,
         tile_size=tile_size,
+        prefer_native_sdpa=prefer_native_sdpa,
     )
 
 
@@ -614,6 +616,7 @@ class DaggerAttention(nn.Module):
         dropout: float = 0.0,
         tile_size: int = 128,
         bias: bool = False,
+        prefer_native_sdpa: bool = True,
         *,
         embed_dim: Optional[int] = None,
         head_dim: Optional[int] = None,
@@ -658,6 +661,7 @@ class DaggerAttention(nn.Module):
         self.tile_size = tile_size
         self.batch_first = batch_first
         self.return_tuple = return_tuple
+        self.prefer_native_sdpa = prefer_native_sdpa
         self.is_sliding = False
         self.sliding_window = None
 
@@ -791,6 +795,7 @@ class DaggerAttention(nn.Module):
                 is_causal=causal,
                 attn_mask=eff_mask,
                 key_padding_mask=kpm,
+                prefer_native_sdpa=self.prefer_native_sdpa,
             )
             ret_tuple = self.return_tuple or (need_weights is not None) or bool(kwargs.get("output_attentions", False))
             if ret_tuple:
@@ -867,6 +872,7 @@ class DaggerAttention(nn.Module):
             tile_size=self.tile_size,
             dropout_p=self.dropout,
             training=self.training,
+            prefer_native_sdpa=self.prefer_native_sdpa,
         )
         attn_out = attn_out.transpose(1, 2).contiguous().view(B, N_q, self.num_heads * self.head_dim)
         out = self.o_proj(attn_out)
