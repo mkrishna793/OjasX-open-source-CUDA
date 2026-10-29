@@ -133,6 +133,31 @@ class HolonomicGradFreeOptimizer(Optimizer):
             else:
                 st["exp_avg"].copy_(tensor.to(storage_dtype))
 
+    @staticmethod
+    def _unpack_grad_accum(st: Dict[str, Any], target_shape: torch.Size, dtype: torch.dtype) -> torch.Tensor:
+        if "grad_accum_packed" in st:
+            packed = st["grad_accum_packed"]
+            scales = st["grad_accum_scales"]
+            padded_rows = st.get("grad_accum_padded_rows", target_shape.numel() // 32)
+            unpacked = E8LatticePacker.unpack(
+                packed, scales, (padded_rows, 32), dtype=dtype
+            )
+            return unpacked.reshape(-1)[: target_shape.numel()].view(target_shape)
+        return st["grad_accum"].to(dtype)
+
+    @staticmethod
+    def _pack_grad_accum(st: Dict[str, Any], tensor: torch.Tensor) -> None:
+        flat = tensor.reshape(-1)
+        pad_len = (-flat.numel()) % 32
+        if pad_len > 0:
+            flat = F.pad(flat, (0, pad_len))
+        padded_rows = flat.numel() // 32
+        packed, scales, _ = E8LatticePacker.pack(flat.view(padded_rows, 32), group_size=32)
+        st["grad_accum_packed"] = packed
+        st["grad_accum_scales"] = scales
+        st["grad_accum_padded_rows"] = padded_rows
+        st.pop("grad_accum", None)
+
     def _make_hook(self, param: nn.Parameter) -> Any:
         @torch.no_grad()
         def _hook(_p: nn.Parameter) -> None:
@@ -167,16 +192,30 @@ class HolonomicGradFreeOptimizer(Optimizer):
                 _p.grad = None
                 self.last_step_freed_bytes += grad_bytes
 
-                if st.get("grad_accum") is None:
-                    st["grad_accum"] = scaled_grad.to(_p.dtype)
+                if use_e8_mom and _p.numel() >= 8:
+                    if "grad_accum_packed" in st:
+                        prev_accum = self._unpack_grad_accum(st, _p.shape, _p.dtype)
+                        accum_tensor = prev_accum.add(scaled_grad.to(_p.dtype))
+                    else:
+                        accum_tensor = scaled_grad.to(_p.dtype)
+                    self._pack_grad_accum(st, accum_tensor)
                 else:
-                    st["grad_accum"].add_(scaled_grad.to(_p.dtype))
+                    if st.get("grad_accum") is None:
+                        st["grad_accum"] = scaled_grad.to(_p.dtype)
+                    else:
+                        st["grad_accum"].add_(scaled_grad.to(_p.dtype))
 
                 if st["accum_count"] % grad_accum_steps != 0:
                     return
 
-                effective_grad = st["grad_accum"]
-                st["grad_accum"] = None
+                if use_e8_mom and _p.numel() >= 8 and "grad_accum_packed" in st:
+                    effective_grad = self._unpack_grad_accum(st, _p.shape, _p.dtype)
+                    st.pop("grad_accum_packed", None)
+                    st.pop("grad_accum_scales", None)
+                    st.pop("grad_accum_padded_rows", None)
+                else:
+                    effective_grad = st["grad_accum"]
+                    st["grad_accum"] = None
             else:
                 effective_grad = grad
                 _p.grad = None
