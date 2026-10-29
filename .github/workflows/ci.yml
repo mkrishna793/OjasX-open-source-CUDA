@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   test:
@@ -73,6 +73,16 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           tail -n 120 test_run.log >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Push Test Log to git branch
+        if: always()
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B ci-log
+          git add -f test_run.log
+          git commit -m "ci: capture test run log [skip ci]" || true
+          git push --force origin ci-log || true
 
       - name: Upload Test Log Artifact
         if: always()
