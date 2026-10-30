@@ -227,8 +227,9 @@ class OjasXRunnerLinear(nn.Module):
         if use_active_pruning:
             k = max(1, int(round(self.out_features * self.active_row_ratio)))
             # Compute channel activity magnitude across tokens
-            mag = torch.max(torch.abs(y_sketch), dim=0).values
+            mag = torch.amax(torch.abs(y_sketch), dim=0)
             topk_indices = torch.topk(mag, k=k, largest=True).indices
+            topk_indices = torch.sort(topk_indices).values
 
             # Unpack weights only for active rows
             if self.lattice_type == "leech24":
@@ -254,7 +255,7 @@ class OjasXRunnerLinear(nn.Module):
             y[:, topk_indices] += y_active
 
         else:
-            # Full row evaluation (all channels active)
+            # Full row evaluation (all channels active - optimal for Attention QKV)
             if self.lattice_type == "leech24":
                 w_full = Leech24LatticePacker.unpack(
                     self.packed_weight,
@@ -303,23 +304,69 @@ def pack_model_runner(
     use_hadamard: bool = True,
     lattice_type: str = "e8",
     min_features: int = 64,
-    exclude_names: Sequence[str] = ("lm_head",),
+    exclude_names: Sequence[str] = ("lm_head", "embed", "router", "gate_network"),
+    hybrid_moe: bool = True,
+    attention_bitrate: float = 2.0,
+    mlp_bitrate: float = 1.5,
+    attention_active_ratio: float = 1.0,
+    mlp_active_ratio: float = 0.5,
+    attention_svd_rank: int = 32,
+    mlp_svd_rank: int = 16,
+    _prefix: str = "",
 ) -> nn.Module:
     """
     Recursively scans and replaces standard torch.nn.Linear modules with
     OjasXRunnerLinear modules for ultra-low-RAM inference execution.
+
+    Supports Generalized Hybrid MoE Precision:
+    - Attention layers (Q, K, V, O) maintain 100% active rows (active_row_ratio=1.0)
+      and higher fidelity to eliminate attention softmax drift.
+    - MoE Expert & MLP blocks use aggressive crystal compression and 50% active
+      lookahead to skip 50% of DRAM accesses with minimal downstream perplexity impact.
+    - Router networks and embedding heads remain unquantized in FP16/BF16.
     """
     for name, child in list(model.named_children()):
-        if any(ex in name for ex in exclude_names):
+        full_name = f"{_prefix}.{name}" if _prefix else name
+        if any(ex.lower() in full_name.lower() for ex in exclude_names):
             continue
 
         if isinstance(child, nn.Linear):
             if child.in_features >= min_features and child.out_features >= min_features:
+                if hybrid_moe:
+                    # Detect Attention linear projections
+                    is_attn = any(k in full_name.lower() for k in (
+                        "attn", "attention", "q_proj", "k_proj", "v_proj", "o_proj",
+                        "qkv", "c_attn", "c_proj", "self_attn", "cross_attn", "in_proj", "out_proj"
+                    ))
+                    # Detect MLP / MoE Feed-Forward projections
+                    is_mlp = any(k in full_name.lower() for k in (
+                        "mlp", "expert", "ffn", "feed_forward", "gate_proj", "up_proj",
+                        "down_proj", "fc1", "fc2", "w1", "w2", "w3", "c_fc",
+                        "dense_h_to_4h", "dense_4h_to_h"
+                    ))
+
+                    if is_attn:
+                        eff_br = attention_bitrate
+                        eff_r = attention_svd_rank
+                        eff_act = attention_active_ratio
+                    elif is_mlp:
+                        eff_br = mlp_bitrate
+                        eff_r = mlp_svd_rank
+                        eff_act = mlp_active_ratio
+                    else:
+                        eff_br = bitrate
+                        eff_r = svd_rank
+                        eff_act = active_row_ratio
+                else:
+                    eff_br = bitrate
+                    eff_r = svd_rank
+                    eff_act = active_row_ratio
+
                 runner_linear = OjasXRunnerLinear.from_linear(
                     child,
-                    bitrate=bitrate,
-                    svd_rank=svd_rank,
-                    active_row_ratio=active_row_ratio,
+                    bitrate=eff_br,
+                    svd_rank=eff_r,
+                    active_row_ratio=eff_act,
                     use_hadamard=use_hadamard,
                     lattice_type=lattice_type,
                 )
@@ -334,6 +381,14 @@ def pack_model_runner(
                 lattice_type=lattice_type,
                 min_features=min_features,
                 exclude_names=exclude_names,
+                hybrid_moe=hybrid_moe,
+                attention_bitrate=attention_bitrate,
+                mlp_bitrate=mlp_bitrate,
+                attention_active_ratio=attention_active_ratio,
+                mlp_active_ratio=mlp_active_ratio,
+                attention_svd_rank=attention_svd_rank,
+                mlp_svd_rank=mlp_svd_rank,
+                _prefix=full_name,
             )
     return model
 

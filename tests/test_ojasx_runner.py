@@ -272,6 +272,79 @@ def test_ojasx_runner_from_model_and_generation():
     assert (gen[:, :3] == input_ids).all()
 
 
+def test_hybrid_moe_generalized_precision():
+    """
+    Verifies that Generalized Hybrid MoE Precision correctly classifies Attention
+    (100% active rows, 2.0-bit/high-rank) vs MoE Experts (50% active lookahead, 1.5-bit)
+    while keeping Routers and Heads unquantized, achieving >0.98 cosine similarity.
+    """
+    class MockMoEModel(nn.Module):
+        def __init__(self, d=128, h=256, num_experts=2):
+            super().__init__()
+            self.q_proj = nn.Linear(d, d, bias=False)
+            self.k_proj = nn.Linear(d, d, bias=False)
+            self.v_proj = nn.Linear(d, d, bias=False)
+            self.o_proj = nn.Linear(d, d, bias=False)
+            self.experts = nn.ModuleList([
+                nn.ModuleDict({
+                    "gate_proj": nn.Linear(d, h, bias=False),
+                    "up_proj": nn.Linear(d, h, bias=False),
+                    "down_proj": nn.Linear(h, d, bias=False),
+                })
+                for _ in range(num_experts)
+            ])
+            self.router = nn.Linear(d, num_experts, bias=False)
+            self.lm_head = nn.Linear(d, 50, bias=False)
+
+        def forward(self, x):
+            q, k, v = self.q_proj(x), self.k_proj(x), self.v_proj(x)
+            attn = F.scaled_dot_product_attention(q, k, v)
+            x = x + self.o_proj(attn)
+            r = F.softmax(self.router(x), dim=-1)
+            moe_out = 0
+            for i, exp in enumerate(self.experts):
+                h = F.silu(exp["gate_proj"](x)) * exp["up_proj"](x)
+                moe_out = moe_out + exp["down_proj"](h) * r[..., i:i+1]
+            return self.lm_head(x + moe_out)
+
+    torch.manual_seed(42)
+    m = MockMoEModel()
+    x = torch.randn(2, 4, 128)
+    y_true = m(x)
+
+    runner = OjasXRunner.from_model(
+        m,
+        hybrid_moe=True,
+        attention_bitrate=2.0,
+        mlp_bitrate=1.5,
+        attention_active_ratio=1.0,
+        mlp_active_ratio=0.5,
+        attention_svd_rank=16,
+        mlp_svd_rank=8,
+        exclude_names=("lm_head", "router"),
+    )
+
+    # 1. Verify Attention has 100% active rows (active_row_ratio=1.0) and bitrate=2.0
+    assert runner.model.q_proj.active_row_ratio == 1.0
+    assert runner.model.q_proj.bitrate == 2.0
+    assert runner.model.o_proj.active_row_ratio == 1.0
+
+    # 2. Verify MoE Experts have 50% active rows lookahead and bitrate=1.5
+    for exp in runner.model.experts:
+        assert exp["gate_proj"].active_row_ratio == 0.5
+        assert exp["gate_proj"].bitrate == 1.5
+        assert exp["down_proj"].active_row_ratio == 0.5
+
+    # 3. Verify Router and lm_head remained unquantized
+    assert isinstance(runner.model.router, nn.Linear) and not isinstance(runner.model.router, OjasXRunnerLinear)
+    assert isinstance(runner.model.lm_head, nn.Linear) and not isinstance(runner.model.lm_head, OjasXRunnerLinear)
+
+    # 4. Verify end-to-end model fidelity (> 0.98)
+    y_pred = runner(x)
+    cos_sim = F.cosine_similarity(y_true.flatten(), y_pred.flatten(), dim=0).item()
+    assert cos_sim > 0.98, f"Expected hybrid MoE cosine similarity > 0.98, got {cos_sim:.4f}"
+
+
 # ==============================================================================
 # 6. Strict One-Way Architectural Isolation Boundary Test
 # ==============================================================================

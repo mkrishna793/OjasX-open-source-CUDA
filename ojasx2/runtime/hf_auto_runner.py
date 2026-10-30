@@ -116,11 +116,19 @@ class OjasXRunner(nn.Module):
         lattice_type: str = "e8",
         use_e8_kv_cache: bool = True,
         min_features: int = 64,
-        exclude_names: Sequence[str] = ("lm_head",),
+        exclude_names: Sequence[str] = ("lm_head", "embed", "router", "gate_network"),
+        hybrid_moe: bool = True,
+        attention_bitrate: float = 2.0,
+        mlp_bitrate: float = 1.5,
+        attention_active_ratio: float = 1.0,
+        mlp_active_ratio: float = 0.5,
+        attention_svd_rank: int = 32,
+        mlp_svd_rank: int = 16,
         device: Optional[Union[str, torch.device]] = None,
     ) -> OjasXRunner:
         """
-        Converts a PyTorch model into an OjasXRunner with packed linear layers.
+        Converts a PyTorch model into an OjasXRunner with packed linear layers
+        and Generalized Hybrid MoE Precision.
         """
         model = pack_model_runner(
             model,
@@ -130,6 +138,13 @@ class OjasXRunner(nn.Module):
             lattice_type=lattice_type,
             min_features=min_features,
             exclude_names=exclude_names,
+            hybrid_moe=hybrid_moe,
+            attention_bitrate=attention_bitrate,
+            mlp_bitrate=mlp_bitrate,
+            attention_active_ratio=attention_active_ratio,
+            mlp_active_ratio=mlp_active_ratio,
+            attention_svd_rank=attention_svd_rank,
+            mlp_svd_rank=mlp_svd_rank,
         )
 
         if device is not None:
@@ -155,12 +170,22 @@ class OjasXRunner(nn.Module):
         active_row_ratio: float = 1.0,
         lattice_type: str = "e8",
         use_e8_kv_cache: bool = True,
+        min_features: int = 64,
+        exclude_names: Sequence[str] = ("lm_head", "embed", "router", "gate_network"),
+        hybrid_moe: bool = True,
+        attention_bitrate: float = 2.0,
+        mlp_bitrate: float = 1.5,
+        attention_active_ratio: float = 1.0,
+        mlp_active_ratio: float = 0.5,
+        attention_svd_rank: int = 32,
+        mlp_svd_rank: int = 16,
         torch_dtype: torch.dtype = torch.float16,
         device_map: Optional[str] = None,
         **kwargs: Any,
     ) -> OjasXRunner:
         """
-        Loads a HuggingFace CausalLM model and converts it into an OjasXRunner.
+        Loads a HuggingFace CausalLM model and converts it into an OjasXRunner
+        with Generalized Hybrid MoE Precision.
         """
         try:
             from transformers import AutoModelForCausalLM
@@ -182,6 +207,15 @@ class OjasXRunner(nn.Module):
             active_row_ratio=active_row_ratio,
             lattice_type=lattice_type,
             use_e8_kv_cache=use_e8_kv_cache,
+            min_features=min_features,
+            exclude_names=exclude_names,
+            hybrid_moe=hybrid_moe,
+            attention_bitrate=attention_bitrate,
+            mlp_bitrate=mlp_bitrate,
+            attention_active_ratio=attention_active_ratio,
+            mlp_active_ratio=mlp_active_ratio,
+            attention_svd_rank=attention_svd_rank,
+            mlp_svd_rank=mlp_svd_rank,
         )
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
