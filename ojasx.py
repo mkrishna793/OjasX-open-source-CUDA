@@ -25,6 +25,31 @@ Enables seamless `import ojasx` across all user scripts and workflows.
 from ojasx2 import *
 import ojasx2 as _ojasx2
 from ojasx2 import prepare, optimize, loss
+from ojasx2 import (
+    OjasXRunner,
+    OjasXRuntime,
+    OjasXRunnerLinear,
+    OjasXLinear,
+    pack_model_runner,
+    pack_model_ojasx_runner,
+    E8KVCache,
+    OjasXRunnerMemoryReport,
+    OjasXMemoryReport,
+)
 
 __version__ = _ojasx2.__version__
-__all__ = _ojasx2.__all__ if hasattr(_ojasx2, "__all__") else ["prepare", "optimize", "loss", "__version__"]
+__all__ = _ojasx2.__all__ if hasattr(_ojasx2, "__all__") else [
+    "prepare",
+    "optimize",
+    "loss",
+    "OjasXRunner",
+    "OjasXRuntime",
+    "OjasXRunnerLinear",
+    "OjasXLinear",
+    "pack_model_runner",
+    "pack_model_ojasx_runner",
+    "E8KVCache",
+    "OjasXRunnerMemoryReport",
+    "OjasXMemoryReport",
+    "__version__",
+]

@@ -49,14 +49,14 @@ def test_format_update_banner():
 @patch("ojasx2.updater.fetch_latest_release_info")
 def test_check_for_updates_available(mock_fetch):
     mock_fetch.return_value = {
-        "tag_name": "0.12.0",
-        "name": "OjasX v0.12.0",
+        "tag_name": "0.13.0",
+        "name": "OjasX v0.13.0",
         "published_at": "2026-10-25T18:00:00Z",
     }
     has_update, latest_ver, meta = check_for_updates(force=True)
     assert has_update is True
-    assert latest_ver == "0.12.0"
-    assert meta["name"] == "OjasX v0.12.0"
+    assert latest_ver == "0.13.0"
+    assert meta["name"] == "OjasX v0.13.0"
 
 
 @patch("ojasx2.updater.fetch_latest_release_info")
