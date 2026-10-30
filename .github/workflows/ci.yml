@@ -2,9 +2,9 @@ name: OjasX Continuous Integration & Math Verification
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, ojasx-runner ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, ojasx-runner ]
   workflow_dispatch:
 
 permissions:
