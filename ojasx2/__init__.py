@@ -182,6 +182,10 @@ from .runtime import (
     Leech24LatticePacker,
     conway_sloane_leech24_project,
     PrecomputedTernaryLUT,
+    OptimalRootE8Packer,
+    PureLeech24RootPacker,
+    MatryoshkaRootLinear,
+    fold_consecutive_layers_symplectic,
 )
 from . import runtime
 import torch

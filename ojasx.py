@@ -35,6 +35,10 @@ from ojasx2 import (
     E8KVCache,
     OjasXRunnerMemoryReport,
     OjasXMemoryReport,
+    OptimalRootE8Packer,
+    PureLeech24RootPacker,
+    MatryoshkaRootLinear,
+    fold_consecutive_layers_symplectic,
 )
 
 __version__ = _ojasx2.__version__
@@ -51,5 +55,9 @@ __all__ = _ojasx2.__all__ if hasattr(_ojasx2, "__all__") else [
     "E8KVCache",
     "OjasXRunnerMemoryReport",
     "OjasXMemoryReport",
+    "OptimalRootE8Packer",
+    "PureLeech24RootPacker",
+    "MatryoshkaRootLinear",
+    "fold_consecutive_layers_symplectic",
     "__version__",
 ]

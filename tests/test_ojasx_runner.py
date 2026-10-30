@@ -46,6 +46,10 @@ from ojasx2.runtime import (
     Leech24LatticePacker,
     conway_sloane_leech24_project,
     PrecomputedTernaryLUT,
+    OptimalRootE8Packer,
+    PureLeech24RootPacker,
+    MatryoshkaRootLinear,
+    fold_consecutive_layers_symplectic,
 )
 from ojasx2.math.lattice import _get_ternary_e8_luts
 
@@ -346,7 +350,147 @@ def test_hybrid_moe_generalized_precision():
 
 
 # ==============================================================================
-# 6. Strict One-Way Architectural Isolation Boundary Test
+# 6. Pure-Root MMSE, Matryoshka Two-Stage & Symplectic Layer Folding Tests
+# ==============================================================================
+
+def test_optimal_mmse_root_e8_packer_orthogonality():
+    """Verifies that OptimalRootE8Packer achieves strict orthogonal residual <w - s* q, q> == 0."""
+    torch.manual_seed(42)
+    w = torch.randn(64, 64)
+    packed, scales, shape = OptimalRootE8Packer.pack(w, group_size=32)
+    assert shape == (64, 64)
+
+    unpacked = OptimalRootE8Packer.unpack(packed, scales, shape)
+    cos_sim = F.cosine_similarity(w.flatten(), unpacked.flatten(), dim=0).item()
+    assert cos_sim > 0.82, f"Expected MMSE Root cosine similarity > 0.82, got {cos_sim:.4f}"
+
+    # 1. Verify orthogonality with FP16 stored scales (bounded by FP16 mantissa precision)
+    w_grp = w.view(-1, 32)
+    unp_grp = unpacked.view(-1, 32)
+    res_grp = w_grp - unp_grp
+    dot_res_q = torch.sum(res_grp * unp_grp, dim=-1)
+    max_dot = dot_res_q.abs().max().item()
+    assert max_dot < 0.02, f"Residual under FP16 scale must have max dot < 0.02, got {max_dot}"
+
+    # 2. Verify exact algebraic orthogonality of the MMSE projection formula (< 1e-4)
+    from ojasx2.runtime.root_leech_math import _get_root_e8_lut
+    lut = _get_root_e8_lut(w.device)
+    q = lut[packed.to(torch.int32)].view(-1, 32)
+    q_sq = torch.sum(q * q, dim=-1, keepdim=True)
+    s_f32 = torch.sum(w_grp * q, dim=-1, keepdim=True) / q_sq
+    exact_proj = q * s_f32
+    exact_res = w_grp - exact_proj
+    exact_max_dot = torch.sum(exact_res * exact_proj, dim=-1).abs().max().item()
+    assert exact_max_dot < 1e-4, f"Algebraic MMSE residual must be strictly orthogonal, got {exact_max_dot}"
+
+
+def test_pure_leech24_root_packer_roundtrip():
+    """Verifies Pure-Root 24D Leech packer with 3D sub-block energy allocation gains."""
+    torch.manual_seed(42)
+    w = torch.randn(48, 48)
+    packed_roots, packed_gains, scales, shape = PureLeech24RootPacker.pack(w, group_size=24)
+    assert shape == (48, 48)
+
+    unpacked = PureLeech24RootPacker.unpack(packed_roots, packed_gains, scales, shape)
+    cos_sim = F.cosine_similarity(w.flatten(), unpacked.flatten(), dim=0).item()
+    assert cos_sim > 0.83, f"Expected Pure-Leech24 Root cosine similarity > 0.83, got {cos_sim:.4f}"
+
+
+def test_matryoshka_root_linear_error_compensating_svd():
+    """Verifies MatryoshkaRootLinear SVD error-compensation on ill-conditioned weights."""
+    torch.manual_seed(42)
+    in_f, out_f = 128, 256
+    lin = nn.Linear(in_f, out_f, bias=False)
+    with torch.no_grad():
+        lin.weight[0:4, :] *= 10.0
+        lin.weight[:, 0:4] *= 8.0
+
+    mat_layer = MatryoshkaRootLinear.from_linear(
+        lin,
+        svd_rank=16,
+        enable_fine_root=True,
+        active_row_ratio=1.0,
+    )
+
+    x = torch.randn(4, in_f)
+    y_true = lin(x)
+    y_pred = mat_layer(x)
+
+    cos_sim = F.cosine_similarity(y_true.flatten(), y_pred.flatten(), dim=0).item()
+    assert cos_sim > 0.97, f"Expected Matryoshka 2-stage cosine similarity > 0.97, got {cos_sim:.4f}"
+
+
+def test_matryoshka_root_linear_active_row_gating():
+    """Verifies that active-row gating (35% active fine rows) maintains high SQNR."""
+    torch.manual_seed(42)
+    in_f, out_f = 128, 256
+    lin = nn.Linear(in_f, out_f, bias=False)
+
+    mat_layer = MatryoshkaRootLinear.from_linear(
+        lin,
+        svd_rank=16,
+        enable_fine_root=True,
+        active_row_ratio=0.35,
+    )
+
+    x = torch.randn(4, in_f)
+    y_true = lin(x)
+    y_pred = mat_layer(x)
+
+    cos_sim = F.cosine_similarity(y_true.flatten(), y_pred.flatten(), dim=0).item()
+    assert cos_sim > 0.91, f"Expected 35% active fine root cosine similarity > 0.91, got {cos_sim:.4f}"
+
+    # Verify that full active rows (1.0) achieves > 0.96
+    mat_layer.active_row_ratio = 1.0
+    y_full = mat_layer(x)
+    cos_sim_full = F.cosine_similarity(y_true.flatten(), y_full.flatten(), dim=0).item()
+    assert cos_sim_full > 0.96, f"Expected full fine root cosine similarity > 0.96, got {cos_sim_full:.4f}"
+
+
+def test_symplectic_layer_folding():
+    """Verifies Symplectic Layer Folding across 2 consecutive layers sharing 1 Coarse Root."""
+    import copy
+    torch.manual_seed(42)
+    in_f, out_f = 128, 256
+    lin0 = nn.Linear(in_f, out_f, bias=False)
+    lin1 = copy.deepcopy(lin0)
+    with torch.no_grad():
+        lin1.weight.add_(torch.randn_like(lin1.weight) * 0.10)
+
+    folded = fold_consecutive_layers_symplectic([lin0, lin1], svd_rank=32, enable_fine_root=True)
+    assert len(folded) == 2
+    leader, follower = folded[0], folded[1]
+
+    # Verify follower shares leader's coarse root and has 0 duplicate coarse buffer bytes!
+    assert follower.coarse_roots.numel() == 0
+    assert follower._shared_coarse_source is leader
+
+    x = torch.randn(4, in_f)
+    y0_true = lin0(x)
+    y1_true = lin1(x)
+
+    # 1. Test with 35% active rows
+    y0_pred = leader(x)
+    y1_pred = follower(x)
+
+    cos0 = F.cosine_similarity(y0_true.flatten(), y0_pred.flatten(), dim=0).item()
+    cos1 = F.cosine_similarity(y1_true.flatten(), y1_pred.flatten(), dim=0).item()
+
+    assert cos0 > 0.90, f"Expected leader cosine similarity > 0.90, got {cos0:.4f}"
+    assert cos1 > 0.90, f"Expected follower cosine similarity > 0.90, got {cos1:.4f}"
+
+    # 2. Test with full active rows
+    leader.active_row_ratio = 1.0
+    follower.active_row_ratio = 1.0
+    cos0_full = F.cosine_similarity(y0_true.flatten(), leader(x).flatten(), dim=0).item()
+    cos1_full = F.cosine_similarity(y1_true.flatten(), follower(x).flatten(), dim=0).item()
+
+    assert cos0_full > 0.95, f"Expected full leader cosine similarity > 0.95, got {cos0_full:.4f}"
+    assert cos1_full > 0.95, f"Expected full follower cosine similarity > 0.95, got {cos1_full:.4f}"
+
+
+# ==============================================================================
+# 7. Strict One-Way Architectural Isolation Boundary Test
 # ==============================================================================
 
 def test_runtime_isolation_boundary():
@@ -359,8 +503,10 @@ def test_runtime_isolation_boundary():
     import ojasx2.runtime.kv_cache_e8 as r_kv
     import ojasx2.runtime.hf_auto_runner as r_hf
     import ojasx2.runtime.leech_and_lut_math as r_leech
+    import ojasx2.runtime.root_leech_math as r_root
+    import ojasx2.runtime.matryoshka_runner_linear as r_mat
 
-    modules_to_audit = [r_lin, r_kv, r_hf, r_leech]
+    modules_to_audit = [r_lin, r_kv, r_hf, r_leech, r_root, r_mat]
     forbidden_terms = [
         "torch.fx",
         "holonomic_math_compiler",

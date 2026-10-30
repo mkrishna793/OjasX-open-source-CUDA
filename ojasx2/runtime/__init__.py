@@ -28,6 +28,14 @@ from .leech_and_lut_math import (
     conway_sloane_leech24_project,
     PrecomputedTernaryLUT,
 )
+from .root_leech_math import (
+    OptimalRootE8Packer,
+    PureLeech24RootPacker,
+)
+from .matryoshka_runner_linear import (
+    MatryoshkaRootLinear,
+    fold_consecutive_layers_symplectic,
+)
 from .runner_linear import (
     OjasXRunnerLinear,
     OjasXLinear,
@@ -48,6 +56,10 @@ __all__ = [
     "Leech24LatticePacker",
     "conway_sloane_leech24_project",
     "PrecomputedTernaryLUT",
+    "OptimalRootE8Packer",
+    "PureLeech24RootPacker",
+    "MatryoshkaRootLinear",
+    "fold_consecutive_layers_symplectic",
     "OjasXRunnerLinear",
     "OjasXLinear",
     "pack_model_runner",
