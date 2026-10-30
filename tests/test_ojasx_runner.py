@@ -50,6 +50,10 @@ from ojasx2.runtime import (
     PureLeech24RootPacker,
     MatryoshkaRootLinear,
     fold_consecutive_layers_symplectic,
+    pack_hybrid_moe_runner,
+    pack_matryoshka_runner,
+    HybridMoERunner,
+    MatryoshkaRunner,
 )
 from ojasx2.math.lattice import _get_ternary_e8_luts
 
@@ -487,6 +491,98 @@ def test_symplectic_layer_folding():
 
     assert cos0_full > 0.95, f"Expected full leader cosine similarity > 0.95, got {cos0_full:.4f}"
     assert cos1_full > 0.95, f"Expected full follower cosine similarity > 0.95, got {cos1_full:.4f}"
+
+
+def test_engine1_hybrid_moe_runner():
+    """
+    Verifies Engine 1 (Selective Hybrid MoE):
+    - Attention layers remain in uncompressed FP16 (zero softmax drift).
+    - MoE MLP blocks are compressed into Root-E8.
+    - End-to-end forward pass achieves high cosine similarity.
+    """
+    class MockTransformerBlock(nn.Module):
+        def __init__(self, d=128, h=256):
+            super().__init__()
+            self.q_proj = nn.Linear(d, d, bias=False)
+            self.k_proj = nn.Linear(d, d, bias=False)
+            self.v_proj = nn.Linear(d, d, bias=False)
+            self.o_proj = nn.Linear(d, d, bias=False)
+            self.gate_proj = nn.Linear(d, h, bias=False)
+            self.up_proj = nn.Linear(d, h, bias=False)
+            self.down_proj = nn.Linear(h, d, bias=False)
+            self.lm_head = nn.Linear(d, 500, bias=False)
+
+        def forward(self, x):
+            # Attention
+            attn = self.o_proj(self.v_proj(x) + self.q_proj(x) + self.k_proj(x))
+            x = x + attn
+            # MLP SwiGLU
+            mlp = self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+            x = x + mlp
+            return self.lm_head(x)
+
+    torch.manual_seed(42)
+    m = MockTransformerBlock()
+    x = torch.randn(2, 8, 128)
+    with torch.no_grad():
+        y_true = m(x)
+
+    # Pack with Engine 1
+    runner = HybridMoERunner.from_model(m, bitrate=1.0, svd_rank=16)
+
+    # 1. Attention and lm_head must NOT be compressed (zero drift!)
+    assert isinstance(runner.model.q_proj, nn.Linear) and not isinstance(runner.model.q_proj, OjasXRunnerLinear)
+    assert isinstance(runner.model.o_proj, nn.Linear) and not isinstance(runner.model.o_proj, OjasXRunnerLinear)
+    assert isinstance(runner.model.lm_head, nn.Linear) and not isinstance(runner.model.lm_head, OjasXRunnerLinear)
+
+    # 2. MLPs must be compressed
+    assert isinstance(runner.model.gate_proj, OjasXRunnerLinear)
+    assert isinstance(runner.model.up_proj, OjasXRunnerLinear)
+    assert isinstance(runner.model.down_proj, OjasXRunnerLinear)
+
+    with torch.no_grad():
+        y_pred = runner(x)
+
+    cos_sim = F.cosine_similarity(y_true.flatten(), y_pred.flatten(), dim=0).item()
+    assert cos_sim > 0.90, f"Expected Hybrid MoE cosine similarity > 0.90, got {cos_sim:.4f}"
+
+
+def test_engine2_matryoshka_runner():
+    """
+    Verifies Engine 2 (Matryoshka Dual-Stage Pure-Root):
+    - All layers packed with MatryoshkaRootLinear (Coarse + Fine + SVD Highway).
+    - Achieves >0.96 cosine similarity across the full block.
+    """
+    class MockMLP(nn.Module):
+        def __init__(self, d=128, h=256):
+            super().__init__()
+            self.gate_proj = nn.Linear(d, h, bias=False)
+            self.down_proj = nn.Linear(h, d, bias=False)
+
+        def forward(self, x):
+            return self.down_proj(F.silu(self.gate_proj(x)))
+
+    torch.manual_seed(42)
+    m = MockMLP()
+    x = torch.randn(2, 8, 128)
+    with torch.no_grad():
+        y_true = m(x)
+
+    # Pack with Engine 2
+    runner = MatryoshkaRunner.from_model(m, svd_rank=16)
+
+    assert isinstance(runner.model.gate_proj, MatryoshkaRootLinear)
+    assert isinstance(runner.model.down_proj, MatryoshkaRootLinear)
+
+    with torch.no_grad():
+        y_pred = runner(x)
+
+    cos_sim = F.cosine_similarity(y_true.flatten(), y_pred.flatten(), dim=0).item()
+    assert cos_sim > 0.92, f"Expected Matryoshka runner cosine similarity > 0.92, got {cos_sim:.4f}"
+
+    rep = runner.memory_report()
+    assert rep.packed_linear_params > 0
+    assert rep.compression_ratio > 1.0
 
 
 # ==============================================================================

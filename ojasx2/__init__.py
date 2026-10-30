@@ -186,6 +186,10 @@ from .runtime import (
     PureLeech24RootPacker,
     MatryoshkaRootLinear,
     fold_consecutive_layers_symplectic,
+    pack_matryoshka_runner,
+    pack_hybrid_moe_runner,
+    HybridMoERunner,
+    MatryoshkaRunner,
 )
 from . import runtime
 import torch

@@ -35,12 +35,14 @@ from .root_leech_math import (
 from .matryoshka_runner_linear import (
     MatryoshkaRootLinear,
     fold_consecutive_layers_symplectic,
+    pack_matryoshka_runner,
 )
 from .runner_linear import (
     OjasXRunnerLinear,
     OjasXLinear,
     pack_model_runner,
     pack_model_ojasx_runner,
+    pack_hybrid_moe_runner,
 )
 from .kv_cache_e8 import (
     E8KVCache,
@@ -48,6 +50,8 @@ from .kv_cache_e8 import (
 from .hf_auto_runner import (
     OjasXRunner,
     OjasXRuntime,
+    HybridMoERunner,
+    MatryoshkaRunner,
     OjasXRunnerMemoryReport,
     OjasXMemoryReport,
 )
@@ -60,13 +64,17 @@ __all__ = [
     "PureLeech24RootPacker",
     "MatryoshkaRootLinear",
     "fold_consecutive_layers_symplectic",
+    "pack_matryoshka_runner",
     "OjasXRunnerLinear",
     "OjasXLinear",
     "pack_model_runner",
     "pack_model_ojasx_runner",
+    "pack_hybrid_moe_runner",
     "E8KVCache",
     "OjasXRunner",
     "OjasXRuntime",
+    "HybridMoERunner",
+    "MatryoshkaRunner",
     "OjasXRunnerMemoryReport",
     "OjasXMemoryReport",
 ]

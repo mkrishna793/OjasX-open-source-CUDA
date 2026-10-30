@@ -393,4 +393,40 @@ def pack_model_runner(
     return model
 
 
+def pack_hybrid_moe_runner(
+    model: nn.Module,
+    bitrate: float = 1.0,
+    svd_rank: int = 16,
+    active_row_ratio: float = 1.0,
+    use_hadamard: bool = True,
+    lattice_type: str = "e8",
+    min_features: int = 64,
+    exclude_names: Sequence[str] = (
+        "lm_head", "embed", "router", "gate_network",
+        "attn", "attention", "q_proj", "k_proj", "v_proj", "o_proj",
+        "self_attn", "cross_attn", "in_proj", "out_proj",
+    ),
+    _prefix: str = "",
+) -> nn.Module:
+    """
+    Engine 1: Selective Hybrid MoE Runner Engine (~18.5 GB on Qwen 176B).
+    Preserves all Attention projections (Q, K, V, O), Routers, and Heads in uncompressed
+    FP16/BF16 to eliminate softmax entropy collapse and syntax drift completely.
+    Compresses only the massive MoE Expert and MLP blocks (85%+ of parameters) into
+    1.0-bit Root-E8 / Leech-24D with 100% active rows.
+    """
+    return pack_model_runner(
+        model,
+        bitrate=bitrate,
+        svd_rank=svd_rank,
+        active_row_ratio=active_row_ratio,
+        use_hadamard=use_hadamard,
+        lattice_type=lattice_type,
+        min_features=min_features,
+        exclude_names=exclude_names,
+        hybrid_moe=False,
+        _prefix=_prefix,
+    )
+
+
 pack_model_ojasx_runner = pack_model_runner

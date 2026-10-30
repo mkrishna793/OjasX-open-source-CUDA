@@ -39,6 +39,10 @@ from ojasx2 import (
     PureLeech24RootPacker,
     MatryoshkaRootLinear,
     fold_consecutive_layers_symplectic,
+    pack_matryoshka_runner,
+    pack_hybrid_moe_runner,
+    HybridMoERunner,
+    MatryoshkaRunner,
 )
 
 __version__ = _ojasx2.__version__
@@ -52,6 +56,10 @@ __all__ = _ojasx2.__all__ if hasattr(_ojasx2, "__all__") else [
     "OjasXLinear",
     "pack_model_runner",
     "pack_model_ojasx_runner",
+    "pack_hybrid_moe_runner",
+    "pack_matryoshka_runner",
+    "HybridMoERunner",
+    "MatryoshkaRunner",
     "E8KVCache",
     "OjasXRunnerMemoryReport",
     "OjasXMemoryReport",
