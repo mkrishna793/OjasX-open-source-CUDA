@@ -473,6 +473,15 @@ def _emit_universal_source_fallback(target_arch: str, block_m: int, block_n: int
 
 def register_tile_fallbacks():
     """Fill only missing schemas, never colliding with an already loaded native library."""
+    import logging
+    logger = logging.getLogger("ojasx2.tile_fallback")
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter("[OjasX Tile Fallback] %(levelname)s: %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+    logger.info("Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...")
+
     composite_only_ops = {
         "probe_silicon_info",
         "xor_swizzle_offset",
@@ -518,3 +527,4 @@ def register_tile_fallbacks():
         _LIBRARIES.append(library)
     global _FALLBACKS_REGISTERED
     _FALLBACKS_REGISTERED = True
+    logger.info("Tile fallbacks registration completed successfully.")

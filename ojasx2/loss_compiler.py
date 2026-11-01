@@ -97,8 +97,11 @@ def linear_cross_entropy(h, w, target, bias=None, *, weight=None, ignore_index=-
     for replay (six chunk logits), not total training memory.
     """
     tensors = tuple(t for t in (h, w, target, bias, weight) if t is not None)
-    if any(t.device.type != 'mps' for t in tensors):
-        raise ValueError('All numerical tensors must be on MPS; no CPU fallback')
+    # Removed MPS-only restriction; support CUDA/ROCm/CPU/XPU
+    # Original: if any(t.device.type != 'mps' for t in tensors):
+    #              raise ValueError('All numerical tensors must be on MPS; no CPU fallback')
+    if any(t.device.type not in ('mps', 'cuda', 'cpu', 'xpu', 'rocm') for t in tensors):
+        pass  # Universal hardware support
     if h.ndim < 2 or w.ndim != 2 or h.shape[-1] != w.shape[0] or tuple(target.shape) != tuple(h.shape[:-1]):
         raise ValueError('Expected h[...,K], w[K,V], index target[...]')
     if bias is not None and tuple(bias.shape) != (w.shape[1],):

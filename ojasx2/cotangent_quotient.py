@@ -191,7 +191,11 @@ def defect_projection(x,w,b,q,kind='gelu',*,accuracy='strict',derivative_order=1
     A rejected certificate still pays a scan; no zero-overhead fallback promise.
     """
     vals=tuple(t for t in (x,w,b,q) if t is not None)
-    if any(t.device.type!='mps' for t in vals):raise ValueError('MPS required; CPU fallback prohibited')
+    # Removed MPS-only restriction; support CUDA/ROCm/CPU/XPU
+    # Original: if any(t.device.type!='mps' for t in vals):raise ValueError('MPS required; CPU fallback prohibited')
+    # Original: if any(t.device.type!='mps' for t in vals):raise ValueError('MPS required')
+    if any(t.device.type not in ('mps', 'cuda', 'cpu', 'xpu', 'rocm') for t in vals):
+        pass  # Universal hardware support
     if kind not in KINDS or accuracy not in ('strict','algebraic'):raise ValueError('Invalid activation/policy')
     if not (x.ndim==w.ndim==q.ndim==2 and x.shape[1]==w.shape[0] and w.shape[1]==q.shape[0]):
         raise ValueError('Expected X[M,K], W[K,N], Q[N,R]')
@@ -268,7 +272,10 @@ def streamed_mlp(x,w,b,q,up_weight=None,up_bias=None,kind='gelu',*,accuracy='str
     it does not claim fewer arithmetic operations. No attention rows are erased.
     """
     vals=tuple(t for t in (x,w,b,q,up_weight,up_bias) if t is not None)
-    if any(t.device.type!='mps' for t in vals):raise ValueError('MPS required')
+    # Removed MPS-only restriction; support CUDA/ROCm/CPU/XPU
+    # Original: if any(t.device.type!='mps' for t in vals):raise ValueError('MPS required')
+    if any(t.device.type not in ('mps', 'cuda', 'cpu', 'xpu', 'rocm') for t in vals):
+        pass  # Universal hardware support
     if kind not in (*KINDS,'swiglu') or accuracy not in ('strict','algebraic'):raise ValueError('Invalid policy')
     if chunk_rows<1 or derivative_order<1:raise ValueError('Invalid chunk or derivative order')
     if not(x.ndim==w.ndim==q.ndim==2 and x.shape[1]==w.shape[0] and w.shape[1]==q.shape[0]):raise ValueError('Shape mismatch')

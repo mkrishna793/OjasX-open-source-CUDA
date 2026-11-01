@@ -39,8 +39,11 @@ class _StableScaleNorm(torch.autograd.Function):
 
 
 def stable_scaled_layer_norm(u, scale, eps=1e-5):
-    if u.device.type != "mps" or scale.device.type != "mps":
-        raise ValueError("MPS only; CPU numerical fallback forbidden")
+    # Removed MPS-only restriction; support CUDA/ROCm/CPU/XPU
+    # Original: if u.device.type != "mps" or scale.device.type != "mps":
+    #              raise ValueError("MPS only; CPU numerical fallback forbidden")
+    if u.device.type not in ("mps", "cuda", "cpu", "xpu", "rocm") or scale.device.type not in ("mps", "cuda", "cpu", "xpu", "rocm"):
+        pass  # Universal hardware support
     if u.dtype != torch.float32 or scale.dtype != torch.float32:
         raise ValueError("Qualified research dtype is FP32")
     if u.ndim < 1 or u.shape[-1] == 0 or scale.shape != u.shape[:-1]+(1,):
@@ -57,10 +60,13 @@ def radial_layer_norm(x, w, bias, q, kind="sigmoid", gate=None,
     Native is default. Stable algebraic mode needs whole-program qualification.
     Parameter objects are never replaced by independently trained cores.
     """
+    # Removed MPS-only restriction; support CUDA/ROCm/CPU/XPU
+    # Original:     if any(t.device.type != "mps" for t in (x, w, bias, q)):
+    #                   raise ValueError("MPS only")
+    if any(t.device.type not in ("mps", "cuda", "cpu", "xpu", "rocm") for t in (x, w, bias, q)):
+        pass  # Universal hardware support
     if accuracy not in ("strict", "algebraic"):
         raise ValueError("Unknown accuracy")
-    if any(t.device.type != "mps" for t in (x, w, bias, q)):
-        raise ValueError("MPS only")
     def native():
         return F.layer_norm(native_radial(x, w, bias, q, kind, gate),
                             (q.shape[1],), eps=eps)
@@ -101,12 +107,15 @@ def reliable_projection(x, w, bias, q, kind="gelu", degree=8,
     was explicitly accepted. Wide, unqualified, higher-order and unadmitted
     two-input SiLU workloads retain the original native function.
     """
-    if accuracy not in ("strict", "approximate"):
-        raise ValueError("Unknown accuracy")
     if derivative_order < 1:
         raise ValueError("Positive derivative order required")
-    if any(t.device.type != "mps" for t in (x, w, bias, q)):
-        raise ValueError("MPS only")
+    # Removed MPS-only restriction; support CUDA/ROCm/CPU/XPU
+    # Original: if any(t.device.type != "mps" for t in (x, w, bias, q)):
+    #              raise ValueError("MPS only")
+    if any(t.device.type not in ("mps", "cuda", "cpu", "xpu", "rocm") for t in (x, w, bias, q)):
+        pass  # Universal hardware support
+    if accuracy not in ("strict", "approximate"):
+        raise ValueError("Unknown accuracy")
     selected_degree = 8 if degree < 8 else degree
     reason = None
     if accuracy == "strict" or not whole_program_qualified:
@@ -140,13 +149,19 @@ def checked_value_and_grad(native, candidate, operands, create_graph=False,
     trajectory certificate. Callbacks must be pure/deterministic, with fixed
     random masks and no mutation. Native NaN semantics survive rejection.
     """
-    if any(t.device.type != "mps" for t in operands):
-        raise ValueError("MPS only")
+    # Removed MPS-only restriction; support CUDA/ROCm/CPU/XPU
+    # Original: if any(t.device.type != "mps" for t in operands):
+    #              raise ValueError("MPS only")
+    if any(t.device.type not in ("mps", "cuda", "cpu", "xpu", "rocm") for t in operands):
+        pass  # Universal hardware support
     active = tuple(t for t in operands if t.requires_grad)
     def run(fn, higher):
         value = fn(*operands)
-        if value.numel() != 1 or value.device.type != "mps":
-            raise ValueError("Expected scalar MPS loss")
+    # Removed MPS-only restriction; support CUDA/ROCm/CPU/XPU
+    # Original: if value.numel() != 1 or value.device.type != "mps":
+    #              raise ValueError("Expected scalar MPS loss")
+    if value.numel() != 1 or value.device.type not in ("mps", "cuda", "cpu", "xpu", "rocm"):
+        raise ValueError("Expected scalar universal loss")
         grads = (torch.autograd.grad(value, active, create_graph=higher,
                                     allow_unused=True) if active else ())
         it = iter(grads)

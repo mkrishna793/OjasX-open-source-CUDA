@@ -141,7 +141,7 @@
     "uniform true-GELU/SiLU analytic remainder and IEEE/backend certificate",
     "complete-model speed qualification for the latest spectral composed models"
   ],
-  "verification_command": ".tools/conformance-venv/bin/python -B tools/refine_demand_foundation.py",
+  "verification_command": "python3 -B tools/refine_demand_foundation.py",
   "report": "reports/spectral-formal-verification.json",
   "broad_report": "reports/broad-foundation.json",
   "refinement_report": "reports/foundation-edges.json",

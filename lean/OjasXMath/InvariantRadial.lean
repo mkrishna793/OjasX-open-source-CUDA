@@ -149,6 +149,23 @@ theorem stable_scaled_norm_actual_derivative (a variance eps : ℝ)
   simp only [id_eq, pow_two] at *
   nlinarith [hs]
 
+theorem stable_scaled_norm_zero_derivative (variance eps : ℝ)
+    (hv : 0 ≤ variance) (he : 0 < eps) :
+    HasDerivAt (fun t : ℝ => t / Real.sqrt (t*t*variance+eps))
+      (eps / (Real.sqrt (0*0*variance+eps))^3) 0 := by
+  have hp : 0 < 0*0*variance+eps := by linarith [he]
+  have hq : HasDerivAt (fun t : ℝ => t*t*variance+eps) 0 0 := by
+    convert (((hasDerivAt_id 0).mul (hasDerivAt_id 0)).mul_const variance).add_const eps using 1 <;>
+      (try funext t) <;> dsimp <;> ring
+  have h := radial_normalization_derivative hq (hasDerivAt_id 0) hp
+  have hn : Real.sqrt (0*0*variance+eps) ≠ 0 := ne_of_gt (Real.sqrt_pos.2 hp)
+  have hs : Real.sq_sqrt (le_of_lt hp) := by linarith [hp]
+  convert h using 1
+  dsimp
+  field_simp [hn]
+  simp only [id_eq, pow_two] at *
+  nlinarith [hs]
+
 theorem stable_scaled_norm_overflow_avoiding_form (d eps : ℝ) (hd : 0 < d) :
     eps / (Real.sqrt d)^3 = (eps/d) / Real.sqrt d := by
   have hn : Real.sqrt d ≠ 0 := ne_of_gt (Real.sqrt_pos.2 hd)

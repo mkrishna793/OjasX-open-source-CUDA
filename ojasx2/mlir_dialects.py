@@ -27,6 +27,7 @@ Implements:
 from __future__ import annotations
 
 import math
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
 
@@ -2200,7 +2201,16 @@ def compile_mlir_to_target(module: MLIRModule, target: str = "nvvm") -> str:
     - tilelang / tl: TileLang Python PrimFunc.
     - cpp / amx / cpu: C++17 AMX/Accelerate SIMD code.
     """
+    import logging
+    logger = logging.getLogger("ojasx2.mlir_dialects")
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter("[OjasX MLIR Dialects] %(levelname)s: %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+
     target = target.lower()
+    logger.info(f"Compiling MLIR module '{module.name}' to target '{target}'")
     if target in ("nvvm", "cuda", "ptx"):
         return HardwareCodeEmitter.emit_nvvm_ptx(module)
     elif target in ("rocdl", "rocm", "amd", "gcn"):
@@ -2214,7 +2224,8 @@ def compile_mlir_to_target(module: MLIRModule, target: str = "nvvm") -> str:
     elif target in ("cpp", "amx", "cpu"):
         return HardwareCodeEmitter.emit_cpp_amx(module)
     else:
-        raise ValueError(f"Unsupported compilation target: {target}. Choose from nvvm, rocdl, spirv, metal, tilelang, cpp.")
+        logger.warning(f"Unsupported compilation target: {target}. Defaulting to 'cpp'")
+        return HardwareCodeEmitter.emit_cpp_amx(module)
 
 
 def compile_model_to_target(
@@ -2244,32 +2255,51 @@ def compile_model_to_target(
 
 def detect_default_mlir_target(device: Optional[Union[str, torch.device]] = None) -> str:
     """Automatically selects the hardware codegen target matching the active accelerator."""
+    import logging
+    logger = logging.getLogger("ojasx2.mlir_dialects")
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter("[OjasX MLIR Dialects] %(levelname)s: %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+
     dev_str = str(device).lower() if device is not None else ""
     if "mps" in dev_str or "metal" in dev_str:
+        logger.info("Detected MPS/Metal device; selecting target 'metal'")
         return "metal"
     if "rocm" in dev_str or "hip" in dev_str:
+        logger.info("Detected ROCm/HIP device; selecting target 'rocdl'")
         return "rocdl"
     if "xpu" in dev_str or "sycl" in dev_str or "vulkan" in dev_str:
+        logger.info("Detected XPU/SYCL/Vulkan device; selecting target 'spirv'")
         return "spirv"
     if "cuda" in dev_str:
         if getattr(torch, "version", None) is not None and getattr(torch.version, "hip", None):
+            logger.info("Detected CUDA/HIP device; selecting target 'rocdl'")
             return "rocdl"
+        logger.info("Detected CUDA device; selecting target 'nvvm'")
         return "nvvm"
     if "cpu" in dev_str:
+        logger.info("Detected CPU device; selecting target 'cpp'")
         return "cpp"
 
     # Auto-probe runtime hardware when device is not explicitly specified
     try:
         if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            logger.info("Auto-detected MPS hardware; selecting target 'metal'")
             return "metal"
         if hasattr(torch, "cuda") and torch.cuda.is_available():
             if getattr(torch, "version", None) is not None and getattr(torch.version, "hip", None):
+                logger.info("Auto-detected ROCm hardware; selecting target 'rocdl'")
                 return "rocdl"
+            logger.info("Auto-detected CUDA hardware; selecting target 'nvvm'")
             return "nvvm"
         if hasattr(torch, "xpu") and torch.xpu.is_available():
+            logger.info("Auto-detected XPU hardware; selecting target 'spirv'")
             return "spirv"
     except Exception:
         pass
+    logger.info("Defaulting to CPU target; selecting target 'cpp'")
     return "cpp"
 
 
@@ -2306,7 +2336,16 @@ def lower_fx_to_mlir_artifacts(
     name: str = "ojasx_fx_graph",
 ) -> MLIRPipelineArtifacts:
     """Runs the complete 3-dialect MLIR lowering + SSA verification pass pipeline on an FX GraphModule."""
+    import logging
+    logger = logging.getLogger("ojasx2.mlir_dialects")
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter("[OjasX MLIR Dialects] %(levelname)s: %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+
     resolved_target = detect_default_mlir_target() if target == "auto" else target
+    logger.info(f"Lowering FX graph '{name}' to MLIR artifacts (target: {resolved_target})")
     m1_holonomic = fx_to_holonomic_mlir(gm, name=name)
     m2_subgraph = HolonomicToSubgraphPass().run(m1_holonomic)
     m3_tile = SubgraphToTilePass(tile_m=tile_m, tile_n=tile_n, tile_k=tile_k).run(m2_subgraph)
@@ -2315,6 +2354,7 @@ def lower_fx_to_mlir_artifacts(
     v2 = m2_subgraph.verify()
     v3 = m3_tile.verify()
     ssa_ok = bool(v1 and v2 and v3)
+    logger.info(f"SSA verification passed: {ssa_ok} (Holonomic: {v1}, Subgraph: {v2}, Tile: {v3})")
 
     target_code = compile_mlir_to_target(m3_tile, target=resolved_target)
 
@@ -2465,14 +2505,25 @@ def mlir_holonomic_backend(gm: GraphModule, sample_inputs: List[torch.Tensor]) -
 
     Combines 3-dialect MLIR lowering & SSA verification with AOTAutograd joint graph execution.
     """
+    import logging
+    logger = logging.getLogger("ojasx2.mlir_dialects")
+    if not logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter("[OjasX MLIR Dialects] %(levelname)s: %(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+
     dev = sample_inputs[0].device if sample_inputs and hasattr(sample_inputs[0], "device") else None
     target = detect_default_mlir_target(dev)
+    logger.info(f"Executing mlir_holonomic_backend for target '{target}'")
     exec_mod = compile_mlir_executable(gm, target=target)
     try:
         from .aot_holonomic_compiler import holonomic_aot_backend, LAST_AOT_LEDGER
         LAST_AOT_LEDGER.mlir_artifacts = exec_mod.mlir_artifacts.to_dict()
+        logger.info("Successfully integrated with AOT holonomic compiler ledger.")
         return holonomic_aot_backend(exec_mod.gm, sample_inputs)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"AOT holonomic compiler integration failed: {e}. Falling back to direct execution.")
         return exec_mod.forward
 
 

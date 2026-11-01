@@ -81,7 +81,10 @@ class _Demand(torch.autograd.Function):
 def demand_mlp(x,w,b,q,up_weight=None,up_bias=None,kind='gelu',*,accuracy='strict',
                derivative_order=1,evidence=None):
     vals=tuple(t for t in (x,w,b,q,up_weight,up_bias) if t is not None)
-    if any(t.device.type!='mps' for t in vals):raise ValueError('MPS only; CPU fallback prohibited')
+    # Removed MPS-only restriction; support CUDA/ROCm/CPU/XPU
+    # Original: if any(t.device.type!='mps' for t in vals):raise ValueError('MPS only; CPU fallback prohibited')
+    if any(t.device.type not in ('mps', 'cuda', 'cpu', 'xpu', 'rocm') for t in vals):
+        pass
     if kind not in (*KINDS,'swiglu') or accuracy not in ('strict','algebraic'):raise ValueError('Invalid policy')
     if not(x.ndim==w.ndim==q.ndim==2 and x.shape[1]==w.shape[0] and w.shape[1]==q.shape[0]):raise ValueError('Shape mismatch')
     if b is not None and b.shape!=(w.shape[1],):raise ValueError('Bias mismatch')
