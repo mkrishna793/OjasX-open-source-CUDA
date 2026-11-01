@@ -27,6 +27,7 @@ Implements:
 from __future__ import annotations
 
 import math
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
 
@@ -2263,43 +2264,43 @@ def detect_default_mlir_target(device: Optional[Union[str, torch.device]] = None
         logger.setLevel(logging.INFO)
 
     dev_str = str(device).lower() if device is not None else ""
-    if \"mps\" in dev_str or \"metal\" in dev_str:
+    if "mps" in dev_str or "metal" in dev_str:
         logger.info("Detected MPS/Metal device; selecting target 'metal'")
-        return \"metal\"
-    if \"rocm\" in dev_str or \"hip\" in dev_str:
+        return "metal"
+    if "rocm" in dev_str or "hip" in dev_str:
         logger.info("Detected ROCm/HIP device; selecting target 'rocdl'")
-        return \"rocdl\"
-    if \"xpu\" in dev_str or \"sycl\" in dev_str or \"vulkan\" in dev_str:
+        return "rocdl"
+    if "xpu" in dev_str or "sycl" in dev_str or "vulkan" in dev_str:
         logger.info("Detected XPU/SYCL/Vulkan device; selecting target 'spirv'")
-        return \"spirv\"
-    if \"cuda\" in dev_str:
-        if getattr(torch, \"version\", None) is not None and getattr(torch.version, \"hip\", None):
+        return "spirv"
+    if "cuda" in dev_str:
+        if getattr(torch, "version", None) is not None and getattr(torch.version, "hip", None):
             logger.info("Detected CUDA/HIP device; selecting target 'rocdl'")
-            return \"rocdl\"
+            return "rocdl"
         logger.info("Detected CUDA device; selecting target 'nvvm'")
-        return \"nvvm\"
-    if \"cpu\" in dev_str:
+        return "nvvm"
+    if "cpu" in dev_str:
         logger.info("Detected CPU device; selecting target 'cpp'")
-        return \"cpp\"
+        return "cpp"
 
     # Auto-probe runtime hardware when device is not explicitly specified
     try:
-        if hasattr(torch.backends, \"mps\") and torch.backends.mps.is_available():
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             logger.info("Auto-detected MPS hardware; selecting target 'metal'")
-            return \"metal\"
-        if hasattr(torch, \"cuda\") and torch.cuda.is_available():
-            if getattr(torch, \"version\", None) is not None and getattr(torch.version, \"hip\", None):
+            return "metal"
+        if hasattr(torch, "cuda") and torch.cuda.is_available():
+            if getattr(torch, "version", None) is not None and getattr(torch.version, "hip", None):
                 logger.info("Auto-detected ROCm hardware; selecting target 'rocdl'")
-                return \"rocdl\"
+                return "rocdl"
             logger.info("Auto-detected CUDA hardware; selecting target 'nvvm'")
-            return \"nvvm\"
-        if hasattr(torch, \"xpu\") and torch.xpu.is_available():
+            return "nvvm"
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
             logger.info("Auto-detected XPU hardware; selecting target 'spirv'")
-            return \"spirv\"
+            return "spirv"
     except Exception:
         pass
     logger.info("Defaulting to CPU target; selecting target 'cpp'")
-    return \"cpp\"
+    return "cpp"
 
 
 @dataclass

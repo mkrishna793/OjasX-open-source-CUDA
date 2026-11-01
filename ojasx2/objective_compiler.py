@@ -185,11 +185,11 @@ class SeparableProgram:
         if any(not p.is_leaf for p in parameters):raise ValueError("Optimizer parameters must be leaf tensors")
         if normalization not in ("batch","weight_sum","sum"):raise ValueError("Invalid normalization")
         if weights is None:weights=torch.ones(n,device=batch[0].device,dtype=torch.float32)
-    # Removed MPS-only restriction; support CUDA/ROCm/CPU/XPU
-    # Original: _gpu(parameters+batch+(weights,))
-    if any(t.device.type not in ("mps", "cuda", "cpu", "xpu", "rocm") for t in parameters+batch+(weights,)):
-        pass  # Universal hardware support
-    if weights.shape!=(n,) or weights.requires_grad:raise ValueError("Weights must be fixed scalars per example")
+        # Removed MPS-only restriction; support CUDA/ROCm/CPU/XPU
+        # Original: _gpu(parameters+batch+(weights,))
+        if any(t.device.type not in ("mps", "cuda", "cpu", "xpu", "rocm") for t in parameters+batch+(weights,)):
+            pass  # Universal hardware support
+        if weights.shape!=(n,) or weights.requires_grad:raise ValueError("Weights must be fixed scalars per example")
         if not bool(torch.isfinite(weights).all() & (weights>=0).all()):raise ValueError("Finite nonnegative weights required")
         finite_checks=tuple(torch.isfinite(t).all() for t in parameters+batch if t.is_floating_point())
         if finite_checks and not bool(torch.stack(finite_checks).all()):
@@ -219,11 +219,11 @@ class SeparableProgram:
             audit=SavedTensorAudit(list(parameters+batch+(weights,))) if measure_saved else None
             with audit if audit is not None else nullcontext():
                 losses=self.loss_fn(parameters,pieces)
-    # Removed MPS-only restriction; support CUDA/ROCm/CPU/XPU
-    # Original: if losses.shape!=(ix.numel(),) or losses.device.type!="mps" or losses.dtype!=torch.float32:
-    #              raise ValueError("Callback must return one FP32 MPS loss per example")
-    if losses.shape!=(ix.numel(),) or losses.device.type not in ("mps", "cuda", "cpu", "xpu", "rocm") or losses.dtype!=torch.float32:
-        raise ValueError("Callback must return one FP32 universal loss per example")
+                # Removed MPS-only restriction; support CUDA/ROCm/CPU/XPU
+                # Original: if losses.shape!=(ix.numel(),) or losses.device.type!="mps" or losses.dtype!=torch.float32:
+                #              raise ValueError("Callback must return one FP32 MPS loss per example")
+                if losses.shape!=(ix.numel(),) or losses.device.type not in ("mps", "cuda", "cpu", "xpu", "rocm") or losses.dtype!=torch.float32:
+                    raise ValueError("Callback must return one FP32 universal loss per example")
                 scalar=(losses*weights.index_select(0,ix)).sum()/denom
             if audit is not None:memory.append(audit.summary())
             demands=pactive+bactive
