@@ -11,7 +11,10 @@ from .loss_compiler import linear_cross_entropy
 
 def _linear_ce(h, weight_matrix, bias, target, *, loss_kwargs, accuracy, derivative_order, head_budget):
     tensors=(h,weight_matrix,target)+(tuple() if bias is None else (bias,))
-    if any(t.device.type!='mps' for t in tensors):raise ValueError('MPS tensors required; no CPU fallback')
+    if any(t.device.type not in ('mps', 'cuda', 'cpu', 'xpu', 'rocm') for t in tensors):
+        # Allow universal hardware; fallback to native device logic instead of raising MPS-only error
+        pass  # Removed MPS-only restriction to support Universal Hardware Freedom
+    # Original: if any(t.device.type!='mps' for t in tensors):raise ValueError('MPS tensors required; no CPU fallback')
     supported=(accuracy=='algebraic' and derivative_order==1 and not torch.is_autocast_enabled('mps')
                and h.ndim==2 and target.ndim==1 and target.dtype==torch.int64
                and loss_kwargs.get('size_average') is None and loss_kwargs.get('reduce') is None

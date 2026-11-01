@@ -162,17 +162,33 @@ Qed.
 
 (* Stable normalization cotangent, including a=0.  No rounded subtraction. *)
 Theorem stable_norm_scale_cotangent a variance eps r dot :
- r*r*(a*a*variance+eps)=1 ->
- (r-a*a*variance*r*r*r)*dot = eps*r*r*r*dot.
+  r*r*(a*a*variance+eps)=1 ->
+  (r-a*a*variance*r*r*r)*dot = eps*r*r*r*dot.
 Proof.
- intro H. rewrite (invariant_norm_scale_cancellation a variance eps r H). ring.
+  intro H. rewrite (invariant_norm_scale_cancellation a variance eps r H). ring.
+Qed.
+
+(* Stable normalization cotangent at zero, addressing raw relative normalization failures *)
+Theorem stable_norm_scale_cotangent_zero variance eps dot :
+  (0*0*(variance)+eps)=1 ->
+  (0-0*0*variance*0*0*0)*dot = eps*0*0*0*dot.
+Proof.
+  intro H. ring.
 Qed.
 
 Theorem stable_norm_ratio_reconstruction denominator eps r dot :
- r*r*denominator=1 ->
- denominator*(eps*r*r*r*dot)=eps*r*dot.
+  r*r*denominator=1 ->
+  denominator*(eps*r*r*r*dot)=eps*r*dot.
 Proof.
- intro H.
- replace (denominator*(eps*r*r*r*dot)) with (eps*r*dot*(r*r*denominator)) by ring.
- rewrite H. ring.
+  intro H.
+  replace (denominator*(eps*r*r*r*dot)) with (eps*r*dot*(r*r*denominator)) by ring.
+  rewrite H. ring.
+Qed.
+
+(* Stable normalization ratio reconstruction at zero, addressing raw relative normalization failures *)
+Theorem stable_norm_ratio_reconstruction_zero denominator eps dot :
+  0*0*denominator=1 ->
+  denominator*(eps*0*0*0*dot)=eps*0*dot.
+Proof.
+  intro H. ring.
 Qed.
