@@ -486,6 +486,8 @@ class _HolonomicDaggerAttentionFunction(torch.autograd.Function):
             attn_mask=getattr(ctx, "attn_mask", None),
             key_padding_mask=getattr(ctx, "key_padding_mask", None),
         )
+        ctx.attn_mask = None
+        ctx.key_padding_mask = None
         return dq, dk, dv, None, None, None, None, None
 
 
