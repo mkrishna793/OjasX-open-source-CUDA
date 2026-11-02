@@ -452,9 +452,8 @@ def _get_root_e8_lut(device: Optional[torch.device] = None) -> torch.Tensor:
         for signs in itertools.product((-0.5, 0.5), repeat=8):
             if sum(1 for s in signs if s < 0) % 2 == 0:
                 pts.append(list(signs))
-        rt2 = math.sqrt(2.0)
         for i in range(8):
-            for s in (-rt2, rt2):
+            for s in (-1.0, 1.0):
                 vec = [0.0] * 8
                 vec[i] = s
                 pts.append(vec)

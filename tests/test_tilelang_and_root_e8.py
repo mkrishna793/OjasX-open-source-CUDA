@@ -42,17 +42,20 @@ from ojasx2.grad_free_optimizer import (
 # =============================================================================
 
 def test_root_e8_lut_geometry():
-    """Verify Root E8 codebook has 256 points in R^8 on sphere S^7 with identical norms."""
+    """Verify Root E8 codebook has 256 points strictly in E8 lattice: 240 roots (norm^2=8) and 16 coordinate axes (norm^2=4)."""
     lut = _get_root_e8_lut(torch.device("cpu"))
     assert lut.shape == (256, 8)
     assert lut.dtype == torch.float32
 
-    # Verify all norms squared are identically equal (equidistant sphere)
+    # Verify 240 roots have norm^2 = 8.0 and 16 coordinate axis double vectors have norm^2 = 4.0
     norms_sq = (lut ** 2).sum(dim=-1)
-    expected_norm_sq = norms_sq[0].item()
-    assert torch.allclose(norms_sq, torch.full_like(norms_sq, expected_norm_sq), atol=1e-5), (
-        f"Non-equidistant norms: min={norms_sq.min().item()}, max={norms_sq.max().item()}"
-    )
+    assert torch.allclose(norms_sq[:240], torch.full((240,), 8.0), atol=1e-5)
+    assert torch.allclose(norms_sq[240:], torch.full((16,), 4.0), atol=1e-5)
+
+    # Verify E8 lattice definition: all coordinates in integers, and sum of coordinates is an even integer
+    is_int = torch.all(lut == torch.round(lut), dim=-1)
+    is_even_sum = ((lut.sum(dim=-1).to(torch.int64) % 2) == 0)
+    assert torch.all(is_int & is_even_sum), "All 256 LUT vectors must strictly belong to E8 lattice"
 
     # Verify no duplicate points
     unique_rows = torch.unique(lut, dim=0)
