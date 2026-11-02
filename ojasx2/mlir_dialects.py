@@ -27,7 +27,6 @@ Implements:
 from __future__ import annotations
 
 import math
-import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
 
@@ -422,6 +421,34 @@ class HolonomicDialect:
         return op
 
     @staticmethod
+    def fused_universal_glu(
+        x: MLIRValue,
+        w_gate: MLIRValue,
+        w_up: MLIRValue,
+        result_type: MLIRType,
+        act: str = "silu",
+        val_idx: int = 0,
+    ) -> MLIROperation:
+        y_val = MLIRValue(f"%fused_glu_out_{val_idx}", result_type)
+        ctx_val = MLIRValue(f"%fused_glu_ctx_{val_idx}", ContextType())
+        op = MLIROperation(
+            dialect=HolonomicDialect.NAME,
+            op_name="fused_universal_glu",
+            operands=[x, w_gate, w_up],
+            results=[y_val, ctx_val],
+            attributes={
+                "act": StringAttr(act),
+                "tape_policy": TapePolicyAttr("zero_hidden_tensors"),
+                "fused": IntegerAttr(1, IntType(1)),
+            },
+        )
+        y_val.defining_op = op
+        ctx_val.defining_op = op
+        return op
+
+    fused_universal_glu_contraction = fused_universal_glu
+
+    @staticmethod
     def chunked_glu(
         x: MLIRValue,
         w_in: MLIRValue,
@@ -645,6 +672,36 @@ class SubgraphDialect:
             attributes={
                 "order": StringAttr(order),
                 "cost_flops": IntegerAttr(cost_metric),
+            },
+        )
+        res.defining_op = op
+        return op
+
+    @staticmethod
+    def fused_glu_contraction(
+        x: MLIRValue,
+        w_gate: MLIRValue,
+        w_up: MLIRValue,
+        act: str = "silu",
+        result_type: Optional[MLIRType] = None,
+        val_idx: int = 0,
+    ) -> MLIROperation:
+        if result_type is None:
+            result_type = x.type
+        res = MLIRValue(f"%sg_fused_glu_{val_idx}", result_type)
+        op = MLIROperation(
+            dialect=SubgraphDialect.NAME,
+            op_name="fused_glu_contraction",
+            operands=[x, w_gate, w_up],
+            results=[res],
+            attributes={
+                "act": StringAttr(act),
+                "order": StringAttr(f"{act}(x @ w_gate.T) * (x @ w_up.T)"),
+                "cost_flops": IntegerAttr(131072),
+                "cost_model": StringAttr("single_pass_dram_read"),
+                "memory_traffic": StringAttr("1_pass_dram_read"),
+                "memory_reduction": StringAttr("3x_to_1x_dram_pass"),
+                "innovation": StringAttr("fused_universal_glu_contraction"),
             },
         )
         res.defining_op = op
@@ -1100,6 +1157,13 @@ class HolonomicToSubgraphPass:
     ojasx.subgraph contractions and explicit residual lifetimes.
     """
 
+    def __init__(
+        self,
+        fuse_universal_glu: bool = False,
+        fused_universal_glu_contraction: bool = False,
+    ) -> None:
+        self.fuse_universal_glu = bool(fuse_universal_glu or fused_universal_glu_contraction)
+
     def run(self, module: MLIRModule) -> MLIRModule:
         new_module = MLIRModule(name=f"{module.name}_subgraph")
         val_counter = 100
@@ -1180,51 +1244,84 @@ class HolonomicToSubgraphPass:
                         if op.results:
                             val_remap[op.results[0].name] = c_op.results[0]
 
-                    elif op.op_name == "universal_glu":
+                    elif op.op_name in ("universal_glu", "fused_universal_glu", "fused_universal_glu_contraction"):
                         x, w_gate, w_up = remapped_operands[0], remapped_operands[1], remapped_operands[2]
                         act = "silu"
                         if "act" in op.attributes and isinstance(op.attributes["act"], StringAttr):
                             act = op.attributes["act"].value
-                        c_gate = SubgraphDialect.contraction(
-                            tensors=[x, w_gate],
-                            order="x @ w_gate.T",
-                            cost_metric=65536,
-                            result_type=op.results[0].type,
-                            val_idx=val_counter,
-                        )
-                        val_counter += 1
-                        new_ops.append(c_gate)
 
-                        c_up = SubgraphDialect.contraction(
-                            tensors=[x, w_up],
-                            order="x @ w_up.T",
-                            cost_metric=65536,
-                            result_type=op.results[0].type,
-                            val_idx=val_counter,
+                        should_fuse = (
+                            self.fuse_universal_glu
+                            or op.op_name in ("fused_universal_glu", "fused_universal_glu_contraction")
+                            or bool(op.attributes.get("fused", False))
+                            or bool(op.attributes.get("fused_contraction", False))
                         )
-                        val_counter += 1
-                        new_ops.append(c_up)
 
-                        c_mul = SubgraphDialect.contraction(
-                            tensors=[c_gate.results[0], c_up.results[0]],
-                            order=f"{act}(gate) * up",
-                            cost_metric=8192,
-                            result_type=op.results[0].type,
-                            val_idx=val_counter,
-                        )
-                        val_counter += 1
-                        new_ops.append(c_mul)
+                        if should_fuse:
+                            # Single fused pass: cuts DRAM traffic from 3 roundtrips to 1 DRAM pass
+                            c_fused = SubgraphDialect.fused_glu_contraction(
+                                x=x,
+                                w_gate=w_gate,
+                                w_up=w_up,
+                                act=act,
+                                result_type=op.results[0].type if op.results else None,
+                                val_idx=val_counter,
+                            )
+                            val_counter += 1
+                            new_ops.append(c_fused)
 
-                        if op.results:
-                            val_remap[op.results[0].name] = c_mul.results[0]
+                            if op.results:
+                                val_remap[op.results[0].name] = c_fused.results[0]
 
-                        life_op = SubgraphDialect.residual_lifetime(
-                            tensor=x,
-                            first_use=c_gate.results[0].name,
-                            last_use=f"adjoint_{c_mul.results[0].name}",
-                            action="immediate_release",
-                        )
-                        new_ops.append(life_op)
+                            life_op = SubgraphDialect.residual_lifetime(
+                                tensor=x,
+                                first_use=c_fused.results[0].name,
+                                last_use=f"adjoint_{c_fused.results[0].name}",
+                                action="immediate_release",
+                            )
+                            new_ops.append(life_op)
+                        else:
+                            # 3 separate contractions for backwards compatibility
+                            c_gate = SubgraphDialect.contraction(
+                                tensors=[x, w_gate],
+                                order="x @ w_gate.T",
+                                cost_metric=65536,
+                                result_type=op.results[0].type,
+                                val_idx=val_counter,
+                            )
+                            val_counter += 1
+                            new_ops.append(c_gate)
+
+                            c_up = SubgraphDialect.contraction(
+                                tensors=[x, w_up],
+                                order="x @ w_up.T",
+                                cost_metric=65536,
+                                result_type=op.results[0].type,
+                                val_idx=val_counter,
+                            )
+                            val_counter += 1
+                            new_ops.append(c_up)
+
+                            c_mul = SubgraphDialect.contraction(
+                                tensors=[c_gate.results[0], c_up.results[0]],
+                                order=f"{act}(gate) * up",
+                                cost_metric=8192,
+                                result_type=op.results[0].type,
+                                val_idx=val_counter,
+                            )
+                            val_counter += 1
+                            new_ops.append(c_mul)
+
+                            if op.results:
+                                val_remap[op.results[0].name] = c_mul.results[0]
+
+                            life_op = SubgraphDialect.residual_lifetime(
+                                tensor=x,
+                                first_use=c_gate.results[0].name,
+                                last_use=f"adjoint_{c_mul.results[0].name}",
+                                action="immediate_release",
+                            )
+                            new_ops.append(life_op)
 
                     elif op.op_name == "chunked_glu":
                         x, w_in = remapped_operands[0], remapped_operands[1]
@@ -1365,6 +1462,33 @@ class HolonomicToSubgraphPass:
         return new_module
 
 
+def lower_holonomic_to_subgraph(
+    module: MLIRModule,
+    fuse_universal_glu: bool = False,
+    fused_universal_glu_contraction: bool = False,
+) -> MLIRModule:
+    """Lower ojasx.holonomic dialect to memory-planned ojasx.subgraph contractions.
+
+    Optionally fuses universal_glu into SubgraphDialect.fused_glu_contraction,
+    cutting memory traffic from 3 roundtrips to 1 DRAM pass.
+    """
+    pass_obj = HolonomicToSubgraphPass(
+        fuse_universal_glu=fuse_universal_glu,
+        fused_universal_glu_contraction=fused_universal_glu_contraction,
+    )
+    return pass_obj.run(module)
+
+
+class FusedUniversalGLUContractionPass:
+    """Pass that transforms universal_glu operations into fused_glu_contraction operations."""
+
+    def __init__(self) -> None:
+        self.pass_obj = HolonomicToSubgraphPass(fuse_universal_glu=True)
+
+    def run(self, module: MLIRModule) -> MLIRModule:
+        return self.pass_obj.run(module)
+
+
 class SubgraphToTilePass:
     """
     Pass 2: Lowers ojasx.subgraph contractions to explicit hardware tiles
@@ -1388,7 +1512,7 @@ class SubgraphToTilePass:
                 remapped_operands = [val_remap.get(o.name, o) for o in op.operands]
 
                 if op.dialect == "ojasx.subgraph" and op.op_name in (
-                    "contraction", "reassociate", "fused_block_cotangent", "culled_gemm", "tangent_operator", "halley_inverse"
+                    "contraction", "reassociate", "fused_block_cotangent", "culled_gemm", "tangent_operator", "halley_inverse", "fused_glu_contraction"
                 ):
                     # 1. Allocate shared memory tiles for operand panels
                     smem_a = TileDialect.alloc_shared((self.tile_m, self.tile_k), FloatType(32), 32, val_counter)

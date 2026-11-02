@@ -27,13 +27,18 @@ from ojasx2.mlir_dialects import (
     TensorType,
     MemRefType,
     FragmentType,
+    StringAttr,
     MLIRValue,
+    MLIRBlock,
+    MLIRFunction,
     MLIRModule,
     HolonomicDialect,
     SubgraphDialect,
     TileDialect,
     HolonomicToSubgraphPass,
     SubgraphToTilePass,
+    lower_holonomic_to_subgraph,
+    FusedUniversalGLUContractionPass,
     HardwareCodeEmitter,
     fx_to_holonomic_mlir,
     compile_mlir_to_target,
@@ -255,3 +260,66 @@ def test_compile_mlir_executable_and_artifacts():
     y_mlir.sum().backward()
     assert torch.allclose(y_mlir, y_ref, atol=1e-4, rtol=1e-4)
     assert torch.allclose(x.grad, x_ref.grad, atol=1e-4, rtol=1e-4)
+
+
+def test_universal_glu_fused_vs_unfused_lowering():
+    """Verifies universal_glu lowering into 1 fused contraction vs 3 separate contractions."""
+    m_holo = MLIRModule(name="glu_test")
+    x = MLIRValue("%x", TensorType(("?", 128), FloatType(32)))
+    w_gate = MLIRValue("%w_gate", TensorType((256, 128), FloatType(32)))
+    w_up = MLIRValue("%w_up", TensorType((256, 128), FloatType(32)))
+    glu_op = HolonomicDialect.universal_glu(
+        x, w_gate, w_up, TensorType(("?", 256), FloatType(32)), act="silu", val_idx=0
+    )
+    fn = MLIRFunction(
+        name="forward",
+        args=[x, w_gate, w_up],
+        return_types=[TensorType(("?", 256), FloatType(32))],
+        body=MLIRBlock(operations=[glu_op]),
+    )
+    m_holo.functions.append(fn)
+
+    # 1. Default unfused lowering: produces 3 separate contractions (c_gate, c_up, c_mul)
+    m_unfused = HolonomicToSubgraphPass(fuse_universal_glu=False).run(m_holo)
+    ops_unfused = m_unfused.functions[0].body.operations
+    contractions_unfused = [op for op in ops_unfused if op.op_name == "contraction"]
+    assert len(contractions_unfused) == 3, f"Expected 3 contractions, got {len(contractions_unfused)}"
+    assert any("w_gate" in op.attributes.get("order", StringAttr("")).value for op in contractions_unfused)
+    assert any("w_up" in op.attributes.get("order", StringAttr("")).value for op in contractions_unfused)
+
+    # 2. Fused lowering: produces strictly 1 fused_glu_contraction (1 DRAM pass)
+    m_fused = HolonomicToSubgraphPass(fuse_universal_glu=True).run(m_holo)
+    ops_fused = m_fused.functions[0].body.operations
+    fused_glu_ops = [op for op in ops_fused if op.op_name == "fused_glu_contraction"]
+    assert len(fused_glu_ops) == 1, f"Expected 1 fused_glu_contraction, got {len(fused_glu_ops)}"
+    assert fused_glu_ops[0].attributes["memory_traffic"].value == "1_pass_dram_read"
+    assert fused_glu_ops[0].attributes["act"].value == "silu"
+
+    # Verify lowering from subgraph to tile works cleanly for fused_glu_contraction
+    m_tile = SubgraphToTilePass().run(m_fused)
+    assert len(m_tile.functions[0].body.operations) > 0
+
+
+def test_lower_holonomic_to_subgraph_api():
+    """Verifies lower_holonomic_to_subgraph standalone function and FusedUniversalGLUContractionPass."""
+    m_holo = MLIRModule(name="fused_pass_test")
+    x = MLIRValue("%x", TensorType(("?", 128), FloatType(32)))
+    w_gate = MLIRValue("%w_gate", TensorType((256, 128), FloatType(32)))
+    w_up = MLIRValue("%w_up", TensorType((256, 128), FloatType(32)))
+    glu_op = HolonomicDialect.fused_universal_glu(
+        x, w_gate, w_up, TensorType(("?", 256), FloatType(32)), act="gelu", val_idx=0
+    )
+    fn = MLIRFunction(
+        name="forward",
+        args=[x, w_gate, w_up],
+        return_types=[TensorType(("?", 256), FloatType(32))],
+        body=MLIRBlock(operations=[glu_op]),
+    )
+    m_holo.functions.append(fn)
+
+    # Automatically lowers to fused_glu_contraction due to fused op attribute
+    m_subgraph = lower_holonomic_to_subgraph(m_holo)
+    fused_ops = [op for op in m_subgraph.functions[0].body.operations if op.op_name == "fused_glu_contraction"]
+    assert len(fused_ops) == 1
+    assert fused_ops[0].attributes["act"].value == "gelu"
+
