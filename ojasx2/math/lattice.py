@@ -491,12 +491,22 @@ class RootE8LatticePacker:
             flat = F.pad(flat, (0, pad_len))
 
         w_groups = flat.view(-1, group_size)
-        scales = torch.norm(w_groups, dim=-1, keepdim=True) / math.sqrt(group_size) + 1e-8
-        v = (w_groups / scales).view(-1, 8)
+        init_scales = torch.norm(w_groups, dim=-1, keepdim=True) / math.sqrt(group_size) + 1e-8
+        v = (w_groups / init_scales).view(-1, 8)
 
-        dots = torch.matmul(v, lut.t())
+        # Directional projection: maximizing <v, q/||q||> strictly minimizes MMSE residual error ||w - s* q||^2
+        lut_norm = F.normalize(lut, dim=-1)
+        dots = torch.matmul(v, lut_norm.t())
         packed = torch.argmax(dots, dim=-1).to(torch.uint8)
-        return packed, scales.squeeze(-1).to(torch.float16), (m, n)
+
+        # Exact analytical MMSE projection scale:
+        # s* = <w_group, q_group> / (||q_group||^2 + eps)
+        # Guarantees <w - s* q, q> == 0 and strictly minimizes reconstruction MSE.
+        q_groups = lut[packed.to(torch.int32)].view(-1, group_size)
+        q_norm_sq = torch.sum(q_groups * q_groups, dim=-1, keepdim=True).clamp(min=1e-8)
+        mmse_scales = torch.sum(w_groups * q_groups, dim=-1, keepdim=True) / q_norm_sq
+
+        return packed, mmse_scales.squeeze(-1).to(torch.float16), (m, n)
 
     @staticmethod
     def unpack(
