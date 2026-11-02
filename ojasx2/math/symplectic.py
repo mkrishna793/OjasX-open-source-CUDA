@@ -352,6 +352,145 @@ class StormerVerletIntegrator:
         return rec_q.to(orig_dtype), rec_p.to(orig_dtype)
 
 
+class Yoshida4thOrderIntegrator:
+    """
+    Audited 4th-Order Yoshida Symplectic Integrator (Forest-Ruth / Yoshida composition).
+
+    Mathematical Formulation:
+        Given Hamiltonian vector fields (f, g) where dq/dt = f(p), dp/dt = g(q):
+        Symplectic coefficients:
+            w1 = 1.0 / (2.0 - 2.0 ** (1.0 / 3.0))
+            w0 = - (2.0 ** (1.0 / 3.0)) / (2.0 - 2.0 ** (1.0 / 3.0))
+            c1 = c4 = w1 / 2.0
+            c2 = c3 = (w1 + w0) / 2.0
+            d1 = d3 = w1
+            d2 = w0
+            d4 = 0.0
+
+        Forward 4-stage update:
+            for i in [1, 2, 3, 4]:
+                q_i = q_{i-1} + c_i * dt * f(p_{i-1})
+                p_i = p_{i-1} + d_i * dt * g(q_i)   (skipped when d_i == 0)
+
+        Exact analytical inverse step:
+            for i in reversed([1, 2, 3, 4]):
+                p_{i-1} = p_i - d_i * dt * g(q_i)
+                q_{i-1} = q_i - c_i * dt * f(p_{i-1})
+
+        Symplectic invariants:
+            Preserves M^T J M = J and det(M) = 1 identically.
+    """
+
+    def __init__(
+        self,
+        dt: float = 1.0,
+        persistent_fp32: bool = True,
+    ) -> None:
+        self.dt = float(dt)
+        self.persistent_fp32 = persistent_fp32
+        cr2 = 2.0 ** (1.0 / 3.0)
+        self.w1 = 1.0 / (2.0 - cr2)
+        self.w0 = -cr2 / (2.0 - cr2)
+        self.c = [
+            self.w1 / 2.0,
+            (self.w1 + self.w0) / 2.0,
+            (self.w1 + self.w0) / 2.0,
+            self.w1 / 2.0,
+        ]
+        self.d = [
+            self.w1,
+            self.w0,
+            self.w1,
+            0.0,
+        ]
+
+    def step(
+        self,
+        q: torch.Tensor,
+        p: torch.Tensor,
+        f: Callable[[torch.Tensor], torch.Tensor],
+        g: Callable[[torch.Tensor], torch.Tensor],
+        dt: Optional[float] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Execute a single 4th-order Yoshida step across (q, p)."""
+        step_dt = float(self.dt if dt is None else dt)
+        orig_dtype = q.dtype
+        acc_dtype = (
+            torch.float64 if orig_dtype == torch.float64
+            else (torch.float32 if self.persistent_fp32 else orig_dtype)
+        )
+
+        buf_q = q.to(acc_dtype).clone()
+        buf_p = p.to(acc_dtype).clone()
+
+        for ci, di in zip(self.c, self.d):
+            if ci != 0.0:
+                delta_f = f(buf_p.to(orig_dtype)).to(acc_dtype)
+                buf_q.add_(delta_f, alpha=ci * step_dt)
+            if di != 0.0:
+                delta_g = g(buf_q.to(orig_dtype)).to(acc_dtype)
+                buf_p.add_(delta_g, alpha=di * step_dt)
+
+        return buf_q.to(orig_dtype), buf_p.to(orig_dtype)
+
+    def inverse_step(
+        self,
+        q_next: torch.Tensor,
+        p_next: torch.Tensor,
+        f: Callable[[torch.Tensor], torch.Tensor],
+        g: Callable[[torch.Tensor], torch.Tensor],
+        dt: Optional[float] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Exact analytical inverse of step()."""
+        step_dt = float(self.dt if dt is None else dt)
+        orig_dtype = q_next.dtype
+        acc_dtype = (
+            torch.float64 if orig_dtype == torch.float64
+            else (torch.float32 if self.persistent_fp32 else orig_dtype)
+        )
+
+        buf_q = q_next.to(acc_dtype).clone()
+        buf_p = p_next.to(acc_dtype).clone()
+
+        for ci, di in reversed(list(zip(self.c, self.d))):
+            if di != 0.0:
+                delta_g = g(buf_q.to(orig_dtype)).to(acc_dtype)
+                buf_p.sub_(delta_g, alpha=di * step_dt)
+            if ci != 0.0:
+                delta_f = f(buf_p.to(orig_dtype)).to(acc_dtype)
+                buf_q.sub_(delta_f, alpha=ci * step_dt)
+
+        return buf_q.to(orig_dtype), buf_p.to(orig_dtype)
+
+    def integrate_chain(
+        self,
+        q: torch.Tensor,
+        p: torch.Tensor,
+        stages: Sequence[Any],
+        dt: Optional[float] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        step_dt = float(self.dt if dt is None else dt)
+        cur_q, cur_p = q, p
+        for stage in stages:
+            f, g = _extract_stage_fg(stage)
+            cur_q, cur_p = self.step(cur_q, cur_p, f, g, dt=step_dt)
+        return cur_q, cur_p
+
+    def reconstruct_chain(
+        self,
+        q_final: torch.Tensor,
+        p_final: torch.Tensor,
+        stages: Sequence[Any],
+        dt: Optional[float] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        step_dt = float(self.dt if dt is None else dt)
+        cur_q, cur_p = q_final, p_final
+        for stage in reversed(stages):
+            f, g = _extract_stage_fg(stage)
+            cur_q, cur_p = self.inverse_step(cur_q, cur_p, f, g, dt=step_dt)
+        return cur_q, cur_p
+
+
 # =============================================================================
 # 3. Top-Level Functional Step API
 # =============================================================================
@@ -366,17 +505,21 @@ def symplectic_step(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Execute a single symplectic integration step over bipartite streams (q, p).
-    
+
     Args:
         q: Coordinate/position tensor [..., D].
         p: Conjugate momentum tensor [..., D].
         f: Velocity mapping dq/dt = f(p).
         g: Force mapping dp/dt = g(q).
         dt: Timestep step size.
-        scheme: 'stormer_verlet' (2nd-order Strang splitting) or 'symplectic_euler' (1st-order).
+        scheme: 'stormer_verlet' (2nd-order Strang splitting), 'yoshida' (4th-order),
+                or 'symplectic_euler' (1st-order).
     """
     if scheme == "stormer_verlet":
         integrator = StormerVerletIntegrator(dt=dt, persistent_fp32=True)
+        return integrator.step(q, p, f, g, dt=dt)
+    elif scheme in ("yoshida", "yoshida_4th_order"):
+        integrator = Yoshida4thOrderIntegrator(dt=dt, persistent_fp32=True)
         return integrator.step(q, p, f, g, dt=dt)
     elif scheme == "symplectic_euler":
         # 1st-order semi-implicit Euler
@@ -387,7 +530,7 @@ def symplectic_step(
         buf_p.add_(g(buf_q.to(orig_dtype)).to(torch.float32), alpha=dt)
         return buf_q.to(orig_dtype), buf_p.to(orig_dtype)
     else:
-        raise ValueError(f"Unknown symplectic scheme '{scheme}', expected 'stormer_verlet' or 'symplectic_euler'")
+        raise ValueError(f"Unknown symplectic scheme '{scheme}', expected 'stormer_verlet', 'yoshida', or 'symplectic_euler'")
 
 
 # =============================================================================
@@ -413,6 +556,7 @@ class SymplecticSqueeze(nn.Module):
         dyadic: bool = True,
         eps: float = 1e-6,
         clamp_k: int = 2,
+        hysteresis_margin: float = 0.35,
     ) -> None:
         super().__init__()
         self.dim = dim
@@ -420,6 +564,7 @@ class SymplecticSqueeze(nn.Module):
         self.dyadic = dyadic
         self.eps = eps
         self.clamp_k = clamp_k
+        self.hysteresis_margin = float(hysteresis_margin)
         self.last_k: Optional[torch.Tensor] = None
         self.last_lam: Optional[torch.Tensor] = None
         if not dynamic:
@@ -432,19 +577,42 @@ class SymplecticSqueeze(nn.Module):
         q: torch.Tensor,
         p: torch.Tensor,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Compute scaling factor lambda and optional dyadic exponent shift k."""
+        """Compute scaling factor lambda and optional dyadic exponent shift k with Schmitt trigger hysteresis."""
         if not self.dynamic and self.log_lambda is not None:
             lam = torch.exp(self.log_lambda)
             return lam, None
         v1 = torch.var(q.to(torch.float32), unbiased=False) + self.eps
         v2 = torch.var(p.to(torch.float32), unbiased=False) + self.eps
         if self.dyadic:
-            k = torch.round(torch.log2(v2 / v1) * 0.25).clamp(-self.clamp_k, self.clamp_k).to(torch.int32)
+            u = torch.log2(v2 / v1) * 0.25
+            delta_h = self.hysteresis_margin
+            if self.last_k is None:
+                k = torch.round(u).to(torch.int32)
+            else:
+                k_prev = self.last_k.to(torch.float32)
+                # Schmitt-trigger hysteresis:
+                # Transition k -> k+1 only when u > k_prev + 0.5 + delta_h
+                # Transition k -> k-1 only when u < k_prev - 0.5 - delta_h
+                k = torch.where(
+                    u > k_prev + 0.5 + delta_h,
+                    torch.floor(u - delta_h + 0.5).to(torch.int32),
+                    torch.where(
+                        u < k_prev - 0.5 - delta_h,
+                        torch.ceil(u + delta_h - 0.5).to(torch.int32),
+                        self.last_k.to(torch.int32),
+                    ),
+                )
+            k = k.clamp(-self.clamp_k, self.clamp_k)
             lam = torch.pow(torch.tensor(2.0, device=q.device, dtype=torch.float32), k.float())
             return lam, k
         else:
             lam = torch.clamp(torch.pow(v2 / v1, 0.25), 0.25, 4.0)
             return lam, None
+
+    def reset_state(self) -> None:
+        """Reset hysteresis state tracking."""
+        self.last_k = None
+        self.last_lam = None
 
     def forward(
         self,

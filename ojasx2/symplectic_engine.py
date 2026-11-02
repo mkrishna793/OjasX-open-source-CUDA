@@ -298,6 +298,7 @@ class SymplecticSqueeze(nn.Module):
         dyadic: bool = True,
         eps: float = 1e-6,
         clamp_k: int = 2,
+        hysteresis_margin: float = 0.35,
     ) -> None:
         super().__init__()
         self.dim = dim
@@ -305,6 +306,7 @@ class SymplecticSqueeze(nn.Module):
         self.dyadic = dyadic
         self.eps = eps
         self.clamp_k = clamp_k
+        self.hysteresis_margin = float(hysteresis_margin)
         self.last_k: Optional[torch.Tensor] = None
         self.last_lam: Optional[torch.Tensor] = None
         if not dynamic:
@@ -319,12 +321,35 @@ class SymplecticSqueeze(nn.Module):
         v1 = torch.var(q1.to(torch.float32), unbiased=False) + self.eps
         v2 = torch.var(q2.to(torch.float32), unbiased=False) + self.eps
         if self.dyadic:
-            k = torch.round(torch.log2(v2 / v1) * 0.25).clamp(-self.clamp_k, self.clamp_k).to(torch.int32)
+            u = torch.log2(v2 / v1) * 0.25
+            delta_h = self.hysteresis_margin
+            if self.last_k is None:
+                k = torch.round(u).to(torch.int32)
+            else:
+                k_prev = self.last_k.to(torch.float32)
+                # Schmitt-trigger hysteresis:
+                # Transition k -> k+1 only when u > k_prev + 0.5 + delta_h
+                # Transition k -> k-1 only when u < k_prev - 0.5 - delta_h
+                k = torch.where(
+                    u > k_prev + 0.5 + delta_h,
+                    torch.floor(u - delta_h + 0.5).to(torch.int32),
+                    torch.where(
+                        u < k_prev - 0.5 - delta_h,
+                        torch.ceil(u + delta_h - 0.5).to(torch.int32),
+                        self.last_k.to(torch.int32),
+                    ),
+                )
+            k = k.clamp(-self.clamp_k, self.clamp_k)
             lam = torch.pow(torch.tensor(2.0, device=q1.device, dtype=torch.float32), k.float())
             return lam, k
         else:
             lam = torch.clamp(torch.pow(v2 / v1, 0.25), 0.25, 4.0)
             return lam, None
+
+    def reset_state(self) -> None:
+        """Reset hysteresis state tracking."""
+        self.last_k = None
+        self.last_lam = None
 
     def forward(
         self,

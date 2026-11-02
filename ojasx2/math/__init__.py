@@ -18,6 +18,7 @@ import torch
 from .symplectic import (
     SymplecticManifold,
     StormerVerletIntegrator,
+    Yoshida4thOrderIntegrator,
     symplectic_step,
     SymplecticSqueeze,
     symplectic_squeeze,
@@ -158,6 +159,7 @@ def get_native_backend() -> Dict[str, Any]:
 __all__ = [
     "SymplecticManifold",
     "StormerVerletIntegrator",
+    "Yoshida4thOrderIntegrator",
     "symplectic_step",
     "SymplecticSqueeze",
     "symplectic_squeeze",
