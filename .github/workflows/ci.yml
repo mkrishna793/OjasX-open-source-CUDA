@@ -57,6 +57,8 @@ jobs:
                            tests/test_fused_cross_entropy.py \
                            tests/test_symplectic_numerical_mechanics.py \
                            tests/test_z3_symplectic_stability.py \
+                           tests/test_z3_grounded_invariants.py \
+                           tests/test_tile_hal.py \
                            -v --tb=short 2>&1 | tee test_run.log
 
       - name: Annotate Failure
