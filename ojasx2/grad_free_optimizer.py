@@ -54,7 +54,7 @@ class HolonomicGradFreeOptimizer(Optimizer):
         self.last_step_freed_bytes: int = 0
         self.last_step_updated_params: int = 0
         self.skipped_nonfinite_updates: int = 0
-        self._running_global_norm_sq: float = 0.0
+        self._running_global_norm_sq: Optional[torch.Tensor] = None
         self._prev_global_norm: float = 0.0
         self._hooks_fired_in_cycle: int = 0
 
@@ -182,8 +182,14 @@ class HolonomicGradFreeOptimizer(Optimizer):
 
             st = self.state[_p]
 
-            grad_sq_norm = float(torch.linalg.vector_norm(grad.float()).square().item())
-            self._running_global_norm_sq += grad_sq_norm
+            grad_sq_norm = torch.linalg.vector_norm(grad.float()).square()
+            if self._running_global_norm_sq is None:
+                self._running_global_norm_sq = grad_sq_norm
+            else:
+                if self._running_global_norm_sq.device == grad_sq_norm.device:
+                    self._running_global_norm_sq.add_(grad_sq_norm)
+                else:
+                    self._running_global_norm_sq = self._running_global_norm_sq.to(grad_sq_norm.device).add(grad_sq_norm)
             self._hooks_fired_in_cycle += 1
 
             if grad_accum_steps > 1:
@@ -367,16 +373,25 @@ class HolonomicGradFreeOptimizer(Optimizer):
             # Auto-latch global norm when all trainable parameters have fired in this backward pass
             total_trainable = self._trainable_param_count()
             if total_trainable > 0 and self._hooks_fired_in_cycle >= total_trainable:
-                self._prev_global_norm = math.sqrt(self._running_global_norm_sq)
-                self._running_global_norm_sq = 0.0
+                if isinstance(self._running_global_norm_sq, torch.Tensor):
+                    self._prev_global_norm = float(torch.sqrt(self._running_global_norm_sq).item())
+                    self._running_global_norm_sq = None
+                elif self._running_global_norm_sq is not None and self._running_global_norm_sq > 0.0:
+                    self._prev_global_norm = math.sqrt(float(self._running_global_norm_sq))
+                    self._running_global_norm_sq = None
+                else:
+                    self._prev_global_norm = 0.0
                 self._hooks_fired_in_cycle = 0
 
         return _hook
 
     def reset_step_metrics(self) -> None:
-        if self._running_global_norm_sq > 0.0:
-            self._prev_global_norm = math.sqrt(self._running_global_norm_sq)
-            self._running_global_norm_sq = 0.0
+        if isinstance(self._running_global_norm_sq, torch.Tensor):
+            self._prev_global_norm = float(torch.sqrt(self._running_global_norm_sq).item())
+            self._running_global_norm_sq = None
+        elif self._running_global_norm_sq is not None and self._running_global_norm_sq > 0.0:
+            self._prev_global_norm = math.sqrt(float(self._running_global_norm_sq))
+            self._running_global_norm_sq = None
         self._hooks_fired_in_cycle = 0
         self.last_step_freed_bytes = 0
         self.last_step_updated_params = 0

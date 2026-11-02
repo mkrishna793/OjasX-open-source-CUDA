@@ -285,3 +285,55 @@ def test_gqa_symplectic_stack_integration():
     x_reconstructed = stack.inverse(y.detach())
     assert x_reconstructed.shape == (2, 8, 64)
     assert torch.allclose(x.detach(), x_reconstructed, atol=1e-4)
+
+
+# =============================================================================
+# 6. Audit Fixes: Context Cleanup & Async Optimizer Norm Tests
+# =============================================================================
+
+def test_dagger_attention_ctx_mask_cleanup():
+    """Verify that _HolonomicDaggerAttentionFunction clears ctx masks in backward."""
+    from ojasx2.dagger_attention import _HolonomicDaggerAttentionFunction
+
+    B, H, S, D = 2, 2, 8, 16
+    q = torch.randn(B, H, S, D, requires_grad=True)
+    k = torch.randn(B, H, S, D, requires_grad=True)
+    v = torch.randn(B, H, S, D, requires_grad=True)
+    mask = torch.zeros(B, 1, S, S)
+
+    saved_ctx = []
+
+    class HookedFunction(_HolonomicDaggerAttentionFunction):
+        @staticmethod
+        def forward(ctx, *args, **kwargs):
+            saved_ctx.append(ctx)
+            return _HolonomicDaggerAttentionFunction.forward(ctx, *args, **kwargs)
+
+    out, lse = HookedFunction.apply(q, k, v, False, 1.0, mask, None, 128)
+    assert len(saved_ctx) == 1
+    ctx = saved_ctx[0]
+    assert ctx.attn_mask is not None
+
+    loss = out.sum()
+    loss.backward()
+
+    # Verify attributes cleared in backward to prevent memory leaks
+    assert ctx.attn_mask is None
+    assert ctx.key_padding_mask is None
+    assert q.grad is not None
+
+
+def test_grad_free_optimizer_async_tensor_accumulation():
+    """Verify HolonomicGradFreeOptimizer accumulates norm sq asynchronously on device."""
+    model = nn.Sequential(nn.Linear(16, 16), nn.Linear(16, 16))
+    opt = HolonomicGradFreeOptimizer(model.parameters(), lr=1e-3, algorithm="adamw")
+
+    assert opt._running_global_norm_sq is None
+    x = torch.randn(4, 16)
+    loss = model(x).sum()
+    loss.backward()
+
+    # After full backward pass, global norm auto-latches into float
+    assert opt._prev_global_norm > 0.0
+    assert isinstance(opt._prev_global_norm, float)
+    assert opt._running_global_norm_sq is None
