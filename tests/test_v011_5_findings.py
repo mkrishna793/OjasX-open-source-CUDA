@@ -194,11 +194,11 @@ def test_finding_5_tilelang_copy_2d_slice_syntax():
 # =============================================================================
 
 def test_ojasx_v12_version():
-    """Verify version bump to 0.12.0."""
+    """Verify version bump to 0.13.0."""
     import ojasx
     import ojasx2
-    assert ojasx.__version__ == "0.12.0"
-    assert ojasx2.__version__ == "0.12.0"
+    assert ojasx.__version__ == "0.13.0"
+    assert ojasx2.__version__ == "0.13.0"
 
 
 def test_ojasx_v12_simple_api_prepare_and_train():

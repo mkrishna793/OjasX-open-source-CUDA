@@ -169,11 +169,16 @@ from .tilelang_kernels import (
     is_tilelang_available,
     dispatch_tilelang_e8_gemm,
 )
+from .trainer import (
+    LowRAMTrainer,
+    train,
+    finetune,
+)
 import torch
 import torch.nn as nn
 from typing import Optional, Union, Tuple, Any
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 
 # =============================================================================
