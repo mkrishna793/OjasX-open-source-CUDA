@@ -290,6 +290,8 @@ def cli_router() -> None:
     if not args or args[0] in ("-h", "--help"):
         print("OjasX: Math-Level PyTorch Training & Memory Compiler")
         print("\nCommands:")
+        print("  ojasx train    Run turnkey Low-RAM training on a model")
+        print("  ojasx finetune Run turnkey Low-RAM fine-tuning on a model")
         print("  ojasx update   Check and update OjasX to the latest release")
         print("  ojasx doctor   Run live hardware, memory, and compiler diagnostics")
         print("  ojasx version  Print current version and update status")
@@ -302,6 +304,10 @@ def cli_router() -> None:
     elif subcmd in ("doctor", "diagnostics", "check"):
         from .doctor import main as doctor_main
         doctor_main()
+    elif subcmd in ("train", "training"):
+        print("Starting OjasX Low-RAM training engine. Import `ojasx.train` in your training script.")
+    elif subcmd in ("finetune", "fine-tune"):
+        print("Starting OjasX Low-RAM fine-tuning engine. Import `ojasx.finetune` in your script.")
     elif subcmd in ("version", "-v", "--version"):
         cur_ver = get_current_version()
         has_up, latest_ver, _ = check_for_updates(force=False)

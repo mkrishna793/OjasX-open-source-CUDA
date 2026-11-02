@@ -59,6 +59,7 @@ jobs:
                            tests/test_z3_symplectic_stability.py \
                            tests/test_z3_grounded_invariants.py \
                            tests/test_tile_hal.py \
+                           tests/test_trainer_low_ram.py \
                            -v --tb=short 2>&1 | tee test_run.log
 
       - name: Annotate Failure
