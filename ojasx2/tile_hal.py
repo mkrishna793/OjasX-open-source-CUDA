@@ -12,6 +12,7 @@ Connects the compiled C++17 / LibTorch / Apple Accelerate AMX kernel library
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import os
 from pathlib import Path
 import sys
@@ -277,6 +278,130 @@ def verify_xor_swizzle_and_ballot_smt() -> Dict[str, object]:
         "zero_bank_conflicts_proven": zero_bank_conflicts_proven,
         "cpp_swizzle_bijection_verified": cpp_matches,
         "num_banks": 32,
+    }
+
+
+def xor_swizzle_vector_offset(
+    row: int,
+    col: int,
+    num_banks: int = 32,
+    vec_width: int = 4,
+    stride: Optional[int] = None,
+) -> int:
+    """Vector-width-aware XOR bank swizzling for 128-bit vector types (float4 / uint4, 16 bytes per thread).
+
+    Formula:
+        vec_col = col >> 2
+        bank index = ((vec_col ^ row) << 2) | (col & 3)
+
+    Args:
+        row: Row index.
+        col: Scalar column index (in 32-bit words).
+        num_banks: Number of shared memory banks (default: 32).
+        vec_width: Number of 32-bit scalar words per vector (default: 4 for 128-bit float4/uint4).
+        stride: Optional stride for computing linear shared memory offset (row * stride + swizzled_col).
+
+    Returns:
+        Swizzled column offset (or full linear offset if stride is provided).
+    """
+    shift = int(math.log2(vec_width)) if vec_width > 0 else 2
+    elem_mask = vec_width - 1
+    bank_mask = num_banks - 1
+    num_vecs = max(1, num_banks // vec_width)
+    vec_mask = num_vecs - 1
+
+    vec_col = (col & bank_mask) >> shift
+    bank_index = (((vec_col ^ row) & vec_mask) << shift) | (col & elem_mask)
+    swizzled_col = (col & ~bank_mask) | bank_index
+
+    if stride is not None:
+        return row * stride + swizzled_col
+    return swizzled_col
+
+
+def verify_vector_xor_swizzle_smt(vec_width: int = 4) -> Dict[str, object]:
+    """Formally prove via Z3 Bit-Vectors that 128-bit vector XOR bank swizzling has 0 bank conflicts.
+
+    Proves two fundamental hardware properties:
+      1. Inter-row conflict freedom: For any fixed vector column, any two distinct rows
+         access disjoint bank partitions (z3.unsat on collision).
+      2. Intra-warp conflict freedom: Within any warp-level vector load (all 32 banks / 8 float4 vectors),
+         every thread and vector element accesses a unique bank without conflict (z3.unsat on collision).
+    """
+    import z3
+    import time
+
+    t_start = time.perf_counter()
+    num_banks = 32
+    num_vecs = max(1, num_banks // vec_width)
+    vec_shift = int(math.log2(vec_width)) if vec_width > 0 else 2
+
+    vec_mask = z3.BitVecVal(num_vecs - 1, 32)
+    bank_mask = z3.BitVecVal(num_banks - 1, 32)
+    elem_mask = z3.BitVecVal(vec_width - 1, 32)
+    shift_val = z3.BitVecVal(vec_shift, 32)
+
+    # 1. Inter-Row Conflict Freedom Proof
+    solver_rows = z3.Solver()
+    row_a = z3.BitVec("row_a", 32)
+    row_b = z3.BitVec("row_b", 32)
+    col_fixed = z3.BitVec("col_fixed", 32)
+
+    vec_col_a = (col_fixed & bank_mask) >> shift_val
+    vec_col_b = vec_col_a
+    elem_part = col_fixed & elem_mask
+
+    bank_a = (((vec_col_a ^ (row_a & vec_mask)) & vec_mask) << shift_val) | elem_part
+    bank_b = (((vec_col_b ^ (row_b & vec_mask)) & vec_mask) << shift_val) | elem_part
+
+    solver_rows.add((row_a & vec_mask) != (row_b & vec_mask))
+    solver_rows.add(bank_a == bank_b)
+    rows_check = solver_rows.check()
+    rows_unsat = (rows_check == z3.unsat)
+
+    # 2. Intra-Warp / Intra-Row 32-Bank Conflict Freedom Proof
+    solver_warp = z3.Solver()
+    c1 = z3.BitVec("c1", 32)
+    c2 = z3.BitVec("c2", 32)
+    row_fixed = z3.BitVec("row_fixed", 32)
+
+    vc1 = (c1 & bank_mask) >> shift_val
+    vc2 = (c2 & bank_mask) >> shift_val
+
+    bank1 = (((vc1 ^ (row_fixed & vec_mask)) & vec_mask) << shift_val) | (c1 & elem_mask)
+    bank2 = (((vc2 ^ (row_fixed & vec_mask)) & vec_mask) << shift_val) | (c2 & elem_mask)
+
+    solver_warp.add(z3.ULT(c1, num_banks))
+    solver_warp.add(z3.ULT(c2, num_banks))
+    solver_warp.add(c1 != c2)
+    solver_warp.add(bank1 == bank2)
+    warp_check = solver_warp.check()
+    warp_unsat = (warp_check == z3.unsat)
+
+    t_end = time.perf_counter()
+    duration_sec = t_end - t_start
+
+    # Empirical permutation verification across all 32 rows and 32 columns
+    bijection_verified = True
+    for r in range(32):
+        banks_seen = set()
+        for c in range(32):
+            b = xor_swizzle_vector_offset(r, c, num_banks=num_banks, vec_width=vec_width)
+            banks_seen.add(b % num_banks)
+        if len(banks_seen) != num_banks:
+            bijection_verified = False
+
+    return {
+        "z3_status": "unsat" if (rows_unsat and warp_unsat) else "sat",
+        "zero_bank_conflicts_proven": bool(rows_unsat and warp_unsat),
+        "inter_row_conflict_free": bool(rows_unsat),
+        "intra_warp_conflict_free": bool(warp_unsat),
+        "inter_row_unsat": str(rows_check),
+        "intra_warp_unsat": str(warp_check),
+        "vector_swizzle_bijection_verified": bijection_verified,
+        "num_banks": num_banks,
+        "vec_width": vec_width,
+        "proof_duration_sec": duration_sec,
     }
 
 
