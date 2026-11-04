@@ -2,9 +2,8 @@
 
 /*!
  * \file third_party/tilelang/src/tl_templates/cpu/gemm.h
- * \brief OjasX x TileLang L1d/L2 Cache-Blocked CPU GEMM + Holonomic ReLU2 + 1-Bit Ballot Template.
- *        Replaces upstream placeholder with a production C++17 template supporting
- *        ARM64 NEON, x86_64 AVX2/AVX-512, and portable SIMD-ballot sign-bit packing.
+ * \brief OjasX portable cache-blocked CPU GEMM + ReLU2 + 1-bit mask template.
+ *        Correctness-oriented C++ template with portable scalar and ARM64 NEON paths.
  */
 
 #include <algorithm>
@@ -13,8 +12,6 @@
 
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
 #include <arm_neon.h>
-#elif defined(__AVX2__)
-#include <immintrin.h>
 #endif
 
 namespace tl {
@@ -33,6 +30,9 @@ struct GemmHolonomicRelu2BallotTile {
       int64_t K,
       bool has_bias) {
     const int64_t words_per_row = (N + 31) / 32;
+    if (M > 0 && N > 0) {
+      std::fill_n(PackedMask, M * words_per_row, int32_t{0});
+    }
 
     // L1d-resident tile accumulator (32 x 32 floats = 4 KB < 32 KB L1d)
     alignas(64) float acc[BLOCK_M][BLOCK_N];
@@ -85,23 +85,21 @@ struct GemmHolonomicRelu2BallotTile {
           }
         }
 
-        // Fused Holonomic ReLU2 + 32-lane 1-bit ballot sign packing
-        const int64_t word_col = n0 >> 5;
+        // Fused ReLU2 + global 32-column mask packing. Tiles need not be
+        // multiples of 32: adjacent tiles can contribute to the same word.
         for (int64_t rm = 0; rm < m_lim; ++rm) {
-          uint32_t mask_word = 0u;
           float* out_row = Out + (m0 + rm) * N + n0;
           for (int64_t rn = 0; rn < n_lim; ++rn) {
-            float v = acc[rm][rn];
-            if (v > 0.0f) {
-              mask_word |= (1u << rn);
-              out_row[rn] = v * v;
-            } else {
-              out_row[rn] = 0.0f;
+            const float v = acc[rm][rn];
+            const bool positive = v > 0.0f;
+            out_row[rn] = positive ? v * v : 0.0f;
+            if (positive) {
+              const int64_t global_col = n0 + rn;
+              const int64_t word_col = global_col >> 5;
+              const uint32_t bit = uint32_t(global_col & 31);
+              PackedMask[(m0 + rm) * words_per_row + word_col] |=
+                  static_cast<int32_t>(uint32_t(1) << bit);
             }
-          }
-          if (word_col < words_per_row) {
-            PackedMask[(m0 + rm) * words_per_row + word_col] =
-                static_cast<int32_t>(mask_word);
           }
         }
       }

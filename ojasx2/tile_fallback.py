@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 import os
 import sys
-from typing import List, Tuple
+from typing import List, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
@@ -377,98 +377,268 @@ def _query_chip_schedule_fallback(target_arch: str, M: int, N: int, K: int, smem
         return [32, 32, 8, wm, wn, 32, 16, 32, panel_width, 1]
 
 
-def _emit_metal_gemm_source_fallback(block_m: int, block_n: int, block_k: int, panel_size: int) -> str:
-    if not ((block_m == 32 and block_n == 32 and block_k == 8) or (block_m == 8 and block_n == 32 and block_k == 16)):
-        raise RuntimeError("TileLang Metal kernel supports 8x32x16 (decode) or 32x32x8 (prefill) tile sizes")
+def _validate_emission_arguments(
+    target_arch: str, block_m: int, block_n: int, block_k: int, panel_size: int
+) -> None:
+    supported = {"metal", "cuda", "rocm", "sycl", "ascend", "cpu"}
+    if target_arch not in supported:
+        raise RuntimeError(f"Unsupported TileLang target_arch: {target_arch}")
+    for name, value in (("block_m", block_m), ("block_n", block_n), ("block_k", block_k)):
+        if value <= 0:
+            raise RuntimeError(f"TileLang {name} must be positive")
     if panel_size <= 0 or (panel_size & (panel_size - 1)) != 0:
-        raise RuntimeError("Metal MLX swizzle panel size must be a power of two")
+        raise RuntimeError("TileLang swizzle panel size must be a positive power of two")
+    if target_arch == "metal" and not (
+        (block_m == 32 and block_n == 32 and block_k == 8)
+        or (block_m == 8 and block_n == 32 and block_k == 16)
+    ):
+        raise RuntimeError("TileLang Metal kernel supports 8x32x16 (decode) or 32x32x8 (prefill) tile sizes")
+    if target_arch == "ascend" and any(value % 16 for value in (block_m, block_n, block_k)):
+        raise RuntimeError("TileLang Ascend tile dimensions must be positive multiples of 16")
+
+
+def _emit_metal_gemm_source_fallback(block_m: int, block_n: int, block_k: int, panel_size: int) -> str:
+    _validate_emission_arguments("metal", block_m, block_n, block_k, panel_size)
     swizzle_log = int(math.log2(panel_size))
-    a_stride = block_k + 4
-    b_stride = block_n + 4
-    c_stride = block_n + 4
-    return (
-        "// Emitted by OjasX x TileLang CodeGenTileLangMetal\n"
-        "#include <metal_stdlib>\n"
-        "#include <metal_simdgroup>\n"
-        "#include <metal_simdgroup_matrix>\n"
-        "using namespace metal;\n"
-        "kernel void ojasx_tilelang_gemm_relu2_ballot_kernel(\n"
-        "    device const float* A [[buffer(0)]],\n"
-        "    device const float* B [[buffer(1)]],\n"
-        "    device const float* Bias [[buffer(2)]],\n"
-        "    device float* Out [[buffer(3)]],\n"
-        "    device int* PackedMask [[buffer(4)]],\n"
-        "    uint3 __physical_blockIdx [[threadgroup_position_in_grid]],\n"
-        "    uint __simd_group_id [[simdgroup_index_in_threadgroup]],\n"
-        "    uint __lane [[thread_index_in_simdgroup]]\n"
-        ") {\n"
-        f"    // panel_size={panel_size}, swizzle_log={swizzle_log}\n"
-        f"    threadgroup float As[{block_m} * {a_stride}];\n"
-        f"    threadgroup float Bs[{block_k} * {b_stride}];\n"
-        f"    threadgroup float Cs[{block_m} * {c_stride}];\n"
-        "    simdgroup_float8x8 acc[4];\n"
-        "    acc[0] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);\n"
-        "    simdgroup_load(acc[0], &As[0], " + str(a_stride) + ", ulong2(0, 0), false);\n"
-        "    simdgroup_multiply_accumulate(acc[0], acc[0], acc[0], acc[0]);\n"
-        "    simdgroup_store(acc[0], &Cs[0], " + str(c_stride) + ", ulong2(0, 0), false);\n"
-        "    simd_vote vote = simd_ballot(true);\n"
-        "}\n"
-    )
+    rows_per_pass = 1 if block_m == 8 else 4
+    row_in_pass = "0u" if block_m == 8 else "__simd_group_id"
+    # Correctness-first source fallback: one simdgroup computes one row of 32
+    # columns. The native Objective-C++ emitter has a separate optimized path.
+    return f"""// Emitted by OjasX portable TileLang Metal source fallback
+#include <metal_stdlib>
+#include <metal_simdgroup>
+using namespace metal;
+struct TileLangGemmParams {{ uint M; uint N; uint K; uint has_bias; uint grid_x; uint grid_y; }};
+kernel void ojasx_tilelang_gemm_relu2_ballot_kernel(
+    device const float* A [[buffer(0)]], device const float* B [[buffer(1)]],
+    device const float* Bias [[buffer(2)]], device float* Out [[buffer(3)]],
+    device int* PackedMask [[buffer(4)]], constant TileLangGemmParams& params [[buffer(5)]],
+    uint3 __physical_blockIdx [[threadgroup_position_in_grid]],
+    uint __simd_group_id [[simdgroup_index_in_threadgroup]],
+    uint __lane [[thread_index_in_simdgroup]]) {{
+    const uint __linear_bid = __physical_blockIdx.y * params.grid_x + __physical_blockIdx.x;
+    const uint __panel_span = params.grid_y << {swizzle_log};
+    const uint __panel_idx = (__panel_span > 0u) ? (__linear_bid / __panel_span) : 0u;
+    const uint __in_panel = (__panel_span > 0u) ? (__linear_bid % __panel_span) : 0u;
+    const uint3 blockIdx = ((params.grid_x >= {panel_size}u && (params.grid_x % {panel_size}u == 0u))
+        ? uint3((__panel_idx << {swizzle_log}) + (__in_panel & {panel_size - 1}u), __in_panel >> {swizzle_log}, __physical_blockIdx.z)
+        : __physical_blockIdx);
+    const uint tile_row = blockIdx.y * {block_m}u;
+    const uint tile_col = blockIdx.x * {block_n}u;
+    const uint words_per_row = (params.N + 31u) >> 5;
+    const uint word_col = tile_col >> 5;
+    for (uint r_base = 0u; r_base < {block_m}u; r_base += {rows_per_pass}u) {{
+        const uint r = r_base + {row_in_pass};
+        const uint gm = tile_row + r;
+        const uint gn = tile_col + __lane;
+        const bool valid = (gm < params.M) && (gn < params.N);
+        float val = (valid && params.has_bias != 0u) ? Bias[gn] : 0.0f;
+        if (valid) {{
+            for (uint k = 0u; k < params.K; ++k) {{
+                val += A[gm * params.K + k] * B[gn * params.K + k];
+            }}
+        }}
+        const bool is_pos = valid && (val > 0.0f);
+        const simd_vote vote = simd_ballot(is_pos);
+        const uint32_t mask_word = uint32_t(simd_vote::vote_t(vote));
+        if (valid) Out[gm * params.N + gn] = is_pos ? (val * val) : 0.0f;
+        if (__lane == 0u && gm < params.M && word_col < words_per_row) {{
+            PackedMask[gm * words_per_row + word_col] = as_type<int>(mask_word);
+        }}
+    }}
+}}
+"""
+
+
+def _emit_grid_stride_gpu_source(
+    target_arch: str, block_m: int, block_n: int, block_k: int, panel_size: int
+) -> str:
+    if target_arch == "cuda":
+        include = "#include <cuda_runtime.h>\n#include \"tl_templates/cuda/threadblock_swizzle.h\""
+        kernel = "ojasx_tilelang_cuda_gemm_relu2_ballot_kernel"
+        label = "NVIDIA CUDA"
+    else:
+        include = "#include <hip/hip_runtime.h>\n#include \"tl_templates/hip/threadblock_swizzle.h\""
+        kernel = "ojasx_tilelang_rocm_gemm_relu2_ballot_kernel"
+        label = "AMD ROCm/HIP"
+    # Each independent work item owns one (row, mask-word). It computes up to
+    # 32 outputs, so correctness does not depend on warp size or launch shape.
+    return f"""// Emitted by OjasX portable {label} source fallback; requested tile={block_m}x{block_n}x{block_k}
+#include <cstdint>
+{include}
+extern "C" __global__ void {kernel}(
+    const float* A, const float* B, const float* Bias, float* Out,
+    int* PackedMask, int M, int N, int K, int has_bias) {{
+    const dim3 blockIdx_swz = tl::rasterization2DRow<{panel_size}>();
+    const int64_t block_linear = (int64_t(blockIdx_swz.z) * gridDim.y + blockIdx_swz.y) * gridDim.x + blockIdx_swz.x;
+    const int64_t threads_per_block = int64_t(blockDim.x) * blockDim.y * blockDim.z;
+    const int64_t local_linear = (int64_t(threadIdx.z) * blockDim.y + threadIdx.y) * blockDim.x + threadIdx.x;
+    const int64_t block_count = int64_t(gridDim.x) * gridDim.y * gridDim.z;
+    const int64_t words_per_row = (int64_t(N) + 31) >> 5;
+    const int64_t total_work = int64_t(M) * words_per_row;
+    for (int64_t work = block_linear * threads_per_block + local_linear;
+         work < total_work; work += block_count * threads_per_block) {{
+        const int64_t row = work / words_per_row;
+        const int64_t word_col = work - row * words_per_row;
+        uint32_t mask_word = 0u;
+        for (int bit = 0; bit < 32; ++bit) {{
+            const int64_t col = (word_col << 5) + bit;
+            if (col >= N) break;
+            float val = has_bias ? Bias[col] : 0.0f;
+            for (int k = 0; k < K; ++k) val += A[row * K + k] * B[col * K + k];
+            const bool positive = val > 0.0f;
+            Out[row * N + col] = positive ? val * val : 0.0f;
+            if (positive) mask_word |= (uint32_t(1) << bit);
+        }}
+        PackedMask[work] = static_cast<int>(mask_word);
+    }}
+}}
+"""
 
 
 def _emit_universal_source_fallback(target_arch: str, block_m: int, block_n: int, block_k: int, panel_size: int) -> str:
+    _validate_emission_arguments(target_arch, block_m, block_n, block_k, panel_size)
     if target_arch == "metal":
         return _emit_metal_gemm_source_fallback(block_m, block_n, block_k, panel_size)
-    if target_arch == "cuda":
-        return (
-            "// Emitted by OjasX x TileLang Universal CodeGen [Target: NVIDIA CUDA sm_80/sm_90]\n"
-            "#include <cuda_runtime.h>\n#include <mma.h>\n"
-            "#include \"tl_templates/cuda/threadblock_swizzle.h\"\n"
-            "extern \"C\" __global__ void ojasx_tilelang_cuda_gemm_relu2_ballot_kernel(\n"
-            "    const float* A, const float* B, const float* Bias, float* Out, int* PackedMask, int M, int N, int K, int has_bias) {\n"
-            f"    const dim3 blockIdx_swz = tl::rasterization2DRow<{panel_size}>();\n"
-            f"    __shared__ alignas(128) float As[{block_m}][{block_k + 4}];\n"
-            "    unsigned int mask_word = __ballot_sync(0xffffffffu, true);\n"
-            "}\n"
-        )
-    if target_arch == "rocm":
-        return (
-            "// Emitted by OjasX x TileLang Universal CodeGen [Target: AMD ROCm/HIP CDNA/RDNA]\n"
-            "#include <hip/hip_runtime.h>\n"
-            "#include \"tl_templates/hip/gemm.h\"\n"
-            "#include \"tl_templates/hip/threadblock_swizzle.h\"\n"
-            "extern \"C\" __global__ void ojasx_tilelang_rocm_gemm_relu2_ballot_kernel(\n"
-            "    const float* A, const float* B, const float* Bias, float* Out, int* PackedMask, int M, int N, int K, int has_bias) {\n"
-            f"    const dim3 blockIdx_swz = tl::rasterization2DRow<{panel_size}>();\n"
-            "    unsigned long long wave_vote = __ballot(true);\n"
-            "}\n"
-        )
+    if target_arch in {"cuda", "rocm"}:
+        return _emit_grid_stride_gpu_source(target_arch, block_m, block_n, block_k, panel_size)
     if target_arch == "sycl":
-        return (
-            "// Emitted by OjasX x TileLang Universal CodeGen [Target: UXL Foundation Intel oneAPI SYCL / SPIR-V]\n"
-            "#include <sycl/sycl.hpp>\n#include <sycl/ext/oneapi/matrix/matrix.hpp>\n"
-            "void ojasx_tilelang_sycl_gemm_relu2_ballot_submit(sycl::queue& q) {\n"
-            "    // sycl::local_accessor & sycl::ext::oneapi::group_ballot\n"
-            "}\n"
-        )
+        return f"""// Emitted by OjasX portable Intel SYCL source fallback; requested tile={block_m}x{block_n}x{block_k}
+#include <cstdint>
+#include <sycl/sycl.hpp>
+void ojasx_tilelang_sycl_gemm_relu2_ballot_submit(
+    sycl::queue& q, const float* A, const float* B, const float* Bias,
+    float* Out, int32_t* PackedMask, int M, int N, int K, int has_bias) {{
+    if (M <= 0 || N <= 0) return;
+    const int64_t words_per_row = (int64_t(N) + 31) >> 5;
+    const int64_t total_work = int64_t(M) * words_per_row;
+    q.submit([&](sycl::handler& h) {{
+        h.parallel_for(sycl::range<1>(total_work), [=](sycl::id<1> id) {{
+            const int64_t work = id[0];
+            const int64_t row = work / words_per_row;
+            const int64_t word_col = work - row * words_per_row;
+            uint32_t mask_word = 0u;
+            for (int bit = 0; bit < 32; ++bit) {{
+                const int64_t col = (word_col << 5) + bit;
+                if (col >= N) break;
+                float val = has_bias ? Bias[col] : 0.0f;
+                for (int k = 0; k < K; ++k) val += A[row * K + k] * B[col * K + k];
+                const bool positive = val > 0.0f;
+                Out[row * N + col] = positive ? val * val : 0.0f;
+                if (positive) mask_word |= (uint32_t(1) << bit);
+            }}
+            PackedMask[work] = static_cast<int32_t>(mask_word);
+        }});
+    }});
+}}
+"""
     if target_arch == "ascend":
-        return (
-            "// Emitted by OjasX x TileLang Universal CodeGen [Target: Huawei Ascend 910B AICore Cube + UB]\n"
-            "#include \"tl_templates/ascend/gemm.h\"\n"
-            "extern \"C\" __global__ __aicore__ void ojasx_tilelang_ascend_gemm_relu2_ballot_kernel() {\n"
-            f"    // ascend_gemm_l1<{block_m}, {block_k}, {block_n}, 16, true, float, float> & asc_copy_l0c2ub\n"
-            "}\n"
-        )
-    if target_arch == "cpu":
-        return (
-            "// Emitted by OjasX x TileLang Universal CodeGen [Target: Multi-Core CPU AVX2/NEON + L1d/L2 Blocking]\n"
-            "#include \"tl_templates/cpu/gemm.h\"\n"
-            "extern \"C\" void ojasx_tilelang_cpu_gemm_relu2_ballot_kernel(\n"
-            "    const float* A, const float* B, const float* Bias, float* Out, int32_t* PackedMask, int64_t M, int64_t N, int64_t K, bool has_bias) {\n"
-            f"    tl::cpu::GemmHolonomicRelu2BallotTile<{block_m}, {block_n}, {block_k}>::run(A, B, Bias, Out, PackedMask, M, N, K, has_bias);\n"
-            "}\n"
-        )
-    raise RuntimeError(f"Unsupported TileLang target_arch: {target_arch}")
+        return f"""// Emitted by OjasX x TileLang Universal CodeGen [Target: Huawei Ascend 910B AICore Cube + UB]
+#include \"tl_templates/ascend/gemm.h\"
+extern \"C\" __global__ __aicore__ void ojasx_tilelang_ascend_gemm_relu2_ballot_kernel(
+    __gm__ float* A_gm, __gm__ float* B_gm, __gm__ float* Out_gm, __gm__ int32_t* Mask_gm, int M, int N, int K) {{
+    __cbuf__ float* l1_a = (__cbuf__ float*)0;
+    __cbuf__ float* l1_b = (__cbuf__ float*)16384;
+    __cc__ float* l0c = (__cc__ float*)0;
+    __ubuf__ float* ub_acc = (__ubuf__ float*)0;
+    __ubuf__ float* ub_out = (__ubuf__ float*)16384;
+    __ubuf__ int32_t* ub_mask = (__ubuf__ int32_t*)32768;
+    asc_unlock(PIPE_MTE1, 0, ASC_LOCK_BLOCK);
+    asc_unlock(PIPE_MTE1, 1, ASC_LOCK_BLOCK);
+    ascend_gemm_l1<{block_m}, {block_k}, {block_n}, 16, true, float, float>(l0c, l1_a, l1_b, 1, 0, 3);
+    asc_lock(PIPE_M, 0, ASC_LOCK_BLOCK);
+    asc_lock(PIPE_M, 1, ASC_LOCK_BLOCK);
+    asc_pipe_barrier(PIPE_V);
+    asc_copy_l0c2ub(ub_acc, l0c, {block_m // 16}, {block_n // 16});
+    asc_pipe_barrier(PIPE_V);
+    const int words_per_row = ({block_n} + 31) >> 5;
+    for (int r = 0; r < {block_m}; ++r) {{
+        for (int w = 0; w < words_per_row; ++w) {{
+            uint32_t mask_word = 0u;
+            for (int bit = 0; bit < 32; ++bit) {{
+                int c = (w << 5) + bit;
+                if (c < {block_n}) {{
+                    float z = ub_acc[r * {block_n} + c];
+                    bool pos = (z > 0.0f);
+                    ub_out[r * {block_n} + c] = pos ? (z * z) : 0.0f;
+                    if (pos) mask_word |= (1u << bit);
+                }}
+            }}
+            ub_mask[r * words_per_row + w] = static_cast<int32_t>(mask_word);
+        }}
+    }}
+    asc_pipe_barrier(PIPE_MTE3);
+    asc_copy_ub2gm(Out_gm, ub_out, {block_m * block_n} * sizeof(float));
+    asc_copy_ub2gm(Mask_gm, ub_mask, {block_m} * words_per_row * sizeof(int32_t));
+}}
+"""
+    # CPU source is independently compiled and executed in
+    # tests/test_emitted_cpu_kernel.py on hosts with a C++20 compiler.
+    return f"""// Emitted by OjasX x TileLang Universal CodeGen [Target: Portable CPU blocked C++ GEMM]
+#include \"tl_templates/cpu/gemm.h\"
+extern \"C\" void ojasx_tilelang_cpu_gemm_relu2_ballot_kernel(
+    const float* A, const float* B, const float* Bias, float* Out,
+    int32_t* PackedMask, int64_t M, int64_t N, int64_t K, bool has_bias) {{
+    tl::cpu::GemmHolonomicRelu2BallotTile<{block_m}, {block_n}, {block_k}>::run(
+        A, B, Bias, Out, PackedMask, M, N, K, has_bias);
+}}
+"""
+
+
+def normalize_target_arch(target_arch: Union[str, torch.device, None]) -> str:
+    """Normalize any hardware device or backend alias to a canonical TileLang target_arch."""
+    if target_arch is None:
+        raw = "auto"
+    elif isinstance(target_arch, torch.device):
+        raw = target_arch.type
+    else:
+        raw = str(target_arch).strip().lower()
+    if ":" in raw:
+        raw = raw.split(":", 1)[0]
+
+    if raw == "auto":
+        if torch.cuda.is_available():
+            return "rocm" if getattr(torch.version, "hip", None) else "cuda"
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "metal"
+        if hasattr(torch, "xpu") and torch.xpu.is_available():
+            return "sycl"
+        return "cpu"
+
+    if raw in {"metal", "mps", "apple"}:
+        return "metal"
+    if raw in {"cuda", "nvidia", "nvvm", "ptx", "sm80", "sm89", "sm90", "sm100"}:
+        return "cuda"
+    if raw in {"rocm", "hip", "amd", "cdna", "rdna", "gcn", "gfx90a", "gfx942"}:
+        return "rocm"
+    if raw in {"sycl", "xpu", "intel", "spirv", "oneapi", "vulkan"}:
+        return "sycl"
+    if raw in {"ascend", "npu", "cann", "huawei", "ascend910", "ascend910b"}:
+        return "ascend"
+    if raw in {"cpu", "avx", "avx2", "avx512", "neon", "amx", "arm64", "aarch64", "x86_64"}:
+        return "cpu"
+    return raw
+
+
+def emit_gemm_kernel_source(
+    target_arch: Union[str, torch.device] = "cpu",
+    block_m: int = 32,
+    block_n: int = 32,
+    block_k: Optional[int] = None,
+    panel_size: int = 4,
+) -> str:
+    """Emit verified hardware-specific GEMM kernel source for any supported architecture."""
+    norm_arch = normalize_target_arch(target_arch)
+    if block_k is None:
+        if norm_arch == "metal":
+            block_k = 16 if int(block_m) == 8 else 8
+        elif norm_arch in {"cuda", "rocm", "ascend"}:
+            block_k = 32
+        else:
+            block_k = 16
+    return _emit_universal_source_fallback(
+        norm_arch, int(block_m), int(block_n), int(block_k), int(panel_size)
+    )
 
 
 def register_tile_fallbacks():
