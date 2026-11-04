@@ -1,14 +1,18 @@
 """Sequential model partitioning over local devices and preloaded TCP workers.
 
 Plans use caller-supplied capacity estimates. Optional block-int8 compression is
-lossy; telemetry counts application frames, not IP/TCP network overhead. Remote
+lossy; telemetry counts tensor request/response frames and their wire authentication
+overhead, excluding connection handshakes and IP/TCP overhead. Remote
 execution supports first-order training and explicit worker-local optimizer steps.
 """
 
 from __future__ import annotations
 
 import hashlib
+import hmac
+import ipaddress
 import json
+import os
 import socket
 import struct
 import threading
@@ -31,6 +35,80 @@ _DTYPE_TO_CODE = {
     torch.float64: 4,
 }
 _CODE_TO_DTYPE = {v: k for k, v in _DTYPE_TO_CODE.items()}
+
+DEFAULT_MAX_FRAME_BYTES = 256 * 1024 * 1024
+MAX_WIRE_NDIM = 64
+MAX_WIRE_TENSOR_ELEMENTS = 64 * 1024 * 1024
+_AUTH_FLAG = 1 << 63
+_LENGTH_MASK = _AUTH_FLAG - 1
+_AUTH_TAG_BYTES = 32
+_AUTH_NONCE_BYTES = 16
+_AUTH_CONTEXT = b"OJASX-MESH-FRAME-V1\0"
+
+
+def _normalize_auth_key(auth_key: Optional[Union[str, bytes]]) -> Optional[bytes]:
+    if auth_key is None:
+        return None
+    key = auth_key.encode("utf-8") if isinstance(auth_key, str) else bytes(auth_key)
+    if len(key) < 32:
+        raise ValueError("Mesh authentication requires at least 32 bytes of key material")
+    return key
+
+
+def _is_loopback_host(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+class _MeshAuthenticator:
+    """Session-bound HMAC and ordered-frame state for one TCP connection."""
+
+    def __init__(self, key: bytes, session: bytes) -> None:
+        self._key = _normalize_auth_key(key)
+        self._session = session
+        self._send_sequence = 0
+        self._recv_sequence = 0
+        self._lock = threading.Lock()
+
+    def seal(self, payload: bytes) -> Tuple[int, bytes]:
+        with self._lock:
+            sequence = self._send_sequence
+            self._send_sequence += 1
+        message = (_AUTH_CONTEXT + self._session + struct.pack("!QQ", len(payload), sequence) + payload)
+        return sequence, hmac.new(self._key, message, hashlib.sha256).digest()
+
+    def verify(self, sequence: int, payload: bytes, tag: bytes) -> None:
+        message = (_AUTH_CONTEXT + self._session + struct.pack("!QQ", len(payload), sequence) + payload)
+        expected = hmac.new(self._key, message, hashlib.sha256).digest()
+        if not hmac.compare_digest(expected, tag):
+            raise ValueError("Mesh frame authentication failed")
+        with self._lock:
+            if sequence != self._recv_sequence:
+                raise ValueError("Mesh frame replay or reordering detected")
+            self._recv_sequence += 1
+
+
+def _authentication_handshake(
+    sock: socket.socket, auth_key: Optional[Union[str, bytes]], *, server: bool
+) -> Optional[_MeshAuthenticator]:
+    key = _normalize_auth_key(auth_key)
+    if key is None:
+        return None
+    if server:
+        local_nonce = os.urandom(_AUTH_NONCE_BYTES)
+        sock.sendall(local_nonce)
+        peer_nonce = _recv_exact(sock, _AUTH_NONCE_BYTES)
+        session = local_nonce + peer_nonce
+    else:
+        peer_nonce = _recv_exact(sock, _AUTH_NONCE_BYTES)
+        local_nonce = os.urandom(_AUTH_NONCE_BYTES)
+        sock.sendall(local_nonce)
+        session = peer_nonce + local_nonce
+    return _MeshAuthenticator(key, session)
 
 
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
@@ -84,12 +162,27 @@ class VirtualMeshPartitionPlan:
     node_capacity_share_pct: Dict[str, float] = field(default_factory=dict)
 
 
-def _send_framed_bytes(sock: socket.socket, payload: bytes) -> None:
-    header = struct.pack("!Q", len(payload))
-    sock.sendall(header + payload)
+def _send_framed_bytes(
+    sock: socket.socket,
+    payload: bytes,
+    *,
+    max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES,
+    authenticator: Optional[_MeshAuthenticator] = None,
+) -> None:
+    length = len(payload)
+    if length > max_frame_bytes:
+        raise ValueError(f"Mesh frame exceeds the {max_frame_bytes}-byte limit")
+    if authenticator is None:
+        sock.sendall(struct.pack("!Q", length) + payload)
+        return
+    sequence, tag = authenticator.seal(payload)
+    header = struct.pack("!Q", length | _AUTH_FLAG)
+    sock.sendall(header + struct.pack("!Q", sequence) + payload + tag)
 
 
 def _recv_exact(sock: socket.socket, num_bytes: int) -> bytes:
+    if num_bytes < 0:
+        raise ValueError("Cannot receive a negative byte count")
     buf = bytearray()
     while len(buf) < num_bytes:
         chunk = sock.recv(num_bytes - len(buf))
@@ -99,10 +192,29 @@ def _recv_exact(sock: socket.socket, num_bytes: int) -> bytes:
     return bytes(buf)
 
 
-def _recv_framed_bytes(sock: socket.socket) -> bytes:
+def _recv_framed_bytes(
+    sock: socket.socket,
+    *,
+    max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES,
+    authenticator: Optional[_MeshAuthenticator] = None,
+) -> bytes:
+    if max_frame_bytes <= 0:
+        raise ValueError("max_frame_bytes must be positive")
     header = _recv_exact(sock, 8)
-    (length,) = struct.unpack("!Q", header)
-    return _recv_exact(sock, length)
+    (wire_length,) = struct.unpack("!Q", header)
+    authenticated = bool(wire_length & _AUTH_FLAG)
+    length = wire_length & _LENGTH_MASK
+    if length > max_frame_bytes:
+        raise ValueError(f"Mesh frame exceeds the {max_frame_bytes}-byte limit")
+    if authenticated != (authenticator is not None):
+        raise ValueError("Mesh frame authentication configuration mismatch")
+    if not authenticated:
+        return _recv_exact(sock, length)
+    sequence = struct.unpack("!Q", _recv_exact(sock, 8))[0]
+    payload = _recv_exact(sock, length)
+    tag = _recv_exact(sock, _AUTH_TAG_BYTES)
+    authenticator.verify(sequence, payload, tag)
+    return payload
 
 
 def pack_tensor_for_wire(
@@ -116,6 +228,12 @@ def pack_tensor_for_wire(
     bytes transmitted over the OS TCP socket match `compressed_wire_bytes` exactly
     (including the 8-byte TCP frame length header and binary shape header).
     """
+    if block_size <= 0:
+        raise ValueError("block_size must be positive")
+    if x.dtype not in _DTYPE_TO_CODE:
+        raise TypeError(f"Unsupported mesh tensor dtype: {x.dtype}")
+    if x.numel() > MAX_WIRE_TENSOR_ELEMENTS:
+        raise ValueError("Mesh tensor exceeds the element limit")
     x_cpu = x.detach().to("cpu").contiguous()
     raw_fp32_bytes = int(x_cpu.numel() * 4)
     orig_shape = list(x_cpu.shape)
@@ -160,65 +278,94 @@ def pack_tensor_for_wire(
     return wire_payload, actual_wire_bytes, raw_fp32_bytes
 
 
+def _wire_shape(shape: Sequence[int], *, label: str) -> Tuple[int, ...]:
+    if len(shape) > MAX_WIRE_NDIM or any(int(d) < 0 for d in shape):
+        raise ValueError(f"Invalid mesh {label} shape")
+    result = tuple(int(d) for d in shape)
+    numel = 1
+    for dim in result:
+        numel *= dim
+        if numel > MAX_WIRE_TENSOR_ELEMENTS:
+            raise ValueError("Mesh tensor exceeds the element limit")
+    return result
+
+
+def _shape_from_payload(payload: bytes, offset: int, ndim: int, *, label: str) -> Tuple[Tuple[int, ...], int]:
+    if ndim > MAX_WIRE_NDIM or offset + 8 * ndim > len(payload):
+        raise ValueError(f"Invalid mesh {label} shape header")
+    shape = struct.unpack_from(f"!{ndim}q", payload, offset) if ndim else ()
+    return _wire_shape(shape, label=label), offset + 8 * ndim
+
+
 def unpack_tensor_from_wire(
     payload: bytes,
     target_device: torch.device,
     target_dtype: torch.dtype,
 ) -> torch.Tensor:
-    """Deserialize deterministic C-struct binary frame back into a PyTorch tensor."""
+    """Validate and deserialize one canonical OjasX tensor frame."""
+    if len(payload) < 8:
+        raise ValueError("Mesh tensor payload is too short")
     magic, mode = struct.unpack_from("!BB", payload, 0)
     if magic != _WIRE_MAGIC:
         raise ValueError(f"Invalid OjasX mesh wire magic byte: {magic:#x}")
 
     if mode == 0:
         _, _, ndim, dtype_code = struct.unpack_from("!BBHI", payload, 0)
-        offset = 8
-        orig_shape = list(struct.unpack_from(f"!{ndim}q", payload, offset))
-        offset += 8 * ndim
+        if dtype_code not in _CODE_TO_DTYPE:
+            raise ValueError(f"Unknown mesh dtype code: {dtype_code}")
+        orig_shape, offset = _shape_from_payload(payload, 8, ndim, label="tensor")
         raw_buf = memoryview(payload)[offset:]
-        dtype = _CODE_TO_DTYPE.get(dtype_code, torch.float32)
+        dtype = _CODE_TO_DTYPE[dtype_code]
+        item_size = {torch.float32: 4, torch.float16: 2, torch.bfloat16: 2, torch.float64: 8}[dtype]
+        expected_bytes = int(np.prod(orig_shape, dtype=np.int64)) * item_size if orig_shape else item_size
+        if len(raw_buf) != expected_bytes:
+            raise ValueError("Mesh tensor byte count does not match its shape and dtype")
         if dtype == torch.bfloat16:
             arr = np.frombuffer(raw_buf, dtype=np.uint16).reshape(orig_shape).copy()
             t = torch.from_numpy(arr).view(torch.bfloat16)
         else:
-            np_dtype = {
-                torch.float32: np.float32,
-                torch.float16: np.float16,
-                torch.float64: np.float64,
-            }[dtype]
+            np_dtype = {torch.float32: np.float32, torch.float16: np.float16, torch.float64: np.float64}[dtype]
             arr = np.frombuffer(raw_buf, dtype=np_dtype).reshape(orig_shape).copy()
             t = torch.from_numpy(arr)
         return t.to(device=target_device, dtype=target_dtype)
 
-    _, _, ndim, _block_size, q_ndim, s_ndim, q_len, s_len = struct.unpack_from(
-        "!BBHIHHQQ", payload, 0
-    )
-    offset = struct.calcsize("!BBHIHHQQ")
-    orig_shape = list(struct.unpack_from(f"!{ndim}q", payload, offset))
-    offset += 8 * ndim
-    q_shape = list(struct.unpack_from(f"!{q_ndim}q", payload, offset))
-    offset += 8 * q_ndim
-    s_shape = list(struct.unpack_from(f"!{s_ndim}q", payload, offset))
-    offset += 8 * s_ndim
+    if mode != 1:
+        raise ValueError(f"Unknown mesh tensor encoding mode: {mode}")
+    header_size = struct.calcsize("!BBHIHHQQ")
+    if len(payload) < header_size:
+        raise ValueError("Compressed mesh tensor header is too short")
+    _, _, ndim, block_size, q_ndim, s_ndim, q_len, s_len = struct.unpack_from("!BBHIHHQQ", payload, 0)
+    if block_size <= 0 or block_size > DEFAULT_MAX_FRAME_BYTES:
+        raise ValueError("Invalid mesh compression block size")
+    orig_shape, offset = _shape_from_payload(payload, header_size, ndim, label="tensor")
+    q_shape, offset = _shape_from_payload(payload, offset, q_ndim, label="quantized")
+    s_shape, offset = _shape_from_payload(payload, offset, s_ndim, label="scale")
+    if q_len + s_len != len(payload) - offset:
+        raise ValueError("Compressed mesh tensor lengths do not match the payload")
+    orig_numel = int(np.prod(orig_shape, dtype=np.int64)) if orig_shape else 1
+    rows = (orig_numel + block_size - 1) // block_size
+    if orig_numel <= 0 or q_shape != (rows, block_size) or s_shape != (rows,):
+        raise ValueError("Compressed mesh tensor has a noncanonical block layout")
+    if q_len != rows * block_size or s_len != rows * 2:
+        raise ValueError("Compressed mesh tensor storage does not match its block layout")
 
     q_view = memoryview(payload)[offset : offset + q_len]
     offset += q_len
     s_view = memoryview(payload)[offset : offset + s_len]
-
     q_np = np.frombuffer(q_view, dtype=np.int8).reshape(q_shape).copy()
     s_u16 = np.frombuffer(s_view, dtype=np.uint16).reshape(s_shape).copy()
     q_t = torch.from_numpy(q_np)
     s_t = torch.from_numpy(s_u16).view(torch.bfloat16).to(torch.float32)
-    recon = torch.ops.ojasx_hal.decompress_boundary_int8(
-        q_t, s_t, orig_shape, target_dtype
-    )
+    recon = torch.ops.ojasx_hal.decompress_boundary_int8(q_t, s_t, list(orig_shape), target_dtype)
     return recon.to(device=target_device, dtype=target_dtype)
 
 
 class _TCPLoopbackP2PChannel:
-    """Real TCP socket channel supporting both local loopback and multi-host P2P links."""
+    """Real TCP channel for same-host device boundaries only."""
 
     def __init__(self, bind_host: str = "127.0.0.1", bind_port: int = 0) -> None:
+        if not _is_loopback_host(bind_host):
+            raise ValueError("The local mesh boundary channel only permits loopback binds")
         self.bind_host = bind_host
         self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -302,7 +449,15 @@ class MeshRemoteWorkerServer:
         compress_int8: bool = True,
         optimizer: Optional[torch.optim.Optimizer] = None,
         timeout: float = 30.0,
+        auth_key: Optional[Union[str, bytes]] = None,
+        max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES,
     ) -> None:
+        self.auth_key = _normalize_auth_key(auth_key)
+        if not _is_loopback_host(host) and self.auth_key is None:
+            raise ValueError("Non-loopback mesh workers require an authentication key")
+        if max_frame_bytes <= 0:
+            raise ValueError("max_frame_bytes must be positive")
+        self.max_frame_bytes = max_frame_bytes
         self.device = torch.device(device)
         self.sub_module = sub_module.to(self.device)
         self.compress_int8 = compress_int8
@@ -338,20 +493,28 @@ class MeshRemoteWorkerServer:
             try:
                 conn.settimeout(self.timeout)
                 conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                authenticator = _authentication_handshake(conn, self.auth_key, server=True)
                 while not self._stop:
                     # TCP is a byte stream: both header and payload require exact reads.
-                    msg = _recv_framed_bytes(conn)
+                    msg = _recv_framed_bytes(
+                        conn, max_frame_bytes=self.max_frame_bytes, authenticator=authenticator
+                    )
                     if not msg:
                         raise ValueError("Empty mesh request")
                     op_code = msg[0]
                     if op_code == 8:  # Initial partition handshake
+                        if len(msg) not in (1, 2) or (len(msg) == 2 and msg[1] not in (0, 1)):
+                            raise ValueError("Malformed mesh handshake")
                         if len(msg) > 1:
                             response_compression = bool(msg[1])
                         metadata = {"signature": _partition_signature(self.sub_module),
                                     "parameters": sum(p.numel() for p in self.sub_module.parameters())}
-                        _send_framed_bytes(conn, json.dumps(metadata).encode())
+                        _send_framed_bytes(conn, json.dumps(metadata).encode(), max_frame_bytes=self.max_frame_bytes, authenticator=authenticator)
                         continue
                     if op_code in (5, 6, 9):  # Optimizer step / gradient reset / train mode
+                        if ((op_code in (5, 6) and len(msg) != 1)
+                                or (op_code == 9 and (len(msg) != 2 or msg[1] not in (0, 1)))):
+                            raise ValueError("Malformed mesh control request")
                         if graphs:
                             raise RuntimeError("Finish outstanding backwards before updating remote parameters")
                         if op_code == 5:
@@ -362,10 +525,15 @@ class MeshRemoteWorkerServer:
                             self.sub_module.zero_grad(set_to_none=True)
                         else:
                             self.sub_module.train(bool(msg[1]))
-                        _send_framed_bytes(conn, b"OK")
+                        _send_framed_bytes(conn, b"OK", max_frame_bytes=self.max_frame_bytes, authenticator=authenticator)
                         continue
                     if op_code not in (1, 2, 3, 4, 7):
                         raise ValueError(f"Unknown mesh opcode {op_code}")
+                    if op_code in (1, 2):
+                        if len(msg) <= 1:
+                            raise ValueError("Mesh tensor request has no payload")
+                    elif len(msg) < 11 or msg[9] not in _CODE_TO_DTYPE:
+                        raise ValueError("Malformed mesh tensor request header")
                     request_id = 0 if op_code in (1, 2) else struct.unpack("!Q", msg[1:9])[0]
                     tensor_payload = msg[1:] if op_code in (1, 2) else msg[10:]
                     dtype = torch.float32 if op_code in (1, 2) else _CODE_TO_DTYPE[msg[9]]
@@ -390,14 +558,14 @@ class MeshRemoteWorkerServer:
                     payload, _, _ = pack_tensor_for_wire(response, compress_int8=response_compression)
                     if op_code not in (1, 2):
                         payload = bytes([_DTYPE_TO_CODE[response.dtype]]) + payload
-                    _send_framed_bytes(conn, payload)
+                    _send_framed_bytes(conn, payload, max_frame_bytes=self.max_frame_bytes, authenticator=authenticator)
             except (ConnectionError, OSError) as exc:
                 if not self._stop:
                     self.last_error = str(exc)
             except Exception as exc:
                 self.last_error = str(exc)
                 try:
-                    _send_framed_bytes(conn, b"\xff" + str(exc).encode())
+                    _send_framed_bytes(conn, b"\xff" + str(exc).encode(), max_frame_bytes=self.max_frame_bytes, authenticator=authenticator)
                 except OSError:
                     pass
             finally:
@@ -422,14 +590,20 @@ class MeshRemoteWorkerServer:
 
 
 class _RemotePartitionClient:
-    def __init__(self, node, expected_module, telemetry, compress_int8, timeout):
+    def __init__(
+        self, node, expected_module, telemetry, compress_int8, timeout,
+        auth_key=None, max_frame_bytes=DEFAULT_MAX_FRAME_BYTES,
+    ):
         self.telemetry = telemetry
         self.compress_int8 = compress_int8
         self.sock = socket.create_connection((node.host, node.port), timeout=timeout)
         self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self.lock = threading.Lock()
         self.next_request_id = 1
+        self.max_frame_bytes = max_frame_bytes
+        self.authenticator = None
         try:
+            self.authenticator = _authentication_handshake(self.sock, auth_key, server=False)
             metadata = json.loads(self._exchange(b"\x08" + bytes([compress_int8])))
             if metadata["signature"] != _partition_signature(expected_module):
                 raise ValueError(f"Remote partition {node.node_id} differs from its assigned architecture or initial weights")
@@ -439,8 +613,14 @@ class _RemotePartitionClient:
 
     def _exchange(self, message):
         with self.lock:
-            _send_framed_bytes(self.sock, message)
-            response = _recv_framed_bytes(self.sock)
+            _send_framed_bytes(
+                self.sock, message, max_frame_bytes=self.max_frame_bytes,
+                authenticator=self.authenticator,
+            )
+            response = _recv_framed_bytes(
+                self.sock, max_frame_bytes=self.max_frame_bytes,
+                authenticator=self.authenticator,
+            )
         if response.startswith(b"\xff"):
             raise RuntimeError("Remote mesh worker: " + response[1:].decode(errors="replace"))
         return response
@@ -449,11 +629,16 @@ class _RemotePartitionClient:
         payload, _, raw_bytes = pack_tensor_for_wire(tensor, compress_int8=self.compress_int8)
         message = bytes([opcode]) + struct.pack("!Q", request_id) + bytes([_DTYPE_TO_CODE[tensor.dtype]]) + payload
         response = self._exchange(message)
+        if not response or response[0] not in _CODE_TO_DTYPE:
+            raise ValueError("Remote worker returned a malformed tensor header")
         if opcode in (3, 7):
             self.telemetry.forward_packets += 2
         else:
             self.telemetry.backward_packets += 2
-        self.telemetry.compressed_wire_bytes += 8 + len(message) + 8 + len(response)
+        auth_overhead = 40 if self.authenticator is not None else 0  # sequence + HMAC-SHA256
+        self.telemetry.compressed_wire_bytes += (
+            8 + len(message) + auth_overhead + 8 + len(response) + auth_overhead
+        )
         output = unpack_tensor_from_wire(response[1:], tensor.device, _CODE_TO_DTYPE[response[0]])
         self.telemetry.uncompressed_fp32_bytes += raw_bytes + output.numel() * 4
         return output
@@ -572,6 +757,8 @@ class HolonomicVirtualMeshEngine(nn.Module):
         *,
         stages: Optional[Sequence[nn.Module]] = None,
         compress_wire: Optional[bool] = None,
+        auth_key: Optional[Union[str, bytes]] = None,
+        max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES,
     ) -> None:
         super().__init__()
         if model is None and stages is not None:
@@ -618,7 +805,8 @@ class HolonomicVirtualMeshEngine(nn.Module):
                 if node.port > 0 and indices:
                     partition = nn.Sequential(*(self.layers[i] for i in indices))
                     self.remote_clients[node.node_id] = _RemotePartitionClient(
-                        node, partition, self.telemetry, compress_boundary, timeout
+                        node, partition, self.telemetry, compress_boundary, timeout,
+                        auth_key=auth_key, max_frame_bytes=max_frame_bytes,
                     )
                     for i in indices:
                         self.layers[i] = nn.Identity()

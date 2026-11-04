@@ -1,0 +1,79 @@
+{
+  "generated_at_utc": "2026-11-03T10:18:09.930401+00:00",
+  "source_sha256": {
+    "tools/run_two_laptop_physical_mesh.py": "71f0b8f9236e09356826e1ce7dc65a917e7456d439806f036aa6db015dffa548",
+    "ojasx2/holonomic_math_compiler.py": "8f2de55faf580e5b4aa4f41b15e54c3e4a58623b40c79ef35b703a776ecd241d",
+    "ojasx2/grad_free_optimizer.py": "81c445afc2467c842b8ff8ae9f42c0744292b548d83aab5b8ea43286d89f5ffd",
+    "ojasx2/contractions.py": "f4d0795293e0a4ddc7303e7ecc00f981ac8070ca407fe2364fb7c4bcd7befd7d",
+    "ojasx2/mesh_hal.py": "6df3d1271775e43b5189aa3003e116be7f8d64da77133ee0f6a57af3d780dcf0"
+  },
+  "stage2_sharded_mesh": {
+    "scope": "16,384-token footprints are analytical component estimates; live TCP execution runs 2 steps with a 512-token microbatch (4x128). Coordinator constructs initial model template in memory before partitioning.",
+    "topology": "coordinator(cpu) -> worker(127.0.0.1:29663)",
+    "total_parameters": 12608,
+    "probed_free_ram_mb": 2836.5,
+    "effective_safe_cap_mb": 1000.0,
+    "execution_scope": "authenticated two-process loopback mesh; not two-physical-laptop qualification",
+    "loopback_execution": true,
+    "hardware_identity_scope": "Laptop names and chip classes are analytical scenario labels. Only coordinator OS memory and execution device are probed by this tool.",
+    "coordinator_platform": "Linux-6.1.158+-x86_64-with-glibc2.36",
+    "analytical_projection_batch_tokens": 16384,
+    "executed_microbatch_tokens": 512,
+    "coordinator_loads_initial_model_template": true,
+    "standard_pytorch_sgd_single_node_footprint_mb": {
+      "weights_mb": 0.05,
+      "persistent_grad_mb": 0.05,
+      "optimizer_state_mb": 0.0,
+      "activation_tape_mb": 32.0,
+      "total_training_mb": 32.1
+    },
+    "standard_pytorch_adamw_single_node_footprint_mb": {
+      "weights_mb": 0.05,
+      "persistent_grad_mb": 0.05,
+      "optimizer_state_mb": 0.1,
+      "activation_tape_mb": 32.0,
+      "total_training_mb": 32.19
+    },
+    "single_node_blocked_by_safety_guard": false,
+    "laptop_a_sharded_footprint_mb": {
+      "weights_mb": 0.02,
+      "persistent_grad_mb": 0.0,
+      "optimizer_state_mb": 0.0,
+      "activation_tape_mb": 8.06,
+      "total_training_mb": 8.09
+    },
+    "laptop_b_sharded_footprint_mb": {
+      "weights_mb": 0.02,
+      "persistent_grad_mb": 0.0,
+      "optimizer_state_mb": 0.0,
+      "activation_tape_mb": 8.06,
+      "total_training_mb": 8.09
+    },
+    "sharded_fits_both_nodes_safely": true,
+    "loss_converged": null,
+    "loss_decreased_over_executed_steps": true,
+    "loss_scope": "Observed endpoint comparison only; not convergence qualification",
+    "steps": [
+      {
+        "step": 1,
+        "sharded_loss": 0.06751563400030136,
+        "coordinator_persistent_grad_mb": 0.0,
+        "step_ms": 14.25
+      },
+      {
+        "step": 2,
+        "sharded_loss": 0.06751101464033127,
+        "coordinator_persistent_grad_mb": 0.0,
+        "step_ms": 8.45
+      }
+    ],
+    "telemetry": {
+      "forward_packets": 4,
+      "backward_packets": 4,
+      "compressed_wire_bytes": 140300,
+      "uncompressed_fp32_bytes": 524288,
+      "compression_ratio": 3.7369,
+      "bandwidth_saved_pct": 73.24
+    }
+  }
+}

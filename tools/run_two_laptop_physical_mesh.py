@@ -1,19 +1,21 @@
-"""OjasX Hardware-Guarded Memory Tradeoff & Two-Laptop Physical Mesh Proof (`tools/run_two_laptop_physical_mesh.py`).
+"""OjasX memory scenarios and authenticated TCP mesh runner.
 
-Proves two real-world capabilities with strict OS memory safety guards (zero swap / zero crash):
-  1. STAGE 1 (Test on This Laptop First — `--role local-proof`):
-     - Part A: Single-Laptop OjasX Memory Tradeoff (Standard PyTorch vs OjasX Holonomic + Grad-Free Optimizer),
-       proving elimination of intermediate pre-activation tape and persistent `.grad` buffers.
-     - Part B: Beyond-Single-Node Safe Budget Proof — a large multi-hundred-million-parameter model whose
-       Standard PyTorch single-node training footprint (Weights + Grads + AdamW State + Activations) exceeds
-       the single-laptop safe RAM ceiling is safely blocked by `HardwareMemorySafetyGuard`, and then trained
-       successfully by sharding across Coordinator (Laptop A) + Worker (Laptop B) over TCP with Block-INT8
-       boundary compression and `HolonomicGradFreeOptimizer` on both nodes.
-  2. STAGE 2 (Live Two-Laptop Physical Execution):
-     - On Laptop B (Intel Core i5 16GB RAM + iGPU):
-         python tools/run_two_laptop_physical_mesh.py --role worker --port 29505
-     - On Laptop A (Apple M5 24GB Mac):
-         .tools/conformance-venv/bin/python tools/run_two_laptop_physical_mesh.py --role coordinator --worker-host <LAPTOP_B_IP> --port 29505
+Roles:
+  - ``local-proof`` runs resource-intensive single-host memory measurements before
+    starting a loopback worker. Review its dimensions and available RAM first.
+  - ``worker`` and ``coordinator`` execute sharded forward/backward steps over
+    authenticated TCP. Set the same OJASX_MESH_KEY (at least 32 UTF-8 bytes) on
+    both processes, for example::
+
+        python tools/run_two_laptop_physical_mesh.py --role worker --port 29505
+        python tools/run_two_laptop_physical_mesh.py --role coordinator \
+            --worker-host <WORKER_IP> --port 29505
+
+The 16K-token footprints are analytical estimates, while live execution uses a
+separate small microbatch. Laptop/chip names are scenario labels, not an
+independent hardware inventory. This tool does not guarantee zero swap, zero
+crash, convergence, production performance, or two-physical-laptop qualification.
+Use --report to keep loopback or small-test output separate from historical reports.
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -210,6 +212,23 @@ def build_node_specs(worker_host: str, worker_port: int, coordinator_device: str
 def _sync_device(device: str) -> None:
     if device == "mps" and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         torch.mps.synchronize()
+
+
+def _execution_scope(worker_host: str) -> Dict[str, object]:
+    loopback = worker_host in {"127.0.0.1", "localhost", "::1"}
+    return {
+        "execution_scope": (
+            "authenticated two-process loopback mesh; not two-physical-laptop qualification"
+            if loopback else
+            "authenticated TCP mesh to the configured remote host; physical host identity not independently verified"
+        ),
+        "loopback_execution": loopback,
+        "hardware_identity_scope": (
+            "Laptop names and chip classes are analytical scenario labels. "
+            "Only coordinator OS memory and execution device are probed by this tool."
+        ),
+        "coordinator_platform": platform.platform(),
+    }
 
 
 def _source_sha256() -> Dict[str, str]:
@@ -540,7 +559,7 @@ def run_stage1_single_laptop_tradeoff_proof(device: str, dim: int = 1024, num_la
     }
 
 
-def run_worker(port: int, dim: int, num_layers: int, lr: float) -> None:
+def run_worker(port: int, dim: int, num_layers: int, lr: float, auth_key: str) -> None:
     lan_ip = _detect_lan_ip()
     mem_stat = probe_system_memory_gb()
     model = build_shared_model(dim=dim, num_layers=num_layers, seed=2026)
@@ -566,18 +585,19 @@ def run_worker(port: int, dim: int, num_layers: int, lr: float) -> None:
         compress_int8=True,
         optimizer=optimizer,  # type: ignore[arg-type]
         timeout=180.0,
+        auth_key=auth_key,
     )
     print("=" * 92)
-    print("⚡ OJASX PHYSICAL MESH WORKER ONLINE (Laptop B — Intel Core i5 16GB + iGPU)")
+    print("⚡ OJASX AUTHENTICATED MESH WORKER ONLINE (hardware identity not inferred)")
     print("=" * 92)
     print(f"  OS Memory Probed    : Total={mem_stat.total_ram_gb:.1f} GB | Free={mem_stat.available_free_ram_gb:.1f} GB")
     print(f"  Listening Address   : 0.0.0.0:{server.port}")
-    print(f"  Laptop B LAN IP     : {lan_ip}")
+    print(f"  Worker LAN IP         : {lan_ip}")
     print(f"  Assigned Layers     : {assigned_indices} ({worker_params:,} params = {worker_weight_mb:.1f} MB weights)")
-    print(f"  Persistent .grad    : 0.00 MB (HolonomicGradFreeOptimizer active on Laptop B)")
+    print(f"  Persistent .grad    : 0.00 MB (HolonomicGradFreeOptimizer active on worker)")
     print(f"  Capacity Share      : {plan.node_capacity_share_pct[worker_node.node_id]:.1f}% of Virtual Mesh")
     print("-" * 92)
-    print("👉 NOW RUN THIS COMMAND ON LAPTOP A (Apple M5 MacBook Air):")
+    print("👉 RUN THE COORDINATOR WITH THE SAME OJASX_MESH_KEY:")
     print(
         f"   .tools/conformance-venv/bin/python tools/run_two_laptop_physical_mesh.py "
         f"--role coordinator --worker-host {lan_ip} --port {server.port}"
@@ -586,7 +606,7 @@ def run_worker(port: int, dim: int, num_layers: int, lr: float) -> None:
     try:
         server.wait()
     except KeyboardInterrupt:
-        print("\nShutting down Laptop B worker...")
+        print("\nShutting down mesh worker...")
     finally:
         server.close()
 
@@ -599,10 +619,16 @@ def run_coordinator(
     steps: int,
     lr: float,
     single_node_safe_cap_mb: float = 10000.0,
+    auth_key: Optional[str] = None,
 ) -> Dict[str, object]:
     coord_device = "mps" if (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()) else "cpu"
     mem_stat = probe_system_memory_gb()
     effective_free_ram_mb = round(mem_stat.available_free_ram_gb * 1024.0, 1)
+    if single_node_safe_cap_mb <= 0:
+        raise ValueError("single_node_safe_cap_mb must be positive")
+    if steps <= 0:
+        raise ValueError("steps must be positive")
+    effective_safe_cap_mb = min(effective_free_ram_mb, float(single_node_safe_cap_mb))
     model_mesh = build_shared_model(dim=dim, num_layers=num_layers, seed=2026)
     total_params = sum(p.numel() for p in model_mesh.parameters())
 
@@ -623,6 +649,7 @@ def run_coordinator(
         nodes=nodes,
         compress_boundary=True,
         timeout=90.0,
+        auth_key=auth_key,
     )
     del model_mesh
     _release_memory()
@@ -640,14 +667,14 @@ def run_coordinator(
         laptop_b_params, batch_tokens, dim, len(laptop_b_layers), is_holonomic_grad_free=True, optimizer_state_multiplier=0.0
     )
 
-    single_node_would_exceed_cap = std_sgd_single_fp["total_training_mb"] > effective_free_ram_mb
+    single_node_would_exceed_cap = std_sgd_single_fp["total_training_mb"] > effective_safe_cap_mb
     sharded_fits_both_nodes = (
-        laptop_a_fp["total_training_mb"] <= effective_free_ram_mb
-        and laptop_b_fp["total_training_mb"] <= effective_free_ram_mb
+        laptop_a_fp["total_training_mb"] <= effective_safe_cap_mb
+        and laptop_b_fp["total_training_mb"] <= effective_safe_cap_mb
     )
 
     print("\n" + "=" * 96)
-    print("⚡ STAGE 2: SHARDED VIRTUAL MESH & ANALYTICAL CAPACITY PROJECTION (226.6M Params)")
+    print(f"⚡ STAGE 2: SHARDED VIRTUAL MESH & ANALYTICAL CAPACITY PROJECTION ({total_params:,} Params)")
     print("=" * 96)
     print(f"  Full Model Architecture       : {num_layers} Blocks, Dim={dim}, Hidden={dim*3} ({total_params:,} Parameters)")
     print(f"  This Laptop Total / Free RAM  : {mem_stat.total_ram_gb:.1f} GB Total | {mem_stat.available_free_ram_gb:.2f} GB ({effective_free_ram_mb:.0f} MB) Free Right Now")
@@ -663,19 +690,19 @@ def run_coordinator(
     )
     print(
         f"      -> Hardware Safety Guard Verdict         : "
-        f"{'🛑 BLOCKED — Exceeds This Laptop Free RAM (' + str(round(mem_stat.available_free_ram_gb, 2)) + ' GB)!' if single_node_would_exceed_cap else 'FITS'}"
+        f"{'🛑 BLOCKED — Exceeds safe memory cap (' + str(round(effective_safe_cap_mb, 1)) + ' MB)!' if single_node_would_exceed_cap else 'FITS'}"
     )
     print(
         f"  [2] OjasX 2-Node Sharded Projection (SGD)    : "
-        f"Laptop A = {laptop_a_fp['total_training_mb']:.1f} MB ({laptop_a_fp['total_training_mb']/1024.0:.2f} GB) | "
-        f"Laptop B = {laptop_b_fp['total_training_mb']:.1f} MB ({laptop_b_fp['total_training_mb']/1024.0:.2f} GB)"
+        f"Coordinator = {laptop_a_fp['total_training_mb']:.1f} MB ({laptop_a_fp['total_training_mb']/1024.0:.2f} GB) | "
+        f"Worker = {laptop_b_fp['total_training_mb']:.1f} MB ({laptop_b_fp['total_training_mb']/1024.0:.2f} GB)"
     )
     print(
-        f"      -> Laptop A (Apple M5 {coord_device.upper():<3})             : Layers {laptop_a_layers} "
+        f"      -> Coordinator (scenario capacity; {coord_device.upper()}): Layers {laptop_a_layers} "
         f"({laptop_a_params:,} params, 0MB .grad, 0MB pre-act)"
     )
     print(
-        f"      -> Laptop B (Worker {worker_host}:{port})     : Layers {laptop_b_layers} "
+        f"      -> Worker (scenario capacity; {worker_host}:{port}): Layers {laptop_b_layers} "
         f"({laptop_b_params:,} params, 0MB .grad, 0MB pre-act)"
     )
     print(
@@ -729,8 +756,9 @@ def run_coordinator(
     loss_improved = step_records[-1]["sharded_loss"] < step_records[0]["sharded_loss"]
     print("-" * 96)
     print(
-        f"  Convergence Verified   : Initial Loss {step_records[0]['sharded_loss']:.6f} -> "
-        f"Final Loss {step_records[-1]['sharded_loss']:.6f} ({'✅ CONVERGED' if loss_improved else 'STABLE'})"
+        f"  Loss Comparison       : Initial Loss {step_records[0]['sharded_loss']:.6f} -> "
+        f"Final Loss {step_records[-1]['sharded_loss']:.6f} "
+        f"({'DECREASED' if loss_improved else 'DID NOT DECREASE'}; not convergence qualification)"
     )
     print(f"  TCP Packets Exchanged  : {tel.forward_packets} Fwd / {tel.backward_packets} Bwd")
     print(f"  Uncompressed FP32 Bytes: {tel.uncompressed_fp32_bytes / 1024.0:.1f} KB")
@@ -743,12 +771,14 @@ def run_coordinator(
 
     return {
         "scope": (
-            "16,384-token footprints are analytical component estimates; live TCP execution runs 5 steps with a "
+            f"16,384-token footprints are analytical component estimates; live TCP execution runs {steps} steps with a "
             "512-token microbatch (4x128). Coordinator constructs initial model template in memory before partitioning."
         ),
         "topology": f"coordinator({coord_device}) -> worker({worker_host}:{port})",
         "total_parameters": total_params,
         "probed_free_ram_mb": effective_free_ram_mb,
+        "effective_safe_cap_mb": round(effective_safe_cap_mb, 1),
+        **_execution_scope(worker_host),
         "analytical_projection_batch_tokens": batch_tokens,
         "executed_microbatch_tokens": exec_batch * exec_seq,
         "coordinator_loads_initial_model_template": True,
@@ -758,7 +788,9 @@ def run_coordinator(
         "laptop_a_sharded_footprint_mb": laptop_a_fp,
         "laptop_b_sharded_footprint_mb": laptop_b_fp,
         "sharded_fits_both_nodes_safely": sharded_fits_both_nodes,
-        "loss_converged": loss_improved,
+        "loss_converged": None,
+        "loss_decreased_over_executed_steps": loss_improved,
+        "loss_scope": "Observed endpoint comparison only; not convergence qualification",
         "steps": step_records,
         "telemetry": {
             "forward_packets": tel.forward_packets,
@@ -781,10 +813,16 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=5)
     parser.add_argument("--lr", type=float, default=5e-4)
     parser.add_argument("--safe-cap-mb", type=float, default=10000.0)
+    parser.add_argument("--report", type=Path, default=None, help="Output JSON path (defaults to the historical mesh report)")
     args = parser.parse_args()
 
+    if args.role in ("worker", "coordinator"):
+        auth_key = os.environ.get("OJASX_MESH_KEY")
+        if auth_key is None or len(auth_key.encode("utf-8")) < 32:
+            parser.error("Set OJASX_MESH_KEY to the same secret of at least 32 UTF-8 bytes on both machines")
+
     if args.role == "worker":
-        run_worker(port=args.port, dim=args.dim, num_layers=args.layers, lr=args.lr)
+        run_worker(port=args.port, dim=args.dim, num_layers=args.layers, lr=args.lr, auth_key=auth_key)
     elif args.role == "coordinator":
         res = run_coordinator(
             worker_host=args.worker_host,
@@ -794,8 +832,10 @@ def main() -> None:
             steps=args.steps,
             lr=args.lr,
             single_node_safe_cap_mb=args.safe_cap_mb,
+            auth_key=auth_key,
         )
-        report_path = Path(__file__).resolve().parents[1] / "reports" / "TWO_LAPTOP_PHYSICAL_MESH_REPORT.json"
+        report_path = args.report or (Path(__file__).resolve().parents[1] / "reports" / "TWO_LAPTOP_PHYSICAL_MESH_REPORT.json")
+        report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(
             json.dumps(
                 {
@@ -837,7 +877,8 @@ def main() -> None:
         finally:
             server.close()
 
-        report_path = Path(__file__).resolve().parents[1] / "reports" / "TWO_LAPTOP_PHYSICAL_MESH_REPORT.json"
+        report_path = args.report or (Path(__file__).resolve().parents[1] / "reports" / "TWO_LAPTOP_PHYSICAL_MESH_REPORT.json")
+        report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(
             json.dumps(
                 {
