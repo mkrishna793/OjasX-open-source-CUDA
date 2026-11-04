@@ -643,6 +643,13 @@ std::string tilelang_emit_universal_source(
     if (target_arch == "metal") {
         return tilelang_emit_metal_gemm_source(block_m, block_n, block_k, panel_size);
     }
+    TORCH_CHECK(block_m > 0 && block_n > 0 && block_k > 0,
+                "TileLang tile dimensions must be positive");
+    TORCH_CHECK(panel_size > 0 && (panel_size & (panel_size - 1)) == 0,
+                "TileLang swizzle panel size must be a positive power of two");
+    TORCH_CHECK(target_arch != "ascend" ||
+                (block_m % 16 == 0 && block_n % 16 == 0 && block_k % 16 == 0),
+                "TileLang Ascend tile dimensions must be positive multiples of 16");
 
     int64_t n_col_tiles = std::max<int64_t>(1, (block_n + 31) / 32);
     int64_t m_row_tiles = std::max<int64_t>(1, (block_m + 31) / 32);
@@ -867,7 +874,7 @@ std::string tilelang_emit_universal_source(
         code << "    asc_copy_ub2gm(Mask_gm, ub_mask, " << block_m << " * words_per_row * sizeof(int32_t));\n";
         code << "}\n";
     } else if (target_arch == "cpu") {
-        code << "// Emitted by OjasX x TileLang Universal CodeGen [Target: Multi-Core CPU AVX2/NEON + L1d/L2 Blocking]\n";
+        code << "// Emitted by OjasX x TileLang Universal CodeGen [Target: Portable CPU blocked C++ GEMM]\n";
         code << "#include \"tl_templates/cpu/gemm.h\"\n\n";
         code << "extern \"C\" void ojasx_tilelang_cpu_gemm_relu2_ballot_kernel(\n";
         code << "    const float* A, const float* B, const float* Bias,\n";
