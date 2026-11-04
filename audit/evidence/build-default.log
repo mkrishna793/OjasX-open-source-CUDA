@@ -1,0 +1,262 @@
+* Creating isolated environment: venv+pip...
+* Installing packages in isolated environment:
+  - setuptools>=68
+* Getting build dependencies for wheel...
+running egg_info
+writing ojasx_verified_core.egg-info/PKG-INFO
+writing dependency_links to ojasx_verified_core.egg-info/dependency_links.txt
+writing entry points to ojasx_verified_core.egg-info/entry_points.txt
+writing requirements to ojasx_verified_core.egg-info/requires.txt
+writing top-level names to ojasx_verified_core.egg-info/top_level.txt
+reading manifest file 'ojasx_verified_core.egg-info/SOURCES.txt'
+adding license file 'LICENSE'
+writing manifest file 'ojasx_verified_core.egg-info/SOURCES.txt'
+WARNING `project.license` as a TOML table is deprecated
+!!
+
+        ********************************************************************************
+        Please use a simple string containing a SPDX expression for `project.license`. You can also use `project.license-files`. (Both options available on setuptools>=77.0.0).
+
+        By 2027-Feb-18, you need to update your project and remove deprecated calls
+        or your builds will no longer be supported.
+
+        See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.
+        ********************************************************************************
+
+!!
+WARNING License classifiers are deprecated.
+!!
+
+        ********************************************************************************
+        Please consider removing the following classifiers in favor of a SPDX license expression:
+
+        License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)
+
+        See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.
+        ********************************************************************************
+
+!!
+WARNING License classifiers are deprecated.
+!!
+
+        ********************************************************************************
+        Please consider removing the following classifiers in favor of a SPDX license expression:
+
+        License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)
+
+        See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.
+        ********************************************************************************
+
+!!
+* Installed build dependency versions:
+  - setuptools==84.2.1
+* Building wheel...
+running bdist_wheel
+running build
+running build_py
+[OjasX setup.py] torch is absent in the build environment; using PyTorch fallback. For a native build, install torch and use --no-build-isolation.
+copying ojasx2/generated_holonomic_ops.py -> build/lib/ojasx2
+running egg_info
+writing ojasx_verified_core.egg-info/PKG-INFO
+writing dependency_links to ojasx_verified_core.egg-info/dependency_links.txt
+writing entry points to ojasx_verified_core.egg-info/entry_points.txt
+writing requirements to ojasx_verified_core.egg-info/requires.txt
+writing top-level names to ojasx_verified_core.egg-info/top_level.txt
+reading manifest file 'ojasx_verified_core.egg-info/SOURCES.txt'
+adding license file 'LICENSE'
+writing manifest file 'ojasx_verified_core.egg-info/SOURCES.txt'
+installing to build/bdist.linux-x86_64/wheel
+running install
+running install_lib
+creating build/bdist.linux-x86_64/wheel
+copying build/lib/ojasx.py -> build/bdist.linux-x86_64/wheel/.
+creating build/bdist.linux-x86_64/wheel/ojasx2
+copying build/lib/ojasx2/__init__.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/aot_holonomic_compiler.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/bilinear.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/cached_reverse.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/chamber_compiler.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/cli.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/compiler.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/contractions.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/coordinate_compiler.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/cotangent_quotient.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/dagger_attention.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/demand_algebra.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/dense_joint.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/devices.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/doctor.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/feature_core.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/fused_cross_entropy.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/fx_subgraph_compiler.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/generated_holonomic_ops.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/grad_free_optimizer.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/gradient_factor_compiler.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/holonomic_layers.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/holonomic_math_compiler.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/invariant_radial_compiler.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/lenses.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/logger.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/loss_compiler.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/loss_fx.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/math_foundation.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/mesh_hal.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/mlir_dialects.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/models.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/nonlinear.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/nonlinear_taylor_gpu.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/numerical_repairs.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/objective_compiler.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/openreg_backend.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/ops.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/planner.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/projections.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/radial_core.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/residuals.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/reversible.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/smart_router.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/spectral_coefficients.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/spectral_compiler.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/streamed.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/symplectic_engine.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/taylor_coefficients.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/tile_fallback.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/tile_hal.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/tilelang_kernels.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/trainer.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+copying build/lib/ojasx2/updater.py -> build/bdist.linux-x86_64/wheel/./ojasx2
+creating build/bdist.linux-x86_64/wheel/ojasx2/codegen
+copying build/lib/ojasx2/codegen/__init__.py -> build/bdist.linux-x86_64/wheel/./ojasx2/codegen
+copying build/lib/ojasx2/codegen/gen_holonomic_ops.py -> build/bdist.linux-x86_64/wheel/./ojasx2/codegen
+copying build/lib/ojasx2/codegen/holonomic_declarations.yaml -> build/bdist.linux-x86_64/wheel/./ojasx2/codegen
+creating build/bdist.linux-x86_64/wheel/ojasx2/math
+copying build/lib/ojasx2/math/__init__.py -> build/bdist.linux-x86_64/wheel/./ojasx2/math
+copying build/lib/ojasx2/math/adjoints.py -> build/bdist.linux-x86_64/wheel/./ojasx2/math
+creating build/bdist.linux-x86_64/wheel/ojasx2/math/csrc
+copying build/lib/ojasx2/math/csrc/__init__.py -> build/bdist.linux-x86_64/wheel/./ojasx2/math/csrc
+copying build/lib/ojasx2/math/inversion.py -> build/bdist.linux-x86_64/wheel/./ojasx2/math
+copying build/lib/ojasx2/math/lattice.py -> build/bdist.linux-x86_64/wheel/./ojasx2/math
+copying build/lib/ojasx2/math/streaming.py -> build/bdist.linux-x86_64/wheel/./ojasx2/math
+copying build/lib/ojasx2/math/symplectic.py -> build/bdist.linux-x86_64/wheel/./ojasx2/math
+creating build/bdist.linux-x86_64/wheel/ojasx2/csrc
+copying build/lib/ojasx2/csrc/ojasx_openreg_guard.cpp -> build/bdist.linux-x86_64/wheel/./ojasx2/csrc
+copying build/lib/ojasx2/csrc/ojasx_tile_kernels.cpp -> build/bdist.linux-x86_64/wheel/./ojasx2/csrc
+copying build/lib/ojasx2/csrc/ojasx_tilelang_metal.mm -> build/bdist.linux-x86_64/wheel/./ojasx2/csrc
+running install_egg_info
+Copying ojasx_verified_core.egg-info to build/bdist.linux-x86_64/wheel/./ojasx_verified_core-0.13.0-py3.11.egg-info
+running install_scripts
+creating build/bdist.linux-x86_64/wheel/ojasx_verified_core-0.13.0.dist-info/WHEEL
+creating '/tmp/ojasx-audit/dist-default/.tmp-t5odxcnm/ojasx_verified_core-0.13.0-py3-none-any.whl' and adding 'build/bdist.linux-x86_64/wheel' to it
+adding 'ojasx.py'
+adding 'ojasx2/__init__.py'
+adding 'ojasx2/aot_holonomic_compiler.py'
+adding 'ojasx2/bilinear.py'
+adding 'ojasx2/cached_reverse.py'
+adding 'ojasx2/chamber_compiler.py'
+adding 'ojasx2/cli.py'
+adding 'ojasx2/compiler.py'
+adding 'ojasx2/contractions.py'
+adding 'ojasx2/coordinate_compiler.py'
+adding 'ojasx2/cotangent_quotient.py'
+adding 'ojasx2/dagger_attention.py'
+adding 'ojasx2/demand_algebra.py'
+adding 'ojasx2/dense_joint.py'
+adding 'ojasx2/devices.py'
+adding 'ojasx2/doctor.py'
+adding 'ojasx2/feature_core.py'
+adding 'ojasx2/fused_cross_entropy.py'
+adding 'ojasx2/fx_subgraph_compiler.py'
+adding 'ojasx2/generated_holonomic_ops.py'
+adding 'ojasx2/grad_free_optimizer.py'
+adding 'ojasx2/gradient_factor_compiler.py'
+adding 'ojasx2/holonomic_layers.py'
+adding 'ojasx2/holonomic_math_compiler.py'
+adding 'ojasx2/invariant_radial_compiler.py'
+adding 'ojasx2/lenses.py'
+adding 'ojasx2/logger.py'
+adding 'ojasx2/loss_compiler.py'
+adding 'ojasx2/loss_fx.py'
+adding 'ojasx2/math_foundation.py'
+adding 'ojasx2/mesh_hal.py'
+adding 'ojasx2/mlir_dialects.py'
+adding 'ojasx2/models.py'
+adding 'ojasx2/nonlinear.py'
+adding 'ojasx2/nonlinear_taylor_gpu.py'
+adding 'ojasx2/numerical_repairs.py'
+adding 'ojasx2/objective_compiler.py'
+adding 'ojasx2/openreg_backend.py'
+adding 'ojasx2/ops.py'
+adding 'ojasx2/planner.py'
+adding 'ojasx2/projections.py'
+adding 'ojasx2/radial_core.py'
+adding 'ojasx2/residuals.py'
+adding 'ojasx2/reversible.py'
+adding 'ojasx2/smart_router.py'
+adding 'ojasx2/spectral_coefficients.py'
+adding 'ojasx2/spectral_compiler.py'
+adding 'ojasx2/streamed.py'
+adding 'ojasx2/symplectic_engine.py'
+adding 'ojasx2/taylor_coefficients.py'
+adding 'ojasx2/tile_fallback.py'
+adding 'ojasx2/tile_hal.py'
+adding 'ojasx2/tilelang_kernels.py'
+adding 'ojasx2/trainer.py'
+adding 'ojasx2/updater.py'
+adding 'ojasx2/codegen/__init__.py'
+adding 'ojasx2/codegen/gen_holonomic_ops.py'
+adding 'ojasx2/codegen/holonomic_declarations.yaml'
+adding 'ojasx2/csrc/ojasx_openreg_guard.cpp'
+adding 'ojasx2/csrc/ojasx_tile_kernels.cpp'
+adding 'ojasx2/csrc/ojasx_tilelang_metal.mm'
+adding 'ojasx2/math/__init__.py'
+adding 'ojasx2/math/adjoints.py'
+adding 'ojasx2/math/inversion.py'
+adding 'ojasx2/math/lattice.py'
+adding 'ojasx2/math/streaming.py'
+adding 'ojasx2/math/symplectic.py'
+adding 'ojasx2/math/csrc/__init__.py'
+adding 'ojasx_verified_core-0.13.0.dist-info/licenses/LICENSE'
+adding 'ojasx_verified_core-0.13.0.dist-info/METADATA'
+adding 'ojasx_verified_core-0.13.0.dist-info/WHEEL'
+adding 'ojasx_verified_core-0.13.0.dist-info/entry_points.txt'
+adding 'ojasx_verified_core-0.13.0.dist-info/top_level.txt'
+adding 'ojasx_verified_core-0.13.0.dist-info/RECORD'
+removing build/bdist.linux-x86_64/wheel
+WARNING `project.license` as a TOML table is deprecated
+!!
+
+        ********************************************************************************
+        Please use a simple string containing a SPDX expression for `project.license`. You can also use `project.license-files`. (Both options available on setuptools>=77.0.0).
+
+        By 2027-Feb-18, you need to update your project and remove deprecated calls
+        or your builds will no longer be supported.
+
+        See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.
+        ********************************************************************************
+
+!!
+WARNING License classifiers are deprecated.
+!!
+
+        ********************************************************************************
+        Please consider removing the following classifiers in favor of a SPDX license expression:
+
+        License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)
+
+        See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.
+        ********************************************************************************
+
+!!
+WARNING License classifiers are deprecated.
+!!
+
+        ********************************************************************************
+        Please consider removing the following classifiers in favor of a SPDX license expression:
+
+        License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)
+
+        See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.
+        ********************************************************************************
+
+!!
+Successfully built ojasx_verified_core-0.13.0-py3-none-any.whl

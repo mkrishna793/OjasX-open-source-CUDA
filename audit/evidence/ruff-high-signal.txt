@@ -1,0 +1,288 @@
+benchmark_13b_ojasx_test.py:105:13: F841 Local variable `max_safe_layers` is assigned to but never used
+benchmark_13b_ojasx_test.py:109:9: F841 Local variable `safe_halt_triggered` is assigned to but never used
+benchmark_1_25b_fp32_t4.py:251:5: F841 Local variable `total_training_time_sec` is assigned to but never used
+experiments/coordinate_compiler_initial.py:81:5: F841 Local variable `plan` is assigned to but never used
+ojasx.py:30:1: PLE0605 Invalid format for `__all__`, must be `tuple` or `list`
+ojasx2/__init__.py:205:31: F811 [*] Redefinition of unused `pack_model_e8` from line 163: `pack_model_e8` redefined here
+ojasx2/coordinate_compiler.py:81:5: F841 Local variable `plan` is assigned to but never used
+ojasx2/fx_subgraph_compiler.py:149:13: F841 Local variable `norm_dim` is assigned to but never used
+ojasx2/fx_subgraph_compiler.py:784:9: F841 Local variable `m` is assigned to but never used
+ojasx2/fx_subgraph_compiler.py:785:9: F841 Local variable `r` is assigned to but never used
+ojasx2/fx_subgraph_compiler.py:1011:13: F841 Local variable `q1_reconstructed` is assigned to but never used
+ojasx2/holonomic_layers.py:91:9: F841 Local variable `m` is assigned to but never used
+ojasx2/holonomic_layers.py:227:9: F841 Local variable `m` is assigned to but never used
+ojasx2/holonomic_math_compiler.py:479:5: F841 Local variable `r` is assigned to but never used
+ojasx2/mesh_hal.py:36:35: F811 [*] Redefinition of unused `Dict` from line 16: `Dict` redefined here
+ojasx2/mesh_hal.py:36:41: F811 [*] Redefinition of unused `List` from line 16: `List` redefined here
+ojasx2/mesh_hal.py:36:47: F811 [*] Redefinition of unused `Optional` from line 16: `Optional` redefined here
+ojasx2/mesh_hal.py:36:67: F811 [*] Redefinition of unused `Tuple` from line 16: `Tuple` redefined here
+ojasx2/mlir_dialects.py:2330:12: F811 [*] Redefinition of unused `logging` from line 29: `logging` redefined here
+ojasx2/mlir_dialects.py:2384:12: F811 [*] Redefinition of unused `logging` from line 29: `logging` redefined here
+ojasx2/mlir_dialects.py:2465:12: F811 [*] Redefinition of unused `logging` from line 29: `logging` redefined here
+ojasx2/mlir_dialects.py:2634:12: F811 [*] Redefinition of unused `logging` from line 29: `logging` redefined here
+ojasx2/nonlinear_taylor_gpu.py:40:5: F841 Local variable `k` is assigned to but never used
+ojasx2/numerical_repairs.py:159:9: F841 Local variable `value` is assigned to but never used
+ojasx2/numerical_repairs.py:163:8: F821 Undefined name `value`
+ojasx2/numerical_repairs.py:163:30: F821 Undefined name `value`
+ojasx2/numerical_repairs.py:165:38: F821 Undefined name `value`
+ojasx2/numerical_repairs.py:165:66: F821 Undefined name `higher`
+ojasx2/numerical_repairs.py:168:16: F821 Undefined name `value`
+ojasx2/smart_router.py:177:13: ISC004 Unparenthesized implicit string concatenation in collection
+ojasx2/smart_router.py:1373:31: F811 [*] Redefinition of unused `DaggerAttention` from line 54: `DaggerAttention` redefined here
+ojasx2/updater.py:260:5: F841 Local variable `force` is assigned to but never used
+tests/test_audit_fixes_b.py:159:5: F841 Local variable `D` is assigned to but never used
+tests/test_e8_lattice.py:192:5: F841 Local variable `orig_bytes` is assigned to but never used
+tests/test_hf_integration.py:60:5: F841 Local variable `opt` is assigned to but never used
+tests/test_hf_integration.py:97:5: F841 Local variable `opt` is assigned to but never used
+tests/test_symplectic_subgraph_compliance.py:290:9: F841 Local variable `y_ref` is assigned to but never used
+tests/test_symplectic_subgraph_compliance.py:293:9: F841 Local variable `y_sub` is assigned to but never used
+tests/test_symplectic_subgraph_compliance.py:361:5: F841 Local variable `example_input` is assigned to but never used
+tests/test_tile_hal.py:74:5: F841 Local variable `t0` is assigned to but never used
+tests/test_tile_hal.py:76:5: F841 Local variable `t1` is assigned to but never used
+tests/test_tilelang_and_root_e8.py:226:5: F841 Local variable `opt` is assigned to but never used
+tests/test_unified_kernels.py:279:9: F841 Local variable `y` is assigned to but never used
+tests/test_z3_grounded_invariants.py:317:5: F841 Local variable `delta_h` is assigned to but never used
+tools/bench_contractions.py:43:54: B023 Function definition does not bind loop variable `x`
+tools/bench_contractions.py:43:56: B023 Function definition does not bind loop variable `w1`
+tools/bench_contractions.py:43:60: B023 Function definition does not bind loop variable `w2`
+tools/bench_contractions.py:44:56: B023 Function definition does not bind loop variable `x`
+tools/bench_contractions.py:44:58: B023 Function definition does not bind loop variable `w1`
+tools/bench_contractions.py:44:61: B023 Function definition does not bind loop variable `w2`
+tools/bench_contractions.py:45:48: B023 Function definition does not bind loop variable `x`
+tools/bench_contractions.py:45:50: B023 Function definition does not bind loop variable `w1`
+tools/bench_contractions.py:45:53: B023 Function definition does not bind loop variable `w2`
+tools/bench_contractions.py:46:64: B023 Function definition does not bind loop variable `x`
+tools/bench_contractions.py:46:66: B023 Function definition does not bind loop variable `w1`
+tools/bench_contractions.py:46:69: B023 Function definition does not bind loop variable `w2`
+tools/bench_contractions.py:47:67: B023 Function definition does not bind loop variable `x`
+tools/bench_contractions.py:47:69: B023 Function definition does not bind loop variable `w2`
+tools/bench_contractions.py:47:72: B023 Function definition does not bind loop variable `w1`
+tools/bench_contractions.py:49:15: B023 Function definition does not bind loop variable `functions`
+tools/bench_contractions.py:50:46: B023 Function definition does not bind loop variable `x`
+tools/bench_contractions.py:50:48: B023 Function definition does not bind loop variable `w1`
+tools/bench_contractions.py:50:51: B023 Function definition does not bind loop variable `w2`
+tools/bench_contractions.py:50:55: B023 Function definition does not bind loop variable `g`
+tools/bench_streamed.py:43:33: B023 Function definition does not bind loop variable `a`
+tools/bench_streamed.py:43:35: B023 Function definition does not bind loop variable `b`
+tools/bench_streamed.py:43:79: B023 Function definition does not bind loop variable `a`
+tools/bench_streamed.py:43:81: B023 Function definition does not bind loop variable `b`
+tools/bench_streamed.py:44:54: B023 Function definition does not bind loop variable `a`
+tools/bench_streamed.py:44:56: B023 Function definition does not bind loop variable `b`
+tools/bench_streamed.py:51:23: B023 Function definition does not bind loop variable `fn`
+tools/bench_streamed.py:52:54: B023 Function definition does not bind loop variable `a`
+tools/bench_streamed.py:52:56: B023 Function definition does not bind loop variable `b`
+tools/bench_streamed.py:52:59: B023 Function definition does not bind loop variable `g`
+tools/certify_polynomial_roundoff.py:68:81: B023 Function definition does not bind loop variable `index`
+tools/coreml_contraction_probe.py:35:20: B023 Function definition does not bind loop variable `mode`
+tools/discover_nonlinear_taylor.py:63:81: B023 Function definition does not bind loop variable `coefficients`
+tools/discover_spectral_foundation.py:13:18: F841 Local variable `v` is assigned to but never used
+tools/math_structure.py:97:13: B023 Function definition does not bind loop variable `calls`
+tools/measure.py:61:66: B023 Function definition does not bind loop variable `mode`
+tools/measure_backend.py:35:19: B023 Function definition does not bind loop variable `fn`
+tools/measure_backend.py:35:22: B023 Function definition does not bind loop variable `x`
+tools/measure_backend.py:37:53: B023 Function definition does not bind loop variable `x`
+tools/measure_backend.py:37:56: B023 Function definition does not bind loop variable `params`
+tools/radial_core_research.py:57:66: B023 Function definition does not bind loop variable `xs`
+tools/radial_core_research.py:58:64: B023 Function definition does not bind loop variable `xs`
+tools/research_extensions.py:142:45: B023 Function definition does not bind loop variable `xs`
+tools/research_extensions.py:142:79: B023 Function definition does not bind loop variable `xs`
+tools/research_extensions.py:143:52: B023 Function definition does not bind loop variable `xs`
+tools/research_extensions.py:143:58: B023 Function definition does not bind loop variable `xs`
+tools/research_extensions.py:143:66: B023 Function definition does not bind loop variable `xs`
+tools/research_extensions.py:143:87: B023 Function definition does not bind loop variable `xs`
+tools/research_extensions.py:151:57: B023 Function definition does not bind loop variable `x`
+tools/research_extensions.py:151:59: B023 Function definition does not bind loop variable `w1`
+tools/research_extensions.py:151:62: B023 Function definition does not bind loop variable `b1`
+tools/research_extensions.py:151:67: B023 Function definition does not bind loop variable `w2`
+tools/research_extensions.py:151:70: B023 Function definition does not bind loop variable `b2`
+tools/research_extensions.py:152:51: B023 Function definition does not bind loop variable `x`
+tools/research_extensions.py:152:53: B023 Function definition does not bind loop variable `w1`
+tools/research_extensions.py:152:56: B023 Function definition does not bind loop variable `w2`
+tools/research_extensions.py:152:59: B023 Function definition does not bind loop variable `b1`
+tools/research_extensions.py:152:62: B023 Function definition does not bind loop variable `b2`
+tools/research_extensions.py:152:77: B023 Function definition does not bind loop variable `evidence`
+tools/research_extensions.py:164:63: B023 Function definition does not bind loop variable `x`
+tools/research_extensions.py:164:65: B023 Function definition does not bind loop variable `w1`
+tools/research_extensions.py:164:70: B023 Function definition does not bind loop variable `n`
+tools/research_extensions.py:164:74: B023 Function definition does not bind loop variable `gamma`
+tools/research_extensions.py:164:80: B023 Function definition does not bind loop variable `beta`
+tools/research_extensions.py:164:86: B023 Function definition does not bind loop variable `w2`
+tools/research_extensions.py:164:89: B023 Function definition does not bind loop variable `bias`
+tools/research_extensions.py:165:59: B023 Function definition does not bind loop variable `x`
+tools/research_extensions.py:165:61: B023 Function definition does not bind loop variable `w1`
+tools/research_extensions.py:165:64: B023 Function definition does not bind loop variable `w2`
+tools/research_extensions.py:165:67: B023 Function definition does not bind loop variable `gamma`
+tools/research_extensions.py:165:73: B023 Function definition does not bind loop variable `beta`
+tools/research_extensions.py:165:78: B023 Function definition does not bind loop variable `bias`
+tools/research_extensions.py:165:113: B023 Function definition does not bind loop variable `evidence`
+tools/research_extensions.py:166:58: B023 Function definition does not bind loop variable `x`
+tools/research_extensions.py:166:60: B023 Function definition does not bind loop variable `w1`
+tools/research_extensions.py:166:63: B023 Function definition does not bind loop variable `w2`
+tools/research_extensions.py:166:66: B023 Function definition does not bind loop variable `gamma`
+tools/research_extensions.py:166:72: B023 Function definition does not bind loop variable `beta`
+tools/research_extensions.py:166:77: B023 Function definition does not bind loop variable `bias`
+tools/run_end_to_end_improvements_benchmark.py:234:9: F841 Local variable `loss_nat` is assigned to but never used
+tools/run_end_to_end_improvements_benchmark.py:237:9: F841 Local variable `loss_holo` is assigned to but never used
+tools/run_end_to_end_improvements_benchmark.py:303:55: F841 Local variable `a_nat` is assigned to but never used
+tools/run_holonomic_opinfo_and_backendbench.py:350:5: F841 Local variable `start_mem` is assigned to but never used
+tools/run_official_benchmarks_suite.py:104:28: B023 Function definition does not bind loop variable `x`
+tools/run_official_benchmarks_suite.py:104:28: F821 Undefined name `x`
+tools/run_official_benchmarks_suite.py:104:32: B023 Function definition does not bind loop variable `d`
+tools/run_official_benchmarks_suite.py:104:37: B023 Function definition does not bind loop variable `g`
+tools/run_official_benchmarks_suite.py:104:37: F821 Undefined name `g`
+tools/run_official_benchmarks_suite.py:105:24: B023 Function definition does not bind loop variable `dy`
+tools/run_official_benchmarks_suite.py:105:24: F821 Undefined name `dy`
+tools/run_official_benchmarks_suite.py:106:13: B023 Function definition does not bind loop variable `x`
+tools/run_official_benchmarks_suite.py:106:13: F821 Undefined name `x`
+tools/run_official_benchmarks_suite.py:107:13: B023 Function definition does not bind loop variable `g`
+tools/run_official_benchmarks_suite.py:107:13: F821 Undefined name `g`
+tools/run_official_benchmarks_suite.py:111:35: B023 Function definition does not bind loop variable `x`
+tools/run_official_benchmarks_suite.py:111:35: F821 Undefined name `x`
+tools/run_official_benchmarks_suite.py:111:38: B023 Function definition does not bind loop variable `g`
+tools/run_official_benchmarks_suite.py:111:38: F821 Undefined name `g`
+tools/run_official_benchmarks_suite.py:112:24: B023 Function definition does not bind loop variable `dy`
+tools/run_official_benchmarks_suite.py:112:24: F821 Undefined name `dy`
+tools/run_official_benchmarks_suite.py:113:13: B023 Function definition does not bind loop variable `x`
+tools/run_official_benchmarks_suite.py:113:13: F821 Undefined name `x`
+tools/run_official_benchmarks_suite.py:114:13: B023 Function definition does not bind loop variable `g`
+tools/run_official_benchmarks_suite.py:114:13: F821 Undefined name `g`
+tools/run_official_benchmarks_suite.py:145:33: B023 Function definition does not bind loop variable `x`
+tools/run_official_benchmarks_suite.py:145:33: F821 Undefined name `x`
+tools/run_official_benchmarks_suite.py:145:36: B023 Function definition does not bind loop variable `wg`
+tools/run_official_benchmarks_suite.py:145:36: F821 Undefined name `wg`
+tools/run_official_benchmarks_suite.py:145:52: B023 Function definition does not bind loop variable `x`
+tools/run_official_benchmarks_suite.py:145:52: F821 Undefined name `x`
+tools/run_official_benchmarks_suite.py:145:55: B023 Function definition does not bind loop variable `wu`
+tools/run_official_benchmarks_suite.py:145:55: F821 Undefined name `wu`
+tools/run_official_benchmarks_suite.py:146:24: B023 Function definition does not bind loop variable `dy`
+tools/run_official_benchmarks_suite.py:146:24: F821 Undefined name `dy`
+tools/run_official_benchmarks_suite.py:147:13: B023 Function definition does not bind loop variable `x`
+tools/run_official_benchmarks_suite.py:147:13: F821 Undefined name `x`
+tools/run_official_benchmarks_suite.py:147:22: B023 Function definition does not bind loop variable `wg`
+tools/run_official_benchmarks_suite.py:147:22: F821 Undefined name `wg`
+tools/run_official_benchmarks_suite.py:147:32: B023 Function definition does not bind loop variable `wu`
+tools/run_official_benchmarks_suite.py:147:32: F821 Undefined name `wu`
+tools/run_official_benchmarks_suite.py:151:34: B023 Function definition does not bind loop variable `x`
+tools/run_official_benchmarks_suite.py:151:34: F821 Undefined name `x`
+tools/run_official_benchmarks_suite.py:151:37: B023 Function definition does not bind loop variable `wg`
+tools/run_official_benchmarks_suite.py:151:37: F821 Undefined name `wg`
+tools/run_official_benchmarks_suite.py:151:41: B023 Function definition does not bind loop variable `wu`
+tools/run_official_benchmarks_suite.py:151:41: F821 Undefined name `wu`
+tools/run_official_benchmarks_suite.py:152:24: B023 Function definition does not bind loop variable `dy`
+tools/run_official_benchmarks_suite.py:152:24: F821 Undefined name `dy`
+tools/run_official_benchmarks_suite.py:153:13: B023 Function definition does not bind loop variable `x`
+tools/run_official_benchmarks_suite.py:153:13: F821 Undefined name `x`
+tools/run_official_benchmarks_suite.py:153:22: B023 Function definition does not bind loop variable `wg`
+tools/run_official_benchmarks_suite.py:153:22: F821 Undefined name `wg`
+tools/run_official_benchmarks_suite.py:153:32: B023 Function definition does not bind loop variable `wu`
+tools/run_official_benchmarks_suite.py:153:32: F821 Undefined name `wu`
+tools/run_official_benchmarks_suite.py:185:45: B023 Function definition does not bind loop variable `h_in`
+tools/run_official_benchmarks_suite.py:185:45: F821 Undefined name `h_in`
+tools/run_official_benchmarks_suite.py:185:51: B023 Function definition does not bind loop variable `w_v`
+tools/run_official_benchmarks_suite.py:185:51: F821 Undefined name `w_v`
+tools/run_official_benchmarks_suite.py:185:57: B023 Function definition does not bind loop variable `targets`
+tools/run_official_benchmarks_suite.py:185:57: F821 Undefined name `targets`
+tools/run_official_benchmarks_suite.py:187:13: B023 Function definition does not bind loop variable `h_in`
+tools/run_official_benchmarks_suite.py:187:13: F821 Undefined name `h_in`
+tools/run_official_benchmarks_suite.py:187:25: B023 Function definition does not bind loop variable `w_v`
+tools/run_official_benchmarks_suite.py:187:25: F821 Undefined name `w_v`
+tools/run_official_benchmarks_suite.py:191:43: B023 Function definition does not bind loop variable `h_in`
+tools/run_official_benchmarks_suite.py:191:43: F821 Undefined name `h_in`
+tools/run_official_benchmarks_suite.py:191:49: B023 Function definition does not bind loop variable `w_v`
+tools/run_official_benchmarks_suite.py:191:49: F821 Undefined name `w_v`
+tools/run_official_benchmarks_suite.py:191:54: B023 Function definition does not bind loop variable `targets`
+tools/run_official_benchmarks_suite.py:191:54: F821 Undefined name `targets`
+tools/run_official_benchmarks_suite.py:193:13: B023 Function definition does not bind loop variable `h_in`
+tools/run_official_benchmarks_suite.py:193:13: F821 Undefined name `h_in`
+tools/run_official_benchmarks_suite.py:193:25: B023 Function definition does not bind loop variable `w_v`
+tools/run_official_benchmarks_suite.py:193:25: F821 Undefined name `w_v`
+tools/run_official_benchmarks_suite.py:233:33: B023 Function definition does not bind loop variable `x`
+tools/run_official_benchmarks_suite.py:233:33: F821 Undefined name `x`
+tools/run_official_benchmarks_suite.py:233:36: B023 Function definition does not bind loop variable `w`
+tools/run_official_benchmarks_suite.py:233:36: F821 Undefined name `w`
+tools/run_official_benchmarks_suite.py:234:24: B023 Function definition does not bind loop variable `dy`
+tools/run_official_benchmarks_suite.py:234:24: F821 Undefined name `dy`
+tools/run_official_benchmarks_suite.py:235:13: B023 Function definition does not bind loop variable `x`
+tools/run_official_benchmarks_suite.py:235:13: F821 Undefined name `x`
+tools/run_official_benchmarks_suite.py:235:22: B023 Function definition does not bind loop variable `w`
+tools/run_official_benchmarks_suite.py:235:22: F821 Undefined name `w`
+tools/run_official_benchmarks_suite.py:239:34: B023 Function definition does not bind loop variable `x`
+tools/run_official_benchmarks_suite.py:239:34: F821 Undefined name `x`
+tools/run_official_benchmarks_suite.py:239:37: B023 Function definition does not bind loop variable `w`
+tools/run_official_benchmarks_suite.py:239:37: F821 Undefined name `w`
+tools/run_official_benchmarks_suite.py:240:24: B023 Function definition does not bind loop variable `dy`
+tools/run_official_benchmarks_suite.py:240:24: F821 Undefined name `dy`
+tools/run_official_benchmarks_suite.py:241:13: B023 Function definition does not bind loop variable `x`
+tools/run_official_benchmarks_suite.py:241:13: F821 Undefined name `x`
+tools/run_official_benchmarks_suite.py:241:22: B023 Function definition does not bind loop variable `w`
+tools/run_official_benchmarks_suite.py:241:22: F821 Undefined name `w`
+tools/run_official_benchmarks_suite.py:412:17: B023 Function definition does not bind loop variable `eager_model`
+tools/run_official_benchmarks_suite.py:412:17: F821 Undefined name `eager_model`
+tools/run_official_benchmarks_suite.py:412:29: B023 Function definition does not bind loop variable `x_e`
+tools/run_official_benchmarks_suite.py:412:29: F821 Undefined name `x_e`
+tools/run_official_benchmarks_suite.py:412:34: B023 Function definition does not bind loop variable `targets`
+tools/run_official_benchmarks_suite.py:412:34: F821 Undefined name `targets`
+tools/run_official_benchmarks_suite.py:414:13: B023 Function definition does not bind loop variable `eager_model`
+tools/run_official_benchmarks_suite.py:414:13: F821 Undefined name `eager_model`
+tools/run_official_benchmarks_suite.py:415:13: B023 Function definition does not bind loop variable `x_e`
+tools/run_official_benchmarks_suite.py:415:13: F821 Undefined name `x_e`
+tools/run_official_benchmarks_suite.py:419:17: B023 Function definition does not bind loop variable `holo_model`
+tools/run_official_benchmarks_suite.py:419:17: F821 Undefined name `holo_model`
+tools/run_official_benchmarks_suite.py:419:28: B023 Function definition does not bind loop variable `x_h`
+tools/run_official_benchmarks_suite.py:419:28: F821 Undefined name `x_h`
+tools/run_official_benchmarks_suite.py:419:33: B023 Function definition does not bind loop variable `targets`
+tools/run_official_benchmarks_suite.py:419:33: F821 Undefined name `targets`
+tools/run_official_benchmarks_suite.py:421:13: B023 Function definition does not bind loop variable `comp_base`
+tools/run_official_benchmarks_suite.py:421:13: F821 Undefined name `comp_base`
+tools/run_official_benchmarks_suite.py:422:13: B023 Function definition does not bind loop variable `x_h`
+tools/run_official_benchmarks_suite.py:422:13: F821 Undefined name `x_h`
+tools/run_official_benchmarks_suite.py:643:5: F841 Local variable `virtual_gpus` is assigned to but never used
+tools/run_official_benchmarks_suite.py:668:34: F841 Local variable `fake_mode` is assigned to but never used
+tools/run_real_world_cpp_and_mesh_verification.py:88:5: F841 Local variable `bench_results` is assigned to but never used
+tools/scale_workloads.py:26:55: B023 Function definition does not bind loop variable `xs`
+tools/scale_workloads.py:27:53: B023 Function definition does not bind loop variable `xs`
+tools/scale_workloads.py:42:31: B023 Function definition does not bind loop variable `model`
+tools/scale_workloads.py:42:37: B023 Function definition does not bind loop variable `x`
+tools/scale_workloads.py:42:54: B023 Function definition does not bind loop variable `compiled`
+tools/scale_workloads.py:42:63: B023 Function definition does not bind loop variable `x`
+tools/search_nonlinear_gpu.py:162:51: B023 Function definition does not bind loop variable `kind`
+tools/search_nonlinear_gpu.py:162:97: B023 Function definition does not bind loop variable `kind`
+tools/test_broad_foundation.py:101:86: B023 Function definition does not bind loop variable `gamma`
+tools/test_broad_foundation.py:102:53: B023 Function definition does not bind loop variable `gamma`
+tools/test_broad_foundation.py:103:57: B023 Function definition does not bind loop variable `gamma`
+tools/test_broad_foundation.py:104:55: B023 Function definition does not bind loop variable `gamma`
+tools/test_broad_foundation.py:113:46: B023 Function definition does not bind loop variable `builder`
+tools/test_broad_foundation.py:113:62: B023 Function definition does not bind loop variable `g`
+tools/test_broad_foundation.py:114:73: B023 Function definition does not bind loop variable `fun`
+tools/test_broad_foundation.py:114:80: B023 Function definition does not bind loop variable `g`
+tools/test_broad_foundation.py:167:25: B023 Function definition does not bind loop variable `fun`
+tools/test_broad_foundation.py:187:23: B023 Function definition does not bind loop variable `a`
+tools/test_broad_foundation.py:187:25: B023 Function definition does not bind loop variable `b`
+tools/test_broad_foundation.py:187:62: B023 Function definition does not bind loop variable `a`
+tools/test_broad_foundation.py:187:64: B023 Function definition does not bind loop variable `b`
+tools/test_broad_foundation.py:187:67: B023 Function definition does not bind loop variable `g`
+tools/test_broad_foundation.py:205:35: B023 Function definition does not bind loop variable `excluded`
+tools/test_broad_foundation.py:205:44: B023 Function definition does not bind loop variable `saved`
+tools/test_demand_gpu.py:79:92: F841 Local variable `ev` is assigned to but never used
+tools/test_feature_core.py:60:39: B023 Function definition does not bind loop variable `degree`
+tools/test_feature_core.py:63:66: B023 Function definition does not bind loop variable `degree`
+tools/test_feature_core.py:76:43: B023 Function definition does not bind loop variable `degree`
+tools/test_feature_core.py:77:55: B023 Function definition does not bind loop variable `degree`
+tools/test_feature_core.py:116:35: B023 Function definition does not bind loop variable `fresh`
+tools/test_feature_core.py:128:56: B023 Function definition does not bind loop variable `dtype`
+tools/test_feature_core.py:140:26: B023 Function definition does not bind loop variable `graph`
+tools/test_feature_core.py:140:32: B023 Function definition does not bind loop variable `native`
+tools/test_feature_core.py:141:26: B023 Function definition does not bind loop variable `graph`
+tools/test_foundation_edges.py:105:75: B023 Function definition does not bind loop variable `kind`
+tools/test_foundation_edges.py:106:56: B023 Function definition does not bind loop variable `fun`
+tools/test_numerical_repairs_gpu.py:30:45: B023 Function definition does not bind loop variable `a`
+tools/test_numerical_repairs_gpu.py:30:47: B023 Function definition does not bind loop variable `u`
+tools/test_numerical_repairs_gpu.py:30:60: B023 Function definition does not bind loop variable `eps`
+tools/test_numerical_repairs_gpu.py:31:57: B023 Function definition does not bind loop variable `u`
+tools/test_numerical_repairs_gpu.py:31:60: B023 Function definition does not bind loop variable `a`
+tools/test_numerical_repairs_gpu.py:31:63: B023 Function definition does not bind loop variable `eps`
+tools/test_numerical_repairs_gpu.py:66:71: B023 Function definition does not bind loop variable `labels`
+tools/test_numerical_repairs_gpu.py:70:74: B023 Function definition does not bind loop variable `labels`
+tools/test_production_pytorch_subsystems.py:179:5: F841 Local variable `dev_mod` is assigned to but never used
+Found 286 errors.
+[*] 10 fixable with `--fix` (38 unsafe fixes available with `--fix --unsafe-fixes`).

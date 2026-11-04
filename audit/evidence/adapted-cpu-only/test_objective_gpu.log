@@ -1,0 +1,26 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[08:39:06] [OjasX INFO] ojasx2.tile_fallback: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+[08:39:06] [OjasX INFO] ojasx2.tile_fallback: Tile fallbacks registration completed successfully.
+GPU full objective gelu_mlp
+GPU full objective silu_mlp
+GPU full objective shared_residual
+GPU full objective custom_sine
+GPU full objective conv_silu
+GPU full objective causal_attention
+GPU Gram (128, 8, 512) 6701
+GPU Gram (128, 8, 512) 6702
+GPU Gram (128, 8, 512) 6703
+GPU Gram (1024, 16, 2048) 6701
+GPU Gram (1024, 16, 2048) 6702
+GPU Gram (1024, 16, 2048) 6703
+GPU Gram (2048, 64, 4096) 6701
+GPU Gram (2048, 64, 4096) 6702
+GPU Gram (2048, 64, 4096) 6703
+GPU memory scaling 128
+GPU memory scaling 512
+GPU memory scaling 2048
+GPU zero-weight elimination 7801
+GPU zero-weight elimination 7802
+GPU zero-weight elimination 7803
+failed_scoped_objective_gpu

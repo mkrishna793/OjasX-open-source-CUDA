@@ -1,0 +1,6 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[08:43:36] [OjasX INFO] ojasx2.tile_fallback: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+[08:43:36] [OjasX INFO] ojasx2.tile_fallback: Tile fallbacks registration completed successfully.
+passed_scoped_demand_gpu 70 cases; failures []
+speed [('gelu', 2.1783025285816078), ('swiglu', 2.098592987532287), ('gelu', 2.1301010351872347), ('swiglu', 2.154473558112377), ('gelu', 2.132830792477283), ('swiglu', 2.1076329660668347)]

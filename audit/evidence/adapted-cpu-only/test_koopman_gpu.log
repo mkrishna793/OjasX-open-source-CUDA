@@ -1,0 +1,10 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[08:39:51] [OjasX INFO] ojasx2.tile_fallback: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+[08:39:51] [OjasX INFO] ojasx2.tile_fallback: Tile fallbacks registration completed successfully.
+GPU Koopman (128, 16, 8)
+GPU Koopman (512, 32, 32)
+GPU Koopman (512, 32, 64)
+GPU Koopman (512, 32, 32, False)
+GPU Koopman (512, 32, 64, False)
+GPU completed 0 accuracy failures; 0 edge failures

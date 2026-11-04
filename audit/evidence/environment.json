@@ -1,0 +1,11 @@
+{
+  "python": "3.11.2",
+  "platform": "Linux-6.1.158+-x86_64-with-glibc2.36",
+  "torch": "2.15.0+cu132",
+  "transformers": "5.22.1",
+  "cuda_available": false,
+  "mps_available": false,
+  "cpu_count": 2,
+  "memory_gib_approx": 3.8,
+  "swap": false
+}

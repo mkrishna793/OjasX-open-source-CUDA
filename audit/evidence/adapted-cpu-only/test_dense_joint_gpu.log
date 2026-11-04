@@ -1,0 +1,11 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[08:42:00] [OjasX INFO] ojasx2.tile_fallback: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+[08:42:00] [OjasX INFO] ojasx2.tile_fallback: Tile fallbacks registration completed successfully.
+USDT:2026-11-03 08:42:02 2807:2807 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-11-03 08:42:02 2807:2807 SyncActivityProfilerHandler.cpp:46] profiler_stop
+ERROR:2026-11-03 08:42:02 2807:2807 DeviceProperties.cpp:56] gpuGetDeviceCount failed with code 35
+USDT:2026-11-03 08:42:02 2807:2807 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-11-03 08:42:02 2807:2807 SyncActivityProfilerHandler.cpp:46] profiler_stop
+passed_scoped_dense_gpu 68 cases; failures []
+speed []

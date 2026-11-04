@@ -1,0 +1,15 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[08:39:31] [OjasX INFO] ojasx2.tile_fallback: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+[08:39:31] [OjasX INFO] ojasx2.tile_fallback: Tile fallbacks registration completed successfully.
+Traceback (most recent call last):
+  File "/tmp/ojasx-audit/adapted-run/tools/test_numerical_repairs_gpu.py", line 158, in <module>
+    if __name__=="__main__":main()
+                            ^^^^^^
+  File "/tmp/ojasx-audit/adapted-run/tools/test_numerical_repairs_gpu.py", line 72, in main
+    selected, grads=checked_value_and_grad(native,candidate,operands,evidence=evidence)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/ojasx-audit/adapted-run/ojasx2/numerical_repairs.py", line 163, in checked_value_and_grad
+    if value.numel() != 1 or value.device.type not in ("mps", "cuda", "cpu", "xpu", "rocm"):
+       ^^^^^
+NameError: name 'value' is not defined. Did you mean: 'False'?

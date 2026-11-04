@@ -1,0 +1,10 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_______________ test_platform_candidates_and_failed_native_load ________________
+tests/test_review_regressions.py:106: in test_platform_candidates_and_failed_native_load
+    assert "incompatible ABI" in hal.tile_kernel_status()["load_errors"][0]
+                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   IndexError: list index out of range
+=========================== short test summary info ============================
+FAILED tests/test_review_regressions.py::test_platform_candidates_and_failed_native_load - IndexError: list index out of range
+1 failed, 23 deselected in 1.47s

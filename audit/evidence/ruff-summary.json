@@ -1,0 +1,355 @@
+{
+  "total_diagnostics": 2545,
+  "by_rule": {
+    "UP006": 422,
+    "UP045": 421,
+    "F401": 402,
+    "I001": 285,
+    "B023": 177,
+    "C408": 172,
+    "UP035": 128,
+    "BLE001": 79,
+    "PLR0402": 66,
+    "RUF059": 66,
+    "F821": 60,
+    "UP007": 40,
+    "S110": 38,
+    "F841": 37,
+    "FURB167": 27,
+    "F541": 21,
+    "PLW1510": 11,
+    "F811": 10,
+    "PLC0206": 9,
+    "FA100": 9,
+    "RUF022": 9,
+    "SIM102": 7,
+    "EXE001": 5,
+    "SIM114": 3,
+    "PIE790": 3,
+    "TRY004": 3,
+    "PLW0602": 3,
+    "SIM117": 3,
+    "RUF046": 3,
+    "UP031": 3,
+    "PIE810": 2,
+    "UP037": 2,
+    "SIM103": 2,
+    "RUF013": 2,
+    "RUF015": 2,
+    "PLR0133": 2,
+    "PLR1730": 1,
+    "PLE0605": 1,
+    "B008": 1,
+    "FURB136": 1,
+    "B010": 1,
+    "ISC004": 1,
+    "SIM101": 1,
+    "DTZ003": 1,
+    "PIE808": 1,
+    "SIM115": 1,
+    "FA102": 1
+  },
+  "f821": [
+    {
+      "file": "ojasx2/numerical_repairs.py",
+      "line": 163,
+      "message": "Undefined name `value`"
+    },
+    {
+      "file": "ojasx2/numerical_repairs.py",
+      "line": 163,
+      "message": "Undefined name `value`"
+    },
+    {
+      "file": "ojasx2/numerical_repairs.py",
+      "line": 165,
+      "message": "Undefined name `value`"
+    },
+    {
+      "file": "ojasx2/numerical_repairs.py",
+      "line": 165,
+      "message": "Undefined name `higher`"
+    },
+    {
+      "file": "ojasx2/numerical_repairs.py",
+      "line": 168,
+      "message": "Undefined name `value`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 104,
+      "message": "Undefined name `x`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 104,
+      "message": "Undefined name `g`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 105,
+      "message": "Undefined name `dy`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 106,
+      "message": "Undefined name `x`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 107,
+      "message": "Undefined name `g`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 111,
+      "message": "Undefined name `x`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 111,
+      "message": "Undefined name `g`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 112,
+      "message": "Undefined name `dy`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 113,
+      "message": "Undefined name `x`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 114,
+      "message": "Undefined name `g`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 145,
+      "message": "Undefined name `x`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 145,
+      "message": "Undefined name `wg`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 145,
+      "message": "Undefined name `x`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 145,
+      "message": "Undefined name `wu`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 146,
+      "message": "Undefined name `dy`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 147,
+      "message": "Undefined name `x`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 147,
+      "message": "Undefined name `wg`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 147,
+      "message": "Undefined name `wu`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 151,
+      "message": "Undefined name `x`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 151,
+      "message": "Undefined name `wg`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 151,
+      "message": "Undefined name `wu`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 152,
+      "message": "Undefined name `dy`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 153,
+      "message": "Undefined name `x`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 153,
+      "message": "Undefined name `wg`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 153,
+      "message": "Undefined name `wu`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 185,
+      "message": "Undefined name `h_in`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 185,
+      "message": "Undefined name `w_v`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 185,
+      "message": "Undefined name `targets`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 187,
+      "message": "Undefined name `h_in`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 187,
+      "message": "Undefined name `w_v`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 191,
+      "message": "Undefined name `h_in`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 191,
+      "message": "Undefined name `w_v`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 191,
+      "message": "Undefined name `targets`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 193,
+      "message": "Undefined name `h_in`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 193,
+      "message": "Undefined name `w_v`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 233,
+      "message": "Undefined name `x`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 233,
+      "message": "Undefined name `w`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 234,
+      "message": "Undefined name `dy`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 235,
+      "message": "Undefined name `x`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 235,
+      "message": "Undefined name `w`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 239,
+      "message": "Undefined name `x`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 239,
+      "message": "Undefined name `w`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 240,
+      "message": "Undefined name `dy`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 241,
+      "message": "Undefined name `x`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 241,
+      "message": "Undefined name `w`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 412,
+      "message": "Undefined name `eager_model`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 412,
+      "message": "Undefined name `x_e`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 412,
+      "message": "Undefined name `targets`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 414,
+      "message": "Undefined name `eager_model`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 415,
+      "message": "Undefined name `x_e`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 419,
+      "message": "Undefined name `holo_model`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 419,
+      "message": "Undefined name `x_h`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 419,
+      "message": "Undefined name `targets`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 421,
+      "message": "Undefined name `comp_base`"
+    },
+    {
+      "file": "tools/run_official_benchmarks_suite.py",
+      "line": 422,
+      "message": "Undefined name `x_h`"
+    }
+  ],
+  "triage": "55 official-benchmark F821 diagnostics are closure/del false positives; five numerical_repairs references are real."
+}

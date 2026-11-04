@@ -1,0 +1,9 @@
+....F                                                                    [100%]
+=================================== FAILURES ===================================
+___________________ test_backendbench_workload_lora_backbone ___________________
+tests/test_backendbench_matrix.py:537: in test_backendbench_workload_lora_backbone
+    assert res["tape_reduction_pct"] > 20.0
+E   assert 0.0 > 20.0
+=========================== short test summary info ============================
+FAILED tests/test_backendbench_matrix.py::test_backendbench_workload_lora_backbone - assert 0.0 > 20.0
+1 failed, 4 passed, 2 deselected in 7.04s

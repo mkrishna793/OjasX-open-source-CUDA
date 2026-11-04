@@ -1,0 +1,5 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+native originally available: False
+bitrate=2.0 scales=6 accepted_native_shape=True: RuntimeError: shape '[4, -1]' is invalid for input of size 6
+bitrate=1.5 scales=6 accepted_native_shape=True: RuntimeError: shape '[4, -1]' is invalid for input of size 6

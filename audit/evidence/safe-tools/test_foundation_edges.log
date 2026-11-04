@@ -1,0 +1,19 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[08:36:56] [OjasX INFO] ojasx2.tile_fallback: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+[08:36:56] [OjasX INFO] ojasx2.tile_fallback: Tile fallbacks registration completed successfully.
+Traceback (most recent call last):
+  File "/tmp/ojasx-audit/tool-run/tools/test_foundation_edges.py", line 187, in <module>
+    if __name__=='__main__':main()
+                            ^^^^^^
+  File "/tmp/ojasx-audit/tool-run/tools/test_foundation_edges.py", line 178, in main
+    report['exact_extraction']=extracted()
+                               ^^^^^^^^^^^
+  File "/tmp/ojasx-audit/tool-run/tools/test_foundation_edges.py", line 18, in extracted
+    p=subprocess.Popen([str(ROOT/'rocq/extracted/ojasx_refined_cli')],stdin=subprocess.PIPE,stdout=subprocess.PIPE,text=True)
+      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/subprocess.py", line 1024, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+  File "/usr/lib/python3.11/subprocess.py", line 1901, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+FileNotFoundError: [Errno 2] No such file or directory: '/tmp/ojasx-audit/tool-run/rocq/extracted/ojasx_refined_cli'

@@ -1,0 +1,96 @@
+{
+  "warning": "CPU-adapted temporary-source diagnostic only; not MPS/CUDA performance, memory, or hardware qualification. Source and logs are not a product patch.",
+  "results": {
+    "coordinate-gpu.json": {
+      "status": "completed",
+      "device": "cpu",
+      "scope": "Positive coordinate-wise trainable power/scale chains only; no dense nonlinear layer or generic model coverage. Exact-real identities; FP32 qualification, not bit equivalence.",
+      "accuracy_failures": 0,
+      "edge_failures": 0
+    },
+    "koopman-gpu.json": {
+      "status": "completed",
+      "device": "cpu",
+      "scope": "Exact-real finite invariant subspace for a trainable triangular nonlinear recurrence, preserving shared or per-stage original parameters. Sampled FP32 tolerance; no generic dense activation or total peak-memory guarantee.",
+      "accuracy_failures": 0,
+      "edge_failures": 0
+    },
+    "dense-gpu-quick.json": {
+      "status": "passed_scoped_dense_gpu",
+      "device": "cpu",
+      "scope": null
+    },
+    "cotangent-quotient-gpu.json": {
+      "status": "passed_scoped_cotangent_gpu",
+      "device": "cpu",
+      "scope": null
+    },
+    "demand-gpu.json": {
+      "status": "passed_scoped_demand_gpu",
+      "device": "cpu",
+      "scope": null
+    },
+    "invariant-composition-gpu.json": {
+      "status": "completed_with_explicit_admission_policy",
+      "device": "cpu",
+      "scope": null,
+      "failures": 0
+    },
+    "loss-gpu.json": {
+      "status": "failed_scoped_loss_gpu",
+      "device": "cpu",
+      "scope": null
+    },
+    "loss-fx-gpu.json": {
+      "status": "passed_scoped_loss_fx",
+      "device": "cpu",
+      "scope": "Seven bounded FX graphs; no arbitrary Python effects, dynamic trace capture or portable backend certification"
+    },
+    "objective-gpu.json": {
+      "status": "failed_scoped_objective_gpu",
+      "device": "cpu",
+      "scope": "Bounded FP32 MPS full objectives and all original gradients; exact-real rewrites with measured floating errors; no global IEEE/latency/total-memory guarantee. Guard declarations do not certify arbitrary callbacks.",
+      "large_gram_errors": [
+        {
+          "shape": [
+            2048,
+            64,
+            4096
+          ],
+          "seed": 6701,
+          "loss_error": {
+            "max_abs": 5.0693750381469727e-05,
+            "relative_l2": 0.0004060944193042815,
+            "passed": false
+          }
+        },
+        {
+          "shape": [
+            2048,
+            64,
+            4096
+          ],
+          "seed": 6702,
+          "loss_error": {
+            "max_abs": 5.046278238296509e-05,
+            "relative_l2": 0.00040875616832636297,
+            "passed": false
+          }
+        },
+        {
+          "shape": [
+            2048,
+            64,
+            4096
+          ],
+          "seed": 6703,
+          "loss_error": {
+            "max_abs": 5.0455331802368164e-05,
+            "relative_l2": 0.00040253091719932854,
+            "passed": false
+          }
+        }
+      ]
+    }
+  }
+}

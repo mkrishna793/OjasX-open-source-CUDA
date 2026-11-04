@@ -1,0 +1,23 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[08:39:59] [OjasX INFO] ojasx2.tile_fallback: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+[08:39:59] [OjasX INFO] ojasx2.tile_fallback: Tile fallbacks registration completed successfully.
+GPU polynomial (512, 1, 1024, 2) gelu 4
+GPU polynomial (512, 1, 1024, 2) gelu 8
+GPU polynomial (512, 1, 1024, 2) gelu 12
+GPU polynomial (512, 1, 1024, 2) silu 4
+GPU polynomial (512, 1, 1024, 2) silu 8
+GPU polynomial (512, 1, 1024, 2) silu 12
+GPU polynomial (512, 2, 1024, 2) gelu 4
+GPU polynomial (512, 2, 1024, 2) gelu 8
+GPU polynomial (512, 2, 1024, 2) gelu 12
+GPU polynomial (512, 2, 1024, 2) silu 4
+GPU polynomial (512, 2, 1024, 2) silu 8
+GPU polynomial (512, 2, 1024, 2) silu 12
+GPU large spectral 4201 gelu
+GPU large spectral 4201 silu
+GPU large spectral 4202 gelu
+GPU large spectral 4202 silu
+GPU large spectral 4203 gelu
+GPU large spectral 4203 silu
+GPU narrow scaling 4251 gelu

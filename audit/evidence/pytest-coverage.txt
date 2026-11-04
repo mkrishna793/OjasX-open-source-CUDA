@@ -1,0 +1,60 @@
+.....................................................s.................. [  7%]
+.........................................s.............................. [ 15%]
+..........sssss......................................................... [ 22%]
+........................................................................ [ 30%]
+.........................sss..............FF............................ [ 37%]
+.........................................................sssssssssssssss [ 45%]
+sssssssssssssssssssssssssssssssssssssssssss............................. [ 52%]
+........................................................................ [ 60%]
+........................................................................ [ 67%]
+........................................................................ [ 75%]
+...................................................................F.... [ 82%]
+.....F.................................................................. [ 90%]
+.............................F.......................................... [ 97%]
+.......................                                                  [100%]
+=================================== FAILURES ===================================
+_______________ test_tilelang_metal_simdgroup_and_ballot_opcheck _______________
+tests/test_holonomic_production_engine.py:248: in test_tilelang_metal_simdgroup_and_ballot_opcheck
+    assert "rasterization2DMLX" in msl
+E   AssertionError: assert 'rasterization2DMLX' in '// Emitted by OjasX x TileLang CodeGenTileLangMetal\n#include <metal_stdlib>\n#include <metal_simdgroup>\n#include <m... acc[0]);\n    simdgroup_store(acc[0], &Cs[0], 36, ulong2(0, 0), false);\n    simd_vote vote = simd_ballot(true);\n}\n'
+_______________ test_tilelang_universal_all_6_hardware_backends ________________
+tests/test_holonomic_production_engine.py:300: in test_tilelang_universal_all_6_hardware_backends
+    assert marker in src, f"Missing {marker} in {arch} kernel source"
+E   AssertionError: Missing __ballot_sync(0xffffffffu, is_pos) in cuda kernel source
+E   assert '__ballot_sync(0xffffffffu, is_pos)' in '// Emitted by OjasX x TileLang Universal CodeGen [Target: NVIDIA CUDA sm_80/sm_90]\n#include <cuda_runtime.h>\n#inclu...);\n    __shared__ alignas(128) float As[32][36];\n    unsigned int mask_word = __ballot_sync(0xffffffffu, true);\n}\n'
+_______________ test_platform_candidates_and_failed_native_load ________________
+tests/test_review_regressions.py:106: in test_platform_candidates_and_failed_native_load
+    assert "incompatible ABI" in hal.tile_kernel_status()["load_errors"][0]
+                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   IndexError: list index out of range
+________________ test_fix5_ascend_codegen_complete_ub_epilogue _________________
+tests/test_reviewer_deep_fixes.py:182: in test_fix5_ascend_codegen_complete_ub_epilogue
+    assert "ub_mask" in src
+E   assert 'ub_mask' in '// Emitted by OjasX x TileLang Universal CodeGen [Target: Huawei Ascend 910B AICore Cube + UB]\n#include "tl_template..._ascend_gemm_relu2_ballot_kernel() {\n    // ascend_gemm_l1<32, 16, 32, 16, true, float, float> & asc_copy_l0c2ub\n}\n'
+_______________________ test_check_for_updates_available _______________________
+tests/test_updater.py:57: in test_check_for_updates_available
+    assert has_update is True
+E   assert False is True
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_audit_fixes_a.py:203: Apple Silicon MPS not available on this host
+SKIPPED [1] tests/test_audit_fixes_d.py:29: MPS not available
+SKIPPED [4] tests/test_cached_reverse.py:94: MPS unavailable
+SKIPPED [1] tests/test_cached_reverse.py:114: MPS unavailable
+SKIPPED [1] tests/test_fused_e8_gemm.py:158: Native C++ ternary kernel not compiled in this build
+SKIPPED [1] tests/test_hardware.py:11: cuda hardware unavailable; no hardware verification claimed
+SKIPPED [1] tests/test_hardware.py:11: mps hardware unavailable; no hardware verification claimed
+SKIPPED [14] tests/test_mps_qualification.py:29: MPS unavailable
+SKIPPED [7] tests/test_mps_qualification.py:47: MPS unavailable
+SKIPPED [6] tests/test_mps_qualification.py:71: MPS unavailable
+SKIPPED [2] tests/test_mps_qualification.py:95: MPS unavailable
+SKIPPED [2] tests/test_mps_qualification.py:110: MPS unavailable
+SKIPPED [3] tests/test_mps_qualification.py:124: MPS unavailable
+SKIPPED [16] tests/test_mps_qualification.py:136: MPS unavailable
+SKIPPED [8] tests/test_mps_qualification.py:151: MPS unavailable
+FAILED tests/test_holonomic_production_engine.py::test_tilelang_metal_simdgroup_and_ballot_opcheck - AssertionError: assert 'rasterization2DMLX' in '// Emitted by OjasX x TileLang CodeGenTileLangMetal\n#include <metal_stdlib>\n#include <metal_simdgroup>\n#include <m... acc[0]);\n    simdgroup_store(acc[0], &Cs[0], 36, ulong2(0, 0), false);\n    simd_vote vote = simd_ballot(true);\n}\n'
+FAILED tests/test_holonomic_production_engine.py::test_tilelang_universal_all_6_hardware_backends - AssertionError: Missing __ballot_sync(0xffffffffu, is_pos) in cuda kernel source
+assert '__ballot_sync(0xffffffffu, is_pos)' in '// Emitted by OjasX x TileLang Universal CodeGen [Target: NVIDIA CUDA sm_80/sm_90]\n#include <cuda_runtime.h>\n#inclu...);\n    __shared__ alignas(128) float As[32][36];\n    unsigned int mask_word = __ballot_sync(0xffffffffu, true);\n}\n'
+FAILED tests/test_review_regressions.py::test_platform_candidates_and_failed_native_load - IndexError: list index out of range
+FAILED tests/test_reviewer_deep_fixes.py::test_fix5_ascend_codegen_complete_ub_epilogue - assert 'ub_mask' in '// Emitted by OjasX x TileLang Universal CodeGen [Target: Huawei Ascend 910B AICore Cube + UB]\n#include "tl_template..._ascend_gemm_relu2_ballot_kernel() {\n    // ascend_gemm_l1<32, 16, 32, 16, true, float, float> & asc_copy_l0c2ub\n}\n'
+FAILED tests/test_updater.py::test_check_for_updates_available - assert False is True
+5 failed, 886 passed, 68 skipped in 74.54s (0:01:14)

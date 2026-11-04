@@ -1,0 +1,104 @@
+{
+  "reports/INDUSTRIAL_ALL_LEVEL_BENCHMARK_SCORE.json": {
+    "entries": 4,
+    "stale": [
+      "ojasx2/holonomic_math_compiler.py",
+      "ojasx2/mesh_hal.py",
+      "ojasx2/tile_hal.py"
+    ],
+    "missing": [],
+    "matching_count": 1
+  },
+  "reports/TWO_LAPTOP_PHYSICAL_MESH_REPORT.json": {
+    "entries": 5,
+    "stale": [
+      "ojasx2/holonomic_math_compiler.py",
+      "ojasx2/grad_free_optimizer.py",
+      "ojasx2/mesh_hal.py"
+    ],
+    "missing": [],
+    "matching_count": 2
+  },
+  "reports/mps-qualification.json": {
+    "entries": 50,
+    "stale": [
+      "ojasx2/__init__.py",
+      "ojasx2/compiler.py",
+      "ojasx2/residuals.py",
+      "ojasx2/reversible.py",
+      "tools/verify_all.py"
+    ],
+    "missing": [],
+    "matching_count": 45
+  },
+  "reports/review-fix-validation.json": {
+    "entries": 11,
+    "stale": [
+      ".gitignore",
+      "README.md",
+      "pyproject.toml",
+      "setup.py",
+      "ojasx2/__init__.py",
+      "ojasx2/holonomic_math_compiler.py",
+      "ojasx2/tile_hal.py",
+      "ojasx2/tile_fallback.py",
+      "ojasx2/mesh_hal.py",
+      "tests/test_review_regressions.py"
+    ],
+    "missing": [],
+    "matching_count": 1
+  },
+  "reports/rocq-verification.json": {
+    "entries": 90,
+    "stale": [
+      "foundation_manifest.json",
+      "ojasx2/__init__.py",
+      "ojasx2/aot_holonomic_compiler.py",
+      "ojasx2/compiler.py",
+      "ojasx2/cotangent_quotient.py",
+      "ojasx2/demand_algebra.py",
+      "ojasx2/grad_free_optimizer.py",
+      "ojasx2/holonomic_math_compiler.py",
+      "ojasx2/loss_compiler.py",
+      "ojasx2/loss_fx.py",
+      "ojasx2/mesh_hal.py",
+      "ojasx2/numerical_repairs.py",
+      "ojasx2/objective_compiler.py",
+      "ojasx2/openreg_backend.py",
+      "ojasx2/residuals.py",
+      "ojasx2/smart_router.py",
+      "ojasx2/tile_hal.py",
+      "rocq/InvariantRadial.v"
+    ],
+    "missing": [],
+    "matching_count": 72
+  },
+  "reports/verification.json": {
+    "entries": 186,
+    "stale": [
+      "lean/OjasXMath/InvariantRadial.lean",
+      "lean/lean-toolchain",
+      "ojasx2/__init__.py",
+      "ojasx2/aot_holonomic_compiler.py",
+      "ojasx2/compiler.py",
+      "ojasx2/cotangent_quotient.py",
+      "ojasx2/demand_algebra.py",
+      "ojasx2/grad_free_optimizer.py",
+      "ojasx2/holonomic_math_compiler.py",
+      "ojasx2/loss_compiler.py",
+      "ojasx2/loss_fx.py",
+      "ojasx2/mesh_hal.py",
+      "ojasx2/numerical_repairs.py",
+      "ojasx2/objective_compiler.py",
+      "ojasx2/openreg_backend.py",
+      "ojasx2/residuals.py",
+      "ojasx2/smart_router.py",
+      "ojasx2/tile_hal.py",
+      "pyproject.toml",
+      "tools/run_industrial_all_level_benchmark.py",
+      "tools/self_audit_complete.py"
+    ],
+    "missing": [],
+    "matching_count": 165
+  }
+}

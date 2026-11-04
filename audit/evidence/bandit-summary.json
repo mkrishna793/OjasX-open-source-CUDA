@@ -1,0 +1,72 @@
+{
+  "totals": {
+    "CONFIDENCE.HIGH": 1502,
+    "CONFIDENCE.LOW": 0,
+    "CONFIDENCE.MEDIUM": 7,
+    "CONFIDENCE.UNDEFINED": 0,
+    "SEVERITY.HIGH": 0,
+    "SEVERITY.LOW": 1500,
+    "SEVERITY.MEDIUM": 9,
+    "SEVERITY.UNDEFINED": 0,
+    "loc": 44280,
+    "nosec": 0,
+    "skipped_tests": 0
+  },
+  "medium_findings": [
+    {
+      "file": "ojasx2/mesh_hal.py",
+      "line": 235,
+      "test_id": "B104",
+      "text": "Possible binding to all interfaces."
+    },
+    {
+      "file": "ojasx2/updater.py",
+      "line": 70,
+      "test_id": "B310",
+      "text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected."
+    },
+    {
+      "file": "tools/bootstrap_lean.py",
+      "line": 16,
+      "test_id": "B310",
+      "text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected."
+    },
+    {
+      "file": "tools/bootstrap_rocq_deps.py",
+      "line": 27,
+      "test_id": "B310",
+      "text": "Audit url open for permitted schemes. Allowing use of file:/ or custom schemes is often unexpected."
+    },
+    {
+      "file": "tools/run_holonomic_opinfo_and_backendbench.py",
+      "line": 257,
+      "test_id": "B307",
+      "text": "Use of possibly insecure function - consider using safer ast.literal_eval."
+    },
+    {
+      "file": "tools/run_industrial_all_level_benchmark.py",
+      "line": 273,
+      "test_id": "B307",
+      "text": "Use of possibly insecure function - consider using safer ast.literal_eval."
+    },
+    {
+      "file": "tools/run_two_laptop_physical_mesh.py",
+      "line": 547,
+      "test_id": "B104",
+      "text": "Possible binding to all interfaces."
+    },
+    {
+      "file": "tools/run_two_laptop_physical_mesh.py",
+      "line": 563,
+      "test_id": "B104",
+      "text": "Possible binding to all interfaces."
+    },
+    {
+      "file": "tools/verify_all.py",
+      "line": 71,
+      "test_id": "B314",
+      "text": "Using xml.etree.ElementTree.parse to parse untrusted XML data is known to be vulnerable to XML attacks. Replace xml.etree.ElementTree.parse with its defusedxml equivalent function or make sure defusedxml.defuse_stdlib() is called"
+    }
+  ],
+  "triage": "Automated output is not a security proof; manual mesh, updater, eval and bootstrap findings are in AUDIT.md."
+}

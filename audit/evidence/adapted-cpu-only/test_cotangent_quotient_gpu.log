@@ -1,0 +1,6 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[08:42:41] [OjasX INFO] ojasx2.tile_fallback: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+[08:42:41] [OjasX INFO] ojasx2.tile_fallback: Tile fallbacks registration completed successfully.
+passed_scoped_cotangent_gpu cases 80 failed []
+timings [('relu_defect', 1.0764327932211568), ('gelu_defect', 0.5100682112478419), ('silu_defect', 0.468176937804057), ('relu_defect', 1.1849475647832073), ('gelu_defect', 0.533983089502814), ('silu_defect', 0.5213894274961575), ('relu_defect', 1.2428386526283888), ('gelu_defect', 0.5177390054749142), ('silu_defect', 0.5000666004974641), ('gelu_stream', 0.6782715776887418), ('relu_defect', 1.87708906673936), ('relu_defect', 2.020785804611171), ('relu_defect', 1.8655867938330286)]

@@ -1,0 +1,10 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[08:37:14] [OjasX INFO] ojasx2.tile_fallback: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+[08:37:14] [OjasX INFO] ojasx2.tile_fallback: Tile fallbacks registration completed successfully.
+{
+  "status": "passed",
+  "cases": 24,
+  "scalar_operations": 13824,
+  "overflow_rejected": true
+}

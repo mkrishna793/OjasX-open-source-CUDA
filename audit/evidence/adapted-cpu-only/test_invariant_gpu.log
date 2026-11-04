@@ -1,0 +1,22 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[08:44:27] [OjasX INFO] ojasx2.tile_fallback: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+[08:44:27] [OjasX INFO] ojasx2.tile_fallback: Tile fallbacks registration completed successfully.
+GPU invariant (128, 4, 512, 2) cubic
+GPU invariant (128, 4, 512, 2) reciprocal
+GPU invariant (128, 4, 512, 2) sigmoid
+GPU invariant (1024, 32, 2048, 4) cubic
+GPU invariant (1024, 32, 2048, 4) reciprocal
+GPU invariant (1024, 32, 2048, 4) sigmoid
+GPU invariant (2048, 128, 4096, 8) cubic
+GPU invariant (2048, 128, 4096, 8) reciprocal
+GPU invariant (2048, 128, 4096, 8) sigmoid
+GPU invariant (8192, 128, 4096, 2) cubic
+GPU invariant (8192, 128, 4096, 2) reciprocal
+GPU invariant (8192, 128, 4096, 2) sigmoid
+GPU invariant repeat cubic 3201
+GPU invariant repeat reciprocal 3201
+GPU invariant repeat sigmoid 3201
+GPU invariant repeat cubic 3202
+GPU invariant repeat reciprocal 3202
+GPU invariant repeat sigmoid 3202
