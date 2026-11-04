@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ojasx-verified-core"
-version = "0.13.0"
-description = "OjasX: Open-source math-level PyTorch training & memory-optimization compiler with Lean/Rocq specs, C++/Metal kernels, and TCP sharding"
+version = "0.16.0"
+description = "OjasX3: Turnkey low-RAM AI training & compilation engine with E8 lattice streaming, TileLang universal acceleration, and formal verification"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
 authors = [{ name = "Mohana Krishna" }]
-keywords = ["pytorch", "compiler", "autograd", "memory-optimization", "metal", "apple-silicon", "lean4", "coq", "deep-learning"]
+keywords = ["pytorch", "compiler", "autograd", "memory-optimization", "metal", "cuda", "tilelang", "e8-lattice", "apple-silicon", "lean4", "coq", "deep-learning"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -31,23 +31,27 @@ Releases = "https://github.com/mkrishna793/OjasX-open-source-CUDA/releases"
 [project.optional-dependencies]
 test = ["pytest>=8"]
 benchmark = ["pandas>=2", "pyarrow>=15", "expecttest>=0.2", "hypothesis>=6"]
+streaming = ["transformers>=4.40", "accelerate>=1.0", "safetensors>=0.4.3", "psutil>=5.9"]
 
 [project.scripts]
 ojasx = "ojasx2.updater:cli_router"
 ojasx-update = "ojasx2.updater:main"
 ojasx-verify = "ojasx2.cli:main"
 ojasx-doctor = "ojasx2.doctor:main"
+ojasx3 = "ojasx3.cli:main"
 
 [project.entry-points."torch_dynamo_backends"]
 holonomic = "ojasx2.holonomic_math_compiler:holonomic_backend"
 holonomic_aot = "ojasx2.aot_holonomic_compiler:holonomic_aot_backend"
+ojasx_verified = "ojasx2.core.backend:backend"
+ojasx3 = "ojasx3.core.backend:backend"
 
 [tool.setuptools]
 py-modules = ["ojasx"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["ojasx2", "ojasx2.*"]
+include = ["ojasx2", "ojasx2.*", "ojasx3", "ojasx3.*"]
 exclude = ["third_party*", "tests*", "reports*", "rocq*", "lean*"]
 
 [tool.setuptools.package-data]
@@ -59,7 +63,9 @@ ojasx2 = [
     "csrc/*.dylib",
     "csrc/*.so",
     "csrc/*.pyd",
+    "native_build.json",
 ]
+"ojasx2.math.csrc" = ["*.cpp", "*.hpp", "*.h", "*.mm", "*.so", "*.dylib", "*.pyd"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

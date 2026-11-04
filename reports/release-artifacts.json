@@ -1,0 +1,31 @@
+{
+  "artifacts": [
+    {
+      "bytes": 358465,
+      "name": "ojasx_verified_core-0.13.0-py3-none-any.whl",
+      "sha256": "0125f9b91c999a7547b1f0e177007bda672dc80316219ea1e2f8f7b55055e7e9"
+    },
+    {
+      "bytes": 12881408,
+      "name": "ojasx_verified_core-0.13.0.tar.gz",
+      "sha256": "318c55029d085eb3dd7ff75fbe64dbf7ba069f116f8c30481341bb15da59914a"
+    }
+  ],
+  "checks": [
+    "exactly one wheel and one sdist",
+    "py3-none-any portable wheel tag",
+    "no native binaries in portable artifacts",
+    "portable native_build.json metadata",
+    "safe archive member paths and no Git metadata",
+    "required first-party and third-party source coverage"
+  ],
+  "result": "pass",
+  "schema_version": 1,
+  "sdist_entries": 1480,
+  "third_party_sdist_entries": {
+    "BackendBench": 80,
+    "TorchCTS": 426,
+    "tilelang": 584
+  },
+  "wheel_entries": 80
+}

@@ -376,21 +376,25 @@ def print_doctor_report(silicon_info: Dict[str, Any], results: List[Dict[str, An
     print(f"  • CPU Cores & Cache  : {silicon_info['cpu_count']} Cores | L1d: {silicon_info['l1d_kb']} KB | L2: {silicon_info['l2_mb']} MB")
     print(f"  • Apple AMX Support  : {'ENABLED (Accelerate AMX Engine Active)' if silicon_info['has_apple_amx'] else 'DISABLED / Standard CPU'}")
     print(f"  • Metal MPS GPU      : {'AVAILABLE' if silicon_info['mps_available'] else 'UNAVAILABLE'}")
-    print(f"  • Host RAM Capacity  : {silicon_info['total_ram_gb']} GB Unified RAM")
+    print(f"  • Host RAM Capacity  : {silicon_info['total_ram_gb']} GB OS-reported RAM")
     print(f"  • Native C++ HAL     : {'AVAILABLE (libojasx_tile_kernels.dylib)' if silicon_info['libojasx_tile_kernels'] else 'PYTHON FALLBACK'}")
 
     print("\n[2] LIVE NUMERICAL & GRADIENT VERIFICATION (5 WORKLOAD FAMILIES)")
+    print("  Timing ratios are single-run observations, not performance qualification.")
     print("-" * 90)
     print(f"{'Workload Family':<32} | {'Detected Profile':<26} | {'Fwd':<5} | {'Grad':<5} | {'Speedup':<8} | {'Status'}")
     print("-" * 90)
 
-    all_passed = True
+    expected_families = 5
+    all_passed = len(results) == expected_families
+    passed_count = 0
     for r in results:
         fwd_str = "OK" if r["fwd_parity"] else "ERR"
         grad_str = "OK" if r["grad_parity"] else "ERR"
-        status_str = r["status"]
-        if status_str != "PASS":
-            all_passed = False
+        observed_pass = bool(r["fwd_parity"] and r["grad_parity"] and r["status"] == "PASS")
+        status_str = "PASS" if observed_pass else "FAIL"
+        passed_count += int(observed_pass)
+        all_passed = all_passed and observed_pass
         print(
             f"{r['family']:<32} | {r['profile']:<26} | {fwd_str:<5} | {grad_str:<5} | {r['speedup']:<7}x | {status_str}"
         )
@@ -398,11 +402,19 @@ def print_doctor_report(silicon_info: Dict[str, Any], results: List[Dict[str, An
 
     print("\n[3] OVERALL HEALTH CHECK VERDICT")
     if all_passed:
-        print("  ✓ ALL SYSTEMS OPERATIONAL: 5 of 5 workload families verified with zero divergence.")
+        device = silicon_info.get("diagnostic_device", "unspecified device")
+        print(
+            f"  ✓ SAMPLED DIAGNOSTIC PASSED: {passed_count} of {len(results)} workload families on {device} "
+            "were within the configured tolerances."
+        )
+        print("  Scope: full tests, formal kernels, native extensions, and performance qualification were not run.")
         print("=" * 90 + "\n")
         return True
     else:
-        print("  ✗ DIAGNOSTIC WARNING: Divergence detected during live workload execution.")
+        print(
+            f"  ✗ DIAGNOSTIC WARNING: {passed_count} of {len(results)} workload families passed; "
+            "the run is divergent, inconsistent, or incomplete."
+        )
         print("=" * 90 + "\n")
         return False
 
@@ -416,8 +428,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.device == "mps" and not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
         print("Warning: MPS device requested but unavailable; falling back to CPU.")
         device = torch.device("cpu")
+    if args.device == "cuda" and not torch.cuda.is_available():
+        parser.error("CUDA was requested but torch.cuda.is_available() is false")
 
     silicon_info = audit_silicon_and_runtime()
+    silicon_info["diagnostic_device"] = str(device)
     runner = DiagnosticWorkloadRunner(device=device)
 
     results = [

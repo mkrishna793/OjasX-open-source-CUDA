@@ -12,6 +12,7 @@ Enables automatic discovery and one-command self-updating for OjasX users:
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -228,14 +229,14 @@ def perform_update(target_version: Optional[str] = None, quiet: bool = False) ->
                 print(f"[Error] Git update failed: {e}")
             return False
     else:
+        target = f"git+{GITHUB_GIT_URL}"
+        if target_version:
+            target += f"@v{target_version.lstrip('v')}"
         if not quiet:
             print("Detected Installation Mode: Python Pip Package")
-            target = f"git+{GITHUB_GIT_URL}"
-            if target_version:
-                target += f"@v{target_version.lstrip('v')}"
             print(f"Upgrading package via: {sys.executable} -m pip install --upgrade {target}...")
         try:
-            cmd = [sys.executable, "-m", "pip", "install", "--upgrade", f"git+{GITHUB_GIT_URL}"]
+            cmd = [sys.executable, "-m", "pip", "install", "--upgrade", target]
             subprocess.run(cmd, check=True)
             if not quiet:
                 print("Package upgraded successfully!")
@@ -255,19 +256,15 @@ def update() -> bool:
 
 def main() -> None:
     """CLI entry point for `python -m ojasx2.updater` or `ojasx update`."""
-    args = sys.argv[1:]
-    target_ver = None
-    force = True
+    parser = argparse.ArgumentParser(prog="ojasx-update", usage="ojasx update [OPTIONS] [VERSION]")
+    parser.add_argument("--check", action="store_true", help="check for updates without applying them")
+    parser.add_argument("--auto", action="store_true", help="apply the update quietly")
+    parser.add_argument("version", nargs="?", help="release version to install")
+    args = parser.parse_args()
+    if args.check and (args.auto or args.version):
+        parser.error("--check cannot be combined with --auto or VERSION")
 
-    if "--help" in args or "-h" in args:
-        print("Usage: ojasx update [OPTIONS] [VERSION]")
-        print("\nOptions:")
-        print("  --check       Check for available updates without applying")
-        print("  --auto        Run in quiet automated update mode")
-        print("  -h, --help    Show this message and exit")
-        return
-
-    if "--check" in args:
+    if args.check:
         cur_ver = get_current_version()
         has_up, latest_ver, meta = check_for_updates(force=True)
         if has_up:
@@ -275,13 +272,10 @@ def main() -> None:
             if meta and meta.get("name"):
                 print(f"Release Name: {meta['name']}")
         else:
-            print(f"OjasX is up to date (v{cur_ver}).")
+            print(f"OjasX is up to date (v{cur_ver}); latest release is v{latest_ver}.")
         return
 
-    if args and not args[0].startswith("-"):
-        target_ver = args[0]
-
-    perform_update(target_version=target_ver)
+    perform_update(target_version=args.version, quiet=args.auto)
 
 
 def cli_router() -> None:

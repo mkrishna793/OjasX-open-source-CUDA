@@ -1,0 +1,23 @@
+include LICENSE README.md AUDIT.md pyproject.toml setup.py ojasx.py
+
+recursive-include ojasx2 *.py *.yaml *.cpp *.hpp *.h *.mm *.metal *.m
+recursive-include ojasx3 *.py
+recursive-include tools *.py *.m *.sh
+recursive-include tests *.py
+recursive-include docs *.md
+recursive-include reports *.md *.json
+exclude reports/release-artifacts.json reports/release-smoke.json
+recursive-include lean *.lean *.toml *.json lean-toolchain
+recursive-include rocq *
+recursive-include third_party *
+
+prune lean/.lake
+prune third_party/BackendBench/.git
+prune third_party/TorchCTS/.git
+prune third_party/tilelang/.git
+prune build
+prune dist
+
+global-exclude *.py[cod] .DS_Store .git
+global-exclude *.so *.dylib *.pyd *.dll *.tmp
+global-exclude *.vo *.vos *.vok *.glob *.aux *.cmi *.cmo *.cmx *.o

@@ -14,17 +14,30 @@ from ojasx2.codegen.gen_holonomic_ops import main as run_codegen
 
 
 def print_status() -> None:
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
-    dylib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "csrc", "libojasx_openreg.dylib")
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
+    library_suffix = ".dylib" if sys.platform == "darwin" else (".dll" if os.name == "nt" else ".so")
+    guard_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "csrc", f"libojasx_openreg{library_suffix}"
+    )
     ops = [op["name"] for op in ojasx2.HOLONOMIC_DECLARATIONS_LEDGER.get("operators", [])]
     dynamo_backends = [b for b in torch._dynamo.list_backends() if "holonomic" in b]
 
-    # Quick live GPU verification
+    # Quick live smoke check on the selected physical device.
     x = torch.randn(16, 64, device=device, requires_grad=True)
     g = torch.ones(64, device=device, requires_grad=True)
     y = ojasx2.holonomic_rmsnorm(x, g, 1e-6)
     y.sum().backward()
-    grad_ok = x.grad is not None and bool(torch.isfinite(x.grad).all())
+    grad_ok = (
+        x.grad is not None
+        and g.grad is not None
+        and bool(torch.isfinite(x.grad).all())
+        and bool(torch.isfinite(g.grad).all())
+    )
     del x, g, y
     torch.ojasx.empty_cache()
 
@@ -33,11 +46,17 @@ def print_status() -> None:
     print("=" * 78)
     print(f"  Physical Execution Device : {device.upper()}")
     print(f"  PyTorch Runtime Version   : {torch.__version__}")
-    print(f"  C++ OpenReg Guard Dylib   : {'LOADED' if os.path.exists(dylib_path) else 'MISSING'} ({os.path.basename(dylib_path)})")
+    print(
+        f"  OpenReg Guard Artifact    : {'PRESENT (not a load check)' if os.path.exists(guard_path) else 'NOT FOUND'} "
+        f"({os.path.basename(guard_path)})"
+    )
     print(f"  Registered Device Module  : torch.ojasx (available={torch.ojasx.is_available()})")
     print(f"  TorchDynamo Backends      : {dynamo_backends}")
     print(f"  Declarative YAML Ops      : {ops}")
-    print(f"  Live GPU Smoke Check      : {'PASSED' if grad_ok else 'FAILED'} (Residual Mem: {torch.ojasx.memory_allocated() / 1e6:.2f} MB)")
+    print(
+        f"  Live {device.upper()} Smoke Check     : {'PASSED' if grad_ok else 'FAILED'} "
+        f"(input/gamma gradients; OjasX residual memory: {torch.ojasx.memory_allocated() / 1e6:.2f} MB)"
+    )
     print("=" * 78)
 
 

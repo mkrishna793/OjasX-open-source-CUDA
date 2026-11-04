@@ -11,24 +11,56 @@ permissions:
 
 jobs:
   build-and-release:
-    name: Build Wheel/SDist & Publish GitHub Release
+    name: Build, Smoke-Test & Publish Portable/Native Artifacts
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: recursive
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Build Portable Wheel (.whl) and Source Distribution (.tar.gz)
+      - name: Install build tools and declared runtime dependencies
         run: |
           python -m pip install --upgrade pip build setuptools wheel
-          python -m build --sdist --wheel --outdir dist/
-          ls -lh dist/
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install numpy z3-solver sympy
+
+      - name: Build portable wheel and complete source distribution
+        env:
+          OJASX_BUILD_NATIVE: "0"
+        run: python -m build --sdist --wheel --outdir dist/portable/
+
+      - name: Inspect portable artifacts and source coverage
+        run: python tools/inspect_release_artifacts.py --artifact-dir dist/portable --report reports/release-artifacts.json
+
+      - name: Smoke-test exact portable wheel and sdist outside the source tree
+        run: python tools/smoke_release_artifacts.py --artifact-dir dist/portable --report reports/release-smoke.json
+
+      - name: Build native Linux wheel (failure is fatal)
+        env:
+          OJASX_BUILD_NATIVE: "1"
+        run: python -m build --wheel --no-isolation --outdir dist/native/
+
+      - name: Smoke-test exact native wheel outside the source tree
+        run: |
+          python -m venv --system-site-packages .venv-native-wheel
+          .venv-native-wheel/bin/pip install --no-deps dist/native/*.whl
+          .venv-native-wheel/bin/python -I - <<'PY'
+          import json
+          import ojasx2
+          from ojasx2.tile_hal import tile_kernel_status
+          from importlib.resources import files
+          metadata = json.loads(files('ojasx2').joinpath('native_build.json').read_text())
+          assert metadata['mode'] == 'native' and metadata['tile_library']
+          assert tile_kernel_status()['native_loaded'], tile_kernel_status()
+          print('Native wheel smoke check:', metadata, tile_kernel_status())
+          PY
 
       - name: Publish Official GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -36,29 +68,18 @@ jobs:
         with:
           name: "OjasX ${{ github.ref_name }} — Math-Level PyTorch Training & Memory Compiler"
           files: |
-            dist/*.whl
-            dist/*.tar.gz
+            dist/portable/*.whl
+            dist/portable/*.tar.gz
+            dist/native/*.whl
           generate_release_notes: true
           body: |
             ## OjasX ${{ github.ref_name }} Official Release
 
-            ### Quick Install Directly in PyTorch
+            Portable wheels contain the PyTorch fallback and native source, but no native binary.
+            Native wheels are built separately with C++20 and smoke-tested before publication.
+            The native Linux artifact includes the tile library; the Darwin math extension is a
+            separate component and is not claimed by the Linux artifact.
+
             ```bash
-            # Option 1: Install directly from the release tag via git
             pip install git+https://github.com/mkrishna793/OjasX-open-source-CUDA.git@${{ github.ref_name }}
-            ```
-
-            ### Drop-In 1-Line PyTorch Usage (OjasX v12)
-            ```python
-            import torch
-            import ojasx
-
-            # 1-Line Zero-RAM Setup (auto-replaces attention, quantizes moments in 2-bit E8)
-            model, optimizer = ojasx.prepare(model, lr=1e-4)
-
-            for x, y in dataloader:
-                optimizer.zero_grad()
-                loss = ojasx.loss(model(x), y)  # Streaming Zero-DRAM Cross-Entropy!
-                loss.backward()
-                optimizer.step()
             ```

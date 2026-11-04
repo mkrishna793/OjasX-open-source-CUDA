@@ -1,6 +1,7 @@
 """OjasX verified mathematical reference core; no GPU performance certification."""
 from .lenses import Lens, linear_lens, parameterized_linear_lens, activation_lens
 from .ops import packed_relu, gelu, silu, swiglu, rmsnorm, rmsnorm_aux
+from .core.pytorch import activation_chain
 from .models import PackedReLU, optimize_relu_residuals, shared_projections
 from .residuals import SavedTensorAudit
 from .streamed import streamed_gemm, operand_tape_gemm
@@ -165,6 +166,11 @@ from .math.lattice import (
     fast_walsh_hadamard_transform,
     randomized_hadamard_transform,
 )
+from .streaming_e8 import (
+    StreamingE8LoadReport,
+    load_hf_checkpoint_e8,
+    pack_weight_rowwise,
+)
 from .tilelang_kernels import (
     is_tilelang_available,
     dispatch_tilelang_e8_gemm,
@@ -178,7 +184,7 @@ import torch
 import torch.nn as nn
 from typing import Optional, Union, Tuple, Any
 
-__version__ = "0.13.0"
+__version__ = "0.16.0"
 
 
 # =============================================================================
@@ -188,28 +194,53 @@ __version__ = "0.13.0"
 def optimize(
     model: nn.Module,
     quantize: Optional[Union[str, float]] = None,
-    reversible: bool = True,
     attention: str = "fast",
     group_size: int = 32,
+    compile_backend: Optional[Union[str, bool]] = None,
     **kwargs: Any,
 ) -> nn.Module:
     """
     1-Line OjasX v12 Model Optimizer.
 
     Transforms any standard PyTorch or HuggingFace model in-place:
-    - Replaces standard attention with Zero-DRAM DaggerAttention + Hardware SDPA
+    - Optimizes supported linear, normalization, and attention layers in place
     - Quantizes linear layers into 1.0b Root E8, 1.5b Ternary E8, or 2.0b E8 (if quantize specified)
-    - Automatically enables FWHT-32 outlier rotation and Störmer-Verlet reversibility
+    - Uses DaggerAttention for supported attention when attention="fast"; attention="native" preserves it
     """
     from .smart_router import optimize_model as _smart_optimize
     from .math.lattice import pack_model_e8
 
-    opt_model, _ = _smart_optimize(model, **kwargs)
+    attention_modes = {"fast": True, "native": False}
+    if attention not in attention_modes:
+        raise ValueError("attention must be 'fast' or 'native'")
+    opt_model, _ = _smart_optimize(
+        model,
+        upgrade_attention=attention_modes[attention],
+        compile_backend=compile_backend if quantize is None else None,
+        **kwargs,
+    )
 
     if quantize is not None:
         bitrate_map = {"1.0b": 1.0, "1.0": 1.0, "1.5b": 1.5, "1.5": 1.5, "2.0b": 2.0, "2.0": 2.0}
-        bitrate = bitrate_map.get(str(quantize).lower(), 1.5) if isinstance(quantize, str) else float(quantize)
+        if isinstance(quantize, str):
+            key = str(quantize).lower()
+            if key not in bitrate_map:
+                raise ValueError("quantize must select 1.0, 1.5, or 2.0 bits per weight")
+            bitrate = bitrate_map[key]
+        else:
+            bitrate = float(quantize)
+            if bitrate not in (1.0, 1.5, 2.0):
+                raise ValueError("quantize must select 1.0, 1.5, or 2.0 bits per weight")
         opt_model = pack_model_e8(opt_model, bitrate=bitrate, group_size=group_size)
+        if compile_backend:
+            backend_name = "ojasx_verified" if compile_backend is True else str(compile_backend)
+            if backend_name == "ojasx_verified":
+                from .core.backend import register_backend
+                register_backend()
+            try:
+                opt_model = torch.compile(opt_model, backend=backend_name)
+            except Exception:
+                pass
 
     return opt_model
 
@@ -219,10 +250,11 @@ def prepare(
     lr: float = 1e-4,
     optimizer: str = "adamw",
     quantize: Optional[Union[str, float]] = None,
-    reversible: bool = True,
     attention: str = "fast",
+    quantize_moments_e8: bool = True,
     grad_accum_steps: int = 1,
     weight_decay: float = 0.01,
+    compile_backend: Optional[Union[str, bool]] = None,
     **kwargs: Any,
 ) -> Tuple[nn.Module, HolonomicGradFreeOptimizer]:
     """
@@ -244,19 +276,18 @@ def prepare(
     opt_model = optimize(
         model,
         quantize=quantize,
-        reversible=reversible,
         attention=attention,
+        compile_backend=compile_backend,
         **kwargs,
     )
 
-    use_e8_mom = quantize is not None
     opt = HolonomicGradFreeOptimizer(
         opt_model.parameters(),
         lr=lr,
         algorithm=optimizer,
         weight_decay=weight_decay,
         grad_accum_steps=grad_accum_steps,
-        quantize_moments_e8=use_e8_mom,
+        quantize_moments_e8=quantize_moments_e8,
     )
     return opt_model, opt
 

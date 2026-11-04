@@ -1,0 +1,48 @@
+{
+  "outside_source_tree": true,
+  "result": "pass",
+  "results": [
+    {
+      "artifact": "ojasx_verified_core-0.13.0-py3-none-any.whl",
+      "bytes": 358465,
+      "forward_backward": "pass",
+      "module_path": "/tmp/ojasx-release-smoke-c9r804gs/0/site/ojasx2/__init__.py",
+      "portable_metadata": {
+        "architecture": "x86_64",
+        "cpp_standard": null,
+        "math_library": null,
+        "mode": "portable",
+        "platform": "Linux",
+        "schema_version": 1,
+        "tile_library": null,
+        "torch_version": null
+      },
+      "result": "pass",
+      "sha256": "0125f9b91c999a7547b1f0e177007bda672dc80316219ea1e2f8f7b55055e7e9",
+      "torch_version": "2.15.0+cu132",
+      "version": "0.13.0"
+    },
+    {
+      "artifact": "ojasx_verified_core-0.13.0.tar.gz",
+      "bytes": 12881408,
+      "forward_backward": "pass",
+      "module_path": "/tmp/ojasx-release-smoke-c9r804gs/1/site/ojasx2/__init__.py",
+      "portable_metadata": {
+        "architecture": "x86_64",
+        "cpp_standard": null,
+        "math_library": null,
+        "mode": "portable",
+        "platform": "Linux",
+        "schema_version": 1,
+        "tile_library": null,
+        "torch_version": null
+      },
+      "result": "pass",
+      "sha256": "318c55029d085eb3dd7ff75fbe64dbf7ba069f116f8c30481341bb15da59914a",
+      "torch_version": "2.15.0+cu132",
+      "version": "0.13.0"
+    }
+  ],
+  "schema_version": 1,
+  "scope": "isolated import, portable metadata, and RMSNorm forward/backward on the runtime's default CPU device"
+}
