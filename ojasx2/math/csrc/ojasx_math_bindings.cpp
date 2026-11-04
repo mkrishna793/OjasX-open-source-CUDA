@@ -13,6 +13,26 @@
 
 namespace ojasx_math {
 
+
+void validate_native_gemm_layout(
+    const at::Tensor& input,
+    const at::Tensor& packed_weight,
+    const at::Tensor& block_scales,
+    int64_t features,
+    int64_t group_size,
+    int64_t packing_unit
+) {
+    TORCH_CHECK(input.device().is_cpu() && packed_weight.device().is_cpu() && block_scales.device().is_cpu(),
+                "native fused GEMM requires CPU tensors");
+    TORCH_CHECK(input.dim() >= 1 && features > 0, "input must have a nonempty feature axis");
+    TORCH_CHECK(packed_weight.dim() == 2, "packed_weight must be a 2D matrix");
+    TORCH_CHECK(group_size > 0 && features % packing_unit == 0 && features % group_size == 0,
+                "feature count must be divisible by the packing unit and group_size");
+    const int64_t rows = packed_weight.size(0);
+    TORCH_CHECK(block_scales.numel() == rows * (features / group_size),
+                "block_scales must contain exactly N * (K / group_size) elements");
+}
+
 // ============================================================================
 // 1. Störmer-Verlet FSAL Symplectic Integrator Tensor Forward
 // ============================================================================
@@ -264,7 +284,9 @@ at::Tensor fused_e8_gemm_fwd(
     TORCH_CHECK(packed_weight.scalar_type() == at::kByte, "packed_weight must be uint8");
     TORCH_CHECK(group_size > 0 && group_size % 4 == 0, "group_size must be a positive multiple of 4");
 
+    TORCH_CHECK(x.dim() >= 1, "input must have a feature axis");
     const int64_t K = x.size(-1);
+    validate_native_gemm_layout(x, packed_weight, block_scales, K, group_size, 4);
     const int64_t N = packed_weight.size(0);
     const int64_t packed_k = packed_weight.size(1);
     TORCH_CHECK(packed_k == K / 4, "packed_weight dim 1 must match in_features / 4");
@@ -281,6 +303,8 @@ at::Tensor fused_e8_gemm_fwd(
     at::Tensor bias_contig;
     const void* bias_ptr = nullptr;
     if (bias.has_value() && bias->defined()) {
+        TORCH_CHECK(bias->device().is_cpu() && bias->numel() == N,
+                    "bias must be a CPU vector with N elements");
         bias_contig = bias->to(x.scalar_type()).contiguous();
         bias_ptr = bias_contig.data_ptr();
     }
@@ -335,6 +359,7 @@ at::Tensor fused_e8_gemm_bwd_dx(
     TORCH_CHECK(group_size > 0 && group_size % 4 == 0, "group_size must be a positive multiple of 4");
 
     const int64_t K = in_features;
+    validate_native_gemm_layout(grad_y, packed_weight, block_scales, K, group_size, 4);
     const int64_t N = packed_weight.size(0);
     TORCH_CHECK(grad_y.size(-1) == N, "Last dimension of grad_y must match N");
 
@@ -392,7 +417,9 @@ at::Tensor fused_ternary_e8_gemm_fwd(
     TORCH_CHECK(packed_weight.scalar_type() == at::kByte, "packed_weight must be uint8");
     TORCH_CHECK(group_size > 0 && group_size % 16 == 0, "group_size must be a positive multiple of 16");
 
+    TORCH_CHECK(x.dim() >= 1, "input must have a feature axis");
     const int64_t K = x.size(-1);
+    validate_native_gemm_layout(x, packed_weight, block_scales, K, group_size, 16);
     const int64_t N = packed_weight.size(0);
     const int64_t packed_k = packed_weight.size(1);
     TORCH_CHECK(packed_k == (K * 3) / 16, "packed_weight dim 1 must match (in_features * 3) / 16");
@@ -409,6 +436,8 @@ at::Tensor fused_ternary_e8_gemm_fwd(
     at::Tensor bias_contig;
     const void* bias_ptr = nullptr;
     if (bias.has_value() && bias->defined()) {
+        TORCH_CHECK(bias->device().is_cpu() && bias->numel() == N,
+                    "bias must be a CPU vector with N elements");
         bias_contig = bias->to(x.scalar_type()).contiguous();
         bias_ptr = bias_contig.data_ptr();
     }
@@ -463,6 +492,7 @@ at::Tensor fused_ternary_e8_gemm_bwd_dx(
     TORCH_CHECK(group_size > 0 && group_size % 16 == 0, "group_size must be a positive multiple of 16");
 
     const int64_t K = in_features;
+    validate_native_gemm_layout(grad_y, packed_weight, block_scales, K, group_size, 16);
     const int64_t N = packed_weight.size(0);
     TORCH_CHECK(grad_y.size(-1) == N, "Last dimension of grad_y must match N");
 

@@ -594,6 +594,7 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
             and x.dtype in (torch.float32, torch.float16, torch.bfloat16)
             and x_2d.shape[0] <= 64
             and (out_features * in_features) % group_size == 0
+            and in_features % group_size == 0  # Native layout is row-wise; flat total divisibility is insufficient.
         ):
             if bitrate == 2.0 and in_features % 4 == 0:
                 packed_2d = packed_weight.reshape(out_features, in_features // 4).contiguous()
@@ -609,7 +610,11 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
         packer = _get_packer_for_bitrate(bitrate)
         total_elements = out_features * in_features
 
-        if total_elements <= _FusedE8GEMMFunction.MAX_EPHEMERAL_ELEMENTS:
+        if (total_elements <= _FusedE8GEMMFunction.MAX_EPHEMERAL_ELEMENTS
+                or in_features % group_size != 0):
+            # The flat packer may let groups cross row boundaries. Chunked
+            # row slicing is valid only when every row has whole groups.
+
             w_layer = packer.unpack(
                 packed_weight, block_scales, (out_features, in_features),
                 dtype=x_2d.dtype, use_workspace=True,
@@ -654,6 +659,7 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
             and grad_y.dtype in (torch.float32, torch.float16, torch.bfloat16)
             and gy_2d.shape[0] <= 64
             and (out_features * in_features) % group_size == 0
+            and in_features % group_size == 0  # Native layout is row-wise; flat total divisibility is insufficient.
         ):
             if bitrate == 2.0 and in_features % 4 == 0:
                 packed_2d = packed_weight.reshape(out_features, in_features // 4).contiguous()
@@ -677,7 +683,11 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
         packer = _get_packer_for_bitrate(bitrate)
         total_elements = out_features * in_features
 
-        if total_elements <= _FusedE8GEMMFunction.MAX_EPHEMERAL_ELEMENTS:
+        if (total_elements <= _FusedE8GEMMFunction.MAX_EPHEMERAL_ELEMENTS
+                or in_features % group_size != 0):
+            # The flat packer may let groups cross row boundaries. Chunked
+            # row slicing is valid only when every row has whole groups.
+
             w_layer = packer.unpack(
                 packed_weight, block_scales, (out_features, in_features),
                 dtype=x_dtype, use_workspace=True,

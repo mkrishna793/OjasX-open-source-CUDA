@@ -3,6 +3,7 @@
 #include <cmath>
 #include <concepts>
 #include <cstddef>
+#include <cstdint>
 #include <array>
 #include <vector>
 #include <type_traits>
@@ -546,10 +547,11 @@ inline void fused_e8_gemm_backward_dx(
 
 // Coordinate LUT for Ternary E8 (D8 \cap {-1, 0, +1}^8, 3281 points x 8 coords)
 inline const int8_t* get_ternary_rank_to_coords() {
-    static std::vector<int8_t> coords_table;
-    static bool initialized = false;
-    if (!initialized) {
-        coords_table.reserve(3281 * 8);
+    // C++11 magic-static initialization is thread-safe. The vector is fully
+    // constructed before any parallel GEMM row can observe its pointer.
+    static const std::vector<int8_t> coords_table = [] {
+        std::vector<int8_t> table;
+        table.reserve(3281 * 8);
         for (int i = 0; i < 6561; ++i) {
             int temp = i;
             int sum = 0;
@@ -561,12 +563,12 @@ inline const int8_t* get_ternary_rank_to_coords() {
             }
             if ((sum % 2 + 2) % 2 == 0) {
                 for (int d = 0; d < 8; ++d) {
-                    coords_table.push_back(digits[d]);
+                    table.push_back(digits[d]);
                 }
             }
         }
-        initialized = true;
-    }
+        return table;
+    }();
     return coords_table.data();
 }
 

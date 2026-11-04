@@ -1,240 +1,189 @@
 # Copyright (C) 2026 Ojas-Arya Open Foundation & Antigravity Prime Architecture
-#
-# This file is part of OjasX.
-#
-# OjasX is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# OjasX is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with OjasX.  If not, see <https://www.gnu.org/licenses/>.
+# Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0)
 
-"""
-benchmark_32b_ojasx_e8_training.py
-==================================
+"""Execute ONE representative 533M-parameter E8/LoRA linear layer.
 
-Empirical Live Training Verification of a 32-Billion Parameter Model (32B)
-using OjasX v0.8.1 E8 Lattice Packing and In-Backward Optimization.
-
-Proves:
-1. Exact 32,000,000,000 parameter instantiation in <10 GB RAM on a 24GB Apple Silicon Mac.
-   (Standard PyTorch would require >512 GB and crash with OOM).
-2. Physical weight parameter evolution: Exact float delta ||W_t - W_0|| > 0 across steps.
-3. Non-trivial gradient backpropagation: ||grad|| > 0 without NaNs or Infs.
-4. Loss convergence and prediction alignment with target.
-5. In-backward memory deallocation: .grad buffers freed immediately on the fly.
+The 60-layer figures printed here are arithmetic extrapolations only.  This
+script does not instantiate, load, forward, or train a 32B model.  For the
+checkpoint-direct all-model route, use ``tools/run_streaming_e8_finetune.py``
+and retain its JSON/RSS evidence.  The historical function name is kept for
+command compatibility, not as a claim of full-model verification.
 """
 
-import gc
-import math
-import os
+from __future__ import annotations
+
 import resource
 import sys
 import time
+from typing import Dict
+
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
-from ojasx2.math.lattice import E8LatticeLinear
 from ojasx2.grad_free_optimizer import HolonomicGradFreeOptimizer
+from ojasx2.math.lattice import E8LatticeLinear
 
 
-def get_process_memory_gb() -> float:
-    """Returns current process Resident Set Size (RSS) in Gigabytes."""
-    rusage = resource.getrusage(resource.RUSAGE_SELF)
-    # On macOS, ru_maxrss is reported in bytes
-    return rusage.ru_maxrss / (1024 ** 3)
+def get_process_peak_rss_gib() -> float:
+    """Return the OS process high-water RSS in GiB (not a current RSS sample)."""
+    value = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+    # Linux and the other supported Unix platforms report KiB; macOS reports
+    # bytes.  Dividing a Linux value as bytes would inflate it by 1024.
+    bytes_value = value if sys.platform == "darwin" else value * 1024.0
+    return bytes_value / (1024 ** 3)
 
 
-def print_banner(text: str):
+def print_banner(text: str) -> None:
     print("\n" + "=" * 80)
     print(f"  {text}")
     print("=" * 80)
 
 
-def run_32b_training_benchmark():
-    print_banner("OJASX v0.8.1 E8 LATTICE 32-BILLION PARAMETER TRAINING PROOF")
-    print(f"Platform          : {sys.platform} (macOS arm64)")
-    print(f"PyTorch Version   : {torch.__version__}")
-    print(f"Host Initial RSS  : {get_process_memory_gb():.3f} GB")
+def run_32b_training_benchmark() -> Dict[str, object]:
+    """Run the representative-layer check and return a machine-readable scope."""
 
-    # =========================================================================
-    # 1. Architecture Specification for 32 Billion Parameters
-    # =========================================================================
-    # A standard 32B model (e.g. Qwen-2.5 32B) consists of 64 transformer blocks.
-    # To demonstrate full 32,000,000,000 parameter training on this 24GB machine:
-    # We construct a 60-layer deep stack with 533,333,333 parameters per layer:
-    # 60 layers * 533,333,334 parameters = 32,000,000,040 parameters (32.0 Billion)!
-    
     num_layers = 60
-    params_per_layer = 533_333_334
-    total_model_params = num_layers * params_per_layer
-    
-    print(f"\n[MODEL SPECIFICATION]")
-    print(f"  Layers           : {num_layers} Deep Layers")
-    print(f"  Params per Layer : {params_per_layer:,}")
-    print(f"  TOTAL PARAMETERS : {total_model_params:,} (32.0 BILLION PARAMETERS)")
-    
-    std_fp16_weight_gb = (total_model_params * 2) / (1024 ** 3)
-    std_training_ram_gb = (total_model_params * 16) / (1024 ** 3)
-    ojasx_e8_weight_gb = (total_model_params * 0.25) / (1024 ** 3)
-    
-    print(f"\n[THEORETICAL RAM COMPARISON]")
-    print(f"  Standard PyTorch FP16 Weights Alone : {std_fp16_weight_gb:.2f} GB (CRASHES on 24GB RAM!)")
-    print(f"  Standard PyTorch Training (AdamW)  : {std_training_ram_gb:.2f} GB (Requires 8x A100 GPUs!)")
-    print(f"  OjasX E8 2.0-bit Packed Weights     : {ojasx_e8_weight_gb:.2f} GB (FITS IN 24GB RAM!)")
-
-    # =========================================================================
-    # 2. Sequential Stream Layer Construction
-    # =========================================================================
-    # For a 32B model, we stream through layers using E8LatticeLinear.
-    # To demonstrate live training without running out of RAM, we instantiate
-    # the 32B model with rank-8 trainable adapters.
-    
-    print_banner("STEP 1: INSTANTIATING 32-BILLION PARAMETER E8 MODEL")
-    
-    # Dimensions for each 533.3M layer (e.g. in_features=16384, out_features=32552)
     in_dim = 16384
     out_dim = 32552
-    actual_layer_params = in_dim * out_dim
-    total_params = num_layers * actual_layer_params
-    
-    print(f"  Constructing {num_layers} layers of dimension {in_dim} x {out_dim} = {actual_layer_params:,} params/layer")
-    print(f"  Total Exact Parameter Count: {total_params:,} (~32.01 Billion)")
-    
-    # We allocate 1 representative full-scale 533M layer in memory and execute training steps
-    # to show the exact gradient dynamics, weight movement, and memory consumption.
+    group_size = 64
+    bitrate = 2.0
     lora_rank = 8
-    print(f"  Attaching Trainable Low-Rank Subspace: Rank={lora_rank}")
-    
-    t0 = time.time()
+    params_per_layer = in_dim * out_dim
+    extrapolated_params = num_layers * params_per_layer
+    effective_bits = bitrate + 16.0 / group_size
+
+    print_banner("OJASX E8 REPRESENTATIVE-LAYER TRAINING CHECK (NOT FULL 32B)")
+    print(f"Platform              : {sys.platform}")
+    print(f"PyTorch               : {torch.__version__}")
+    print(f"OS peak RSS at start  : {get_process_peak_rss_gib():.3f} GiB")
+    print("\n[EXTRAPOLATED ARCHITECTURE — NOT INSTANTIATED]")
+    print(f"  Layers represented  : {num_layers}")
+    print(f"  Actual layer shape  : {in_dim} x {out_dim}")
+    print(f"  Params per layer    : {params_per_layer:,}")
+    print(f"  Extrapolated params : {extrapolated_params:,}")
+    print(f"  Code + FP16 scales  : {effective_bits:.3f} bits/weight before padding")
+
+    fp16_gib = extrapolated_params * 2 / (1024 ** 3)
+    packed_gib = extrapolated_params * effective_bits / 8 / (1024 ** 3)
+    print("\n[ARITHMETIC STORAGE COMPARISON — NOT RSS]")
+    print(f"  Extrapolated FP16 weights        : {fp16_gib:.3f} GiB")
+    print(f"  Extrapolated packed codes+scales : {packed_gib:.3f} GiB")
+
+    print_banner("STEP 1: INSTANTIATE ONE FULL-SCALE 533M LAYER")
+    start = time.perf_counter()
     layer = E8LatticeLinear(
         in_features=in_dim,
         out_features=out_dim,
         bias=False,
         rank=lora_rank,
         lora_alpha=16.0,
-        group_size=64
+        group_size=group_size,
+        bitrate=bitrate,
     )
-    t_alloc = time.time() - t0
-    
-    packed_bytes = layer.packed_weight.numel()
-    scale_bytes = layer.block_scales.numel() * 2
-    total_layer_bytes = packed_bytes + scale_bytes
-    
-    print(f"  Layer Allocation Time : {t_alloc * 1000:.2f} ms")
-    print(f"  Packed Weight Size    : {packed_bytes / 1024**2:.2f} MB (vs {actual_layer_params * 2 / 1024**2:.2f} MB in FP16!)")
-    print(f"  Scale Factor Size     : {scale_bytes / 1024**2:.2f} MB")
-    print(f"  Total Layer Footprint : {total_layer_bytes / 1024**2:.2f} MB (Exact 8.0x reduction!)")
-    print(f"  Extrapolated 32B RAM  : {(total_layer_bytes * num_layers) / 1024**3:.2f} GB")
-    print(f"  Live Process RSS      : {get_process_memory_gb():.3f} GB")
+    allocation_seconds = time.perf_counter() - start
 
-    # =========================================================================
-    # 3. Setting Up In-Backward Fused Optimizer (Adafactor)
-    # =========================================================================
-    print_banner("STEP 2: ATTACHING OJASX IN-BACKWARD OPTIMIZER (ADALOW-MEM)")
-    
-    trainable_params = [p for p in layer.parameters() if p.requires_grad]
-    trainable_param_count = sum(p.numel() for p in trainable_params)
-    print(f"  Trainable Parameters (Adapters A & B): {trainable_param_count:,}")
-    print(f"  Frozen Base E8 Weights              : {actual_layer_params:,} (0 optimizer state!)")
-    
-    optimizer = HolonomicGradFreeOptimizer(
-        trainable_params,
-        lr=0.01,
-        algorithm="adafactor"
-    )
+    packed_bytes = int(layer.packed_weight.numel())
+    scale_bytes = int(layer.block_scales.numel() * layer.block_scales.element_size())
+    layer_bytes = packed_bytes + scale_bytes
+    reduction = (params_per_layer * 2) / layer_bytes
+    print(f"  Allocation time          : {allocation_seconds:.3f} s")
+    print(f"  Actual packed code bytes : {packed_bytes:,}")
+    print(f"  Actual FP16 scale bytes  : {scale_bytes:,}")
+    print(f"  Actual layer storage     : {layer_bytes / 1024**2:.3f} MiB")
+    print(f"  FP16/packed storage ratio: {reduction:.4f}x (not 8x with these scales)")
+    print(f"  60x layer extrapolation  : {layer_bytes * num_layers / 1024**3:.3f} GiB")
+    print(f"  OS process peak RSS      : {get_process_peak_rss_gib():.3f} GiB")
 
-    # =========================================================================
-    # 4. Multi-Step Training Execution & Physical Parameter Evolution
-    # =========================================================================
-    print_banner("STEP 3: EXECUTING LIVE TRAINING STEPS (PROVING WEIGHT MOVEMENT)")
-    
+    trainable = [parameter for parameter in layer.parameters() if parameter.requires_grad]
+    trainable_count = sum(parameter.numel() for parameter in trainable)
+    print_banner("STEP 2: ATTACH IN-BACKWARD ADAFACTOR TO LORA ONLY")
+    print(f"  Trainable adapter parameters: {trainable_count:,}")
+    print(f"  Frozen represented base parameters: {params_per_layer:,}")
+    optimizer = HolonomicGradFreeOptimizer(trainable, lr=0.01, algorithm="adafactor")
+
     torch.manual_seed(42)
-    batch_size = 2
-    seq_len = 4
-    x = torch.randn(batch_size, seq_len, in_dim)
+    batch_size, seq_len = 2, 4
+    inputs = torch.randn(batch_size, seq_len, in_dim)
     target = torch.randn(batch_size, seq_len, out_dim)
-    
-    # Snapshot initial parameter values (Proof point 1)
-    init_lora_A = layer.lora_A.clone().detach()
-    init_lora_B = layer.lora_B.clone().detach()
-    
-    print(f"  Initial lora_A norm: {torch.norm(init_lora_A):.6f}")
-    print(f"  Initial lora_B norm: {torch.norm(init_lora_B):.6f} (initialized to zeros)")
-    print(f"  Initial 5 weights of lora_A[0, :5]: {init_lora_A[0, :5].tolist()}")
-    
-    losses = []
-    cos_sims = []
-    deltas_A = []
-    deltas_B = []
-    
-    for step in range(1, 4):
-        step_t0 = time.time()
-        
-        # 1. Forward Pass
-        out = layer(x)
-        loss = F.mse_loss(out, target)
-        
-        # Measure Cosine Similarity to target
-        cos_sim = F.cosine_similarity(out.flatten(), target.flatten(), dim=0).item()
-        
-        # 2. Backward Pass (Triggers in-backward Adafactor hook)
-        optimizer.zero_grad()
-        loss.backward()
-        
-        # 3. Measure physical weight displacement Delta = ||W_t - W_0||
-        curr_lora_A = layer.lora_A.detach()
-        curr_lora_B = layer.lora_B.detach()
-        delta_A = torch.norm(curr_lora_A - init_lora_A).item()
-        delta_B = torch.norm(curr_lora_B - init_lora_B).item()
-        
-        step_time = (time.time() - step_t0) * 1000
-        
-        losses.append(loss.item())
-        cos_sims.append(cos_sim)
-        deltas_A.append(delta_A)
-        deltas_B.append(delta_B)
-        
-        print(f"\n  [TRAINING STEP {step}]")
-        print(f"    Step Latency      : {step_time:.2f} ms")
-        print(f"    Loss Value        : {loss.item():.6f}")
-        print(f"    Cosine Similarity : {cos_sim:.6f}")
-        print(f"    lora_A Shift (ΔA) : {delta_A:.8f} (PHYSICALLY EVOLVING!)")
-        print(f"    lora_B Shift (ΔB) : {delta_B:.8f} (PHYSICALLY EVOLVING!)")
-        print(f"    New 5 weights of lora_A[0, :5]: {curr_lora_A[0, :5].tolist()}")
-        print(f"    Live Process RSS  : {get_process_memory_gb():.3f} GB")
+    initial_a = layer.lora_A.detach().clone()
+    initial_b = layer.lora_B.detach().clone()
+    observed_grad_norms: Dict[str, float] = {}
 
-    # =========================================================================
-    # 5. Rigorous Proof of Training & Gradient Dynamics
-    # =========================================================================
-    print_banner("STEP 4: RIGOROUS PROOF VERIFICATION")
-    
-    # Proof 1: Weights moved
-    assert deltas_A[-1] > 0.0, "Proof Failed: lora_A parameters did not move!"
-    assert deltas_B[-1] > 0.0, "Proof Failed: lora_B parameters did not move!"
-    print(f"  ✓ Proof 1: Trainable weights physically moved in memory (ΔA = {deltas_A[-1]:.6f}, ΔB = {deltas_B[-1]:.6f})")
-    
-    # Proof 2: Loss decreased
-    loss_reduction = (losses[0] - losses[-1]) / losses[0] * 100
-    assert losses[-1] < losses[0], f"Proof Failed: Loss did not decrease ({losses[0]} -> {losses[-1]})"
-    print(f"  ✓ Proof 2: Training loss decreased from {losses[0]:.6f} to {losses[-1]:.6f} (-{loss_reduction:.2f}% reduction)")
-    
-    # Proof 3: Target similarity increased
-    assert cos_sims[-1] > cos_sims[0], "Proof Failed: Output did not move toward target!"
-    print(f"  ✓ Proof 3: Output prediction cosine similarity increased from {cos_sims[0]:.6f} to {cos_sims[-1]:.6f}")
-    
-    # Proof 4: Memory remained strictly bounded
-    final_rss = get_process_memory_gb()
-    print(f"  ✓ Proof 4: Total RSS stayed at {final_rss:.3f} GB throughout the entire training cycle")
-    
-    print_banner("VERDICT: 32B PARAMETER TRAINING WITH OJASX E8 FULLY PROVEN AND OPERATIONAL!")
+    def observe_grad(name: str):
+        def hook(gradient: torch.Tensor) -> None:
+            observed_grad_norms[name] = float(gradient.norm())
+        return hook
+
+    handles = [
+        layer.lora_A.register_hook(observe_grad("lora_A")),
+        layer.lora_B.register_hook(observe_grad("lora_B")),
+    ]
+
+    losses = []
+    cosine_similarities = []
+    deltas_a = []
+    deltas_b = []
+    print_banner("STEP 3: EXECUTE THREE REPRESENTATIVE-LAYER STEPS")
+    for step in range(1, 4):
+        step_start = time.perf_counter()
+        output = layer(inputs)
+        loss = F.mse_loss(output, target)
+        cosine = float(F.cosine_similarity(output.flatten(), target.flatten(), dim=0).detach())
+        optimizer.zero_grad()
+        loss.backward()  # Registered post-accumulate hooks apply the update.
+        delta_a = float((layer.lora_A.detach() - initial_a).norm())
+        delta_b = float((layer.lora_B.detach() - initial_b).norm())
+        losses.append(float(loss.detach()))
+        cosine_similarities.append(cosine)
+        deltas_a.append(delta_a)
+        deltas_b.append(delta_b)
+        print(
+            f"  step={step} loss={float(loss):.6f} cosine={cosine:.6f} "
+            f"delta_A={delta_a:.8f} delta_B={delta_b:.8f} "
+            f"seconds={time.perf_counter() - step_start:.3f} "
+            f"os_peak_rss_gib={get_process_peak_rss_gib():.3f}"
+        )
+    for handle in handles:
+        handle.remove()
+
+    checks = {
+        "lora_A_moved": deltas_a[-1] > 0.0,
+        "lora_B_moved": deltas_b[-1] > 0.0,
+        "nonzero_finite_gradients": all(
+            observed_grad_norms.get(name, 0.0) > 0.0
+            and torch.isfinite(torch.tensor(observed_grad_norms[name])).item()
+            for name in ("lora_A", "lora_B")
+        ),
+        "loss_decreased": losses[-1] < losses[0],
+        "cosine_increased": cosine_similarities[-1] > cosine_similarities[0],
+    }
+    print_banner("STEP 4: REPORT CHECKS WITHOUT CHANGING THEIR SCOPE")
+    for name, passed in checks.items():
+        print(f"  {name}: {passed}")
+    print(f"  Observed gradient norms: {observed_grad_norms}")
+    print(f"  Final OS high-water RSS: {get_process_peak_rss_gib():.3f} GiB")
+    print("  RSS high-water is not a time series and does not prove a constant footprint.")
+
+    # These are the mechanical training requirements.  Three steps on one
+    # random target are not a convergence or model-quality experiment.
+    assert checks["lora_A_moved"] and checks["lora_B_moved"]
+    assert checks["nonzero_finite_gradients"]
+    print_banner("VERDICT: ONE 533M E8/LORA LAYER EXECUTED; FULL 32B MODEL NOT TESTED")
+    return {
+        "scope": "one_representative_e8_lora_linear_layer",
+        "full_32b_model_verified": False,
+        "instantiated_linear_layers": 1,
+        "extrapolated_linear_layers": num_layers,
+        "actual_layer_parameters": params_per_layer,
+        "extrapolated_parameters": extrapolated_params,
+        "effective_bits_per_weight_before_padding": effective_bits,
+        "actual_packed_and_scale_bytes": layer_bytes,
+        "checks": checks,
+        "losses": losses,
+        "cosine_similarities": cosine_similarities,
+        "observed_gradient_norms": observed_grad_norms,
+        "os_peak_rss_gib": get_process_peak_rss_gib(),
+    }
 
 
 if __name__ == "__main__":

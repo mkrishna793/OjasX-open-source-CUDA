@@ -1,6 +1,9 @@
 import pytest
 import torch
-import ojasx2.math.csrc.ojasx_math_native as native
+native = pytest.importorskip(
+    "ojasx2.math.csrc.ojasx_math_native",
+    reason="native math extension is not built; run the native artifact qualification on a supported host",
+)
 
 
 def test_native_import_and_metal_detection():
@@ -107,5 +110,15 @@ def test_native_conway_sloane_e8_half_and_bfloat16():
     p_bf16 = native.conway_sloane_e8_project_tensor(x_bf16)
     assert p_bf16.shape == (10, 8)
     assert p_bf16.dtype == torch.bfloat16
+
+
+def test_native_tile_hal_dylib_loaded():
+    from ojasx2.tile_hal import tile_kernel_status
+
+    status = tile_kernel_status()
+    assert status["native_loaded"] is True
+    assert status["native_tilelang_loaded"] is True
+    assert status["load_errors"] == []
+
 
 
