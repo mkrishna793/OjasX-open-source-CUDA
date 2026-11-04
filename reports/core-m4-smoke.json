@@ -1,0 +1,406 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "torch_version": "2.8.0",
+  "case": "four float64 sigmoid activations, eight elements, input gradient",
+  "plan": {
+    "graph_digest": "7ea8e032ea5c8dea85573997d6a322f2c33a0dd42ef2b6b3e5fb7ccb14e926a2",
+    "baseline_graph_digest": "2d646fabd3bb0726564231fdbdbe47359d74d001c6662e093df0b743def89ad6",
+    "selected_expression": "sigmoid(sigmoid(activation_chain(sigmoid(input({'name': 'x'}), policy='demanded'), attrs=(('operations', ('sigmoid',)),), policy='replay_cached'), policy='demanded'), policy='demanded')",
+    "baseline_expression": "sigmoid(sigmoid(sigmoid(sigmoid(input({'name': 'x'}), policy='demanded'), policy='demanded'), policy='demanded'), policy='demanded')",
+    "discovered": true,
+    "baseline_peak_bytes": 456,
+    "peak_bytes": 392,
+    "saved_bytes": 64,
+    "work_units": 11,
+    "traffic_bytes": 1808,
+    "replay_evaluations": 1,
+    "objective": {
+      "primary": "memory",
+      "accuracy": "reproducible",
+      "error_budget": null,
+      "selected_key": [
+        392,
+        11,
+        1808,
+        72
+      ],
+      "baseline_key": [
+        456,
+        10,
+        1680,
+        72
+      ]
+    },
+    "selected_cost": {
+      "memory_bytes": 392,
+      "work_units": 11,
+      "traffic_bytes": 1808,
+      "final_bytes": 72
+    },
+    "baseline_cost": {
+      "memory_bytes": 456,
+      "work_units": 10,
+      "traffic_bytes": 1680,
+      "final_bytes": 72
+    },
+    "planner_proofs": {
+      "original_fallback": [
+        {
+          "system": "lean4",
+          "identifier": "OjasXMath.m4_original_retained_without_strict_improvement"
+        },
+        {
+          "system": "rocq",
+          "identifier": "Ojasx.M4Equality.m4_original_retained_without_strict_improvement"
+        },
+        {
+          "system": "z3",
+          "identifier": "m4_original_retained_without_strict_improvement"
+        }
+      ],
+      "bounded_error_budget": [
+        {
+          "system": "lean4",
+          "identifier": "OjasXMath.m4_bounded_error_budget_nonnegative"
+        },
+        {
+          "system": "rocq",
+          "identifier": "Ojasx.M4Equality.m4_bounded_error_budget_nonnegative"
+        },
+        {
+          "system": "z3",
+          "identifier": "m4_bounded_error_budget_nonnegative"
+        }
+      ]
+    },
+    "structured_topology": {
+      "uniform_values": [
+        11
+      ],
+      "uniform_regions": [
+        [
+          11
+        ]
+      ],
+      "boundary_nodes": [
+        6
+      ],
+      "materialization_nodes": [],
+      "logical_bytes": 64,
+      "managed_bytes": 8,
+      "saved_bytes": 56
+    },
+    "residual_policies": {
+      "0": "demanded",
+      "1": "replay_cached",
+      "2": "demanded",
+      "3": "demanded",
+      "4": "shape_only"
+    },
+    "layout_view_nodes": [],
+    "rewrite_families": [
+      "streaming"
+    ],
+    "proof_obligations": [
+      {
+        "rule": "activation_fuse",
+        "family": "streaming",
+        "before": "activation_chain then activation_chain",
+        "after": "activation_chain[2]",
+        "semantics": "core_reproducible",
+        "side_conditions": [
+          "pure elementwise composition",
+          "intermediate e-classes remain available"
+        ],
+        "error_bound": null,
+        "proofs": [
+          {
+            "system": "lean4",
+            "identifier": "OjasXMath.m4_activation_chain_split_fuse"
+          },
+          {
+            "system": "rocq",
+            "identifier": "Ojasx.M4Equality.m4_activation_chain_split_fuse"
+          },
+          {
+            "system": "z3",
+            "identifier": "m4_activation_chain_split_fuse"
+          }
+        ]
+      },
+      {
+        "rule": "activation_fuse",
+        "family": "streaming",
+        "before": "activation_chain then sigmoid",
+        "after": "activation_chain[3]",
+        "semantics": "core_reproducible",
+        "side_conditions": [
+          "pure elementwise composition",
+          "intermediate e-classes remain available"
+        ],
+        "error_bound": null,
+        "proofs": [
+          {
+            "system": "lean4",
+            "identifier": "OjasXMath.m4_activation_chain_split_fuse"
+          },
+          {
+            "system": "rocq",
+            "identifier": "Ojasx.M4Equality.m4_activation_chain_split_fuse"
+          },
+          {
+            "system": "z3",
+            "identifier": "m4_activation_chain_split_fuse"
+          }
+        ]
+      },
+      {
+        "rule": "activation_fuse",
+        "family": "streaming",
+        "before": "activation_chain then sigmoid",
+        "after": "activation_chain[4]",
+        "semantics": "core_reproducible",
+        "side_conditions": [
+          "pure elementwise composition",
+          "intermediate e-classes remain available"
+        ],
+        "error_bound": null,
+        "proofs": [
+          {
+            "system": "lean4",
+            "identifier": "OjasXMath.m4_activation_chain_split_fuse"
+          },
+          {
+            "system": "rocq",
+            "identifier": "Ojasx.M4Equality.m4_activation_chain_split_fuse"
+          },
+          {
+            "system": "z3",
+            "identifier": "m4_activation_chain_split_fuse"
+          }
+        ]
+      },
+      {
+        "rule": "activation_fuse",
+        "family": "streaming",
+        "before": "sigmoid then sigmoid",
+        "after": "activation_chain[2]",
+        "semantics": "core_reproducible",
+        "side_conditions": [
+          "pure elementwise composition",
+          "intermediate e-classes remain available"
+        ],
+        "error_bound": null,
+        "proofs": [
+          {
+            "system": "lean4",
+            "identifier": "OjasXMath.m4_activation_chain_split_fuse"
+          },
+          {
+            "system": "rocq",
+            "identifier": "Ojasx.M4Equality.m4_activation_chain_split_fuse"
+          },
+          {
+            "system": "z3",
+            "identifier": "m4_activation_chain_split_fuse"
+          }
+        ]
+      },
+      {
+        "rule": "activation_split",
+        "family": "streaming",
+        "before": "activation_chain[3]",
+        "after": "activation_chain[1] then activation_chain[2]",
+        "semantics": "core_reproducible",
+        "side_conditions": [
+          "program append is function composition"
+        ],
+        "error_bound": null,
+        "proofs": [
+          {
+            "system": "lean4",
+            "identifier": "OjasXMath.m4_activation_chain_split_fuse"
+          },
+          {
+            "system": "rocq",
+            "identifier": "Ojasx.M4Equality.m4_activation_chain_split_fuse"
+          },
+          {
+            "system": "z3",
+            "identifier": "m4_activation_chain_split_fuse"
+          }
+        ]
+      },
+      {
+        "rule": "activation_split",
+        "family": "streaming",
+        "before": "activation_chain[4]",
+        "after": "activation_chain[1] then activation_chain[3]",
+        "semantics": "core_reproducible",
+        "side_conditions": [
+          "program append is function composition"
+        ],
+        "error_bound": null,
+        "proofs": [
+          {
+            "system": "lean4",
+            "identifier": "OjasXMath.m4_activation_chain_split_fuse"
+          },
+          {
+            "system": "rocq",
+            "identifier": "Ojasx.M4Equality.m4_activation_chain_split_fuse"
+          },
+          {
+            "system": "z3",
+            "identifier": "m4_activation_chain_split_fuse"
+          }
+        ]
+      },
+      {
+        "rule": "activation_split",
+        "family": "streaming",
+        "before": "activation_chain[4]",
+        "after": "activation_chain[3] then activation_chain[1]",
+        "semantics": "core_reproducible",
+        "side_conditions": [
+          "program append is function composition"
+        ],
+        "error_bound": null,
+        "proofs": [
+          {
+            "system": "lean4",
+            "identifier": "OjasXMath.m4_activation_chain_split_fuse"
+          },
+          {
+            "system": "rocq",
+            "identifier": "Ojasx.M4Equality.m4_activation_chain_split_fuse"
+          },
+          {
+            "system": "z3",
+            "identifier": "m4_activation_chain_split_fuse"
+          }
+        ]
+      },
+      {
+        "rule": "replay_policy",
+        "family": "streaming",
+        "before": "replay_streaming",
+        "after": "replay_cached",
+        "semantics": "core_reproducible",
+        "side_conditions": [
+          "replay reconstructs the original tail residuals"
+        ],
+        "error_bound": null,
+        "proofs": [
+          {
+            "system": "lean4",
+            "identifier": "OjasXMath.m25_replay_tail_dagger"
+          },
+          {
+            "system": "rocq",
+            "identifier": "Ojasx.M25Activation.m25_replay_tail_pullback"
+          },
+          {
+            "system": "z3",
+            "identifier": "m25_replay_cotangent_chain"
+          }
+        ]
+      },
+      {
+        "rule": "activation_split",
+        "family": "streaming",
+        "before": "activation_chain[2]",
+        "after": "activation_chain[1] then activation_chain[1]",
+        "semantics": "core_reproducible",
+        "side_conditions": [
+          "program append is function composition"
+        ],
+        "error_bound": null,
+        "proofs": [
+          {
+            "system": "lean4",
+            "identifier": "OjasXMath.m4_activation_chain_split_fuse"
+          },
+          {
+            "system": "rocq",
+            "identifier": "Ojasx.M4Equality.m4_activation_chain_split_fuse"
+          },
+          {
+            "system": "z3",
+            "identifier": "m4_activation_chain_split_fuse"
+          }
+        ]
+      },
+      {
+        "rule": "activation_split",
+        "family": "streaming",
+        "before": "activation_chain[3]",
+        "after": "activation_chain[2] then activation_chain[1]",
+        "semantics": "core_reproducible",
+        "side_conditions": [
+          "program append is function composition"
+        ],
+        "error_bound": null,
+        "proofs": [
+          {
+            "system": "lean4",
+            "identifier": "OjasXMath.m4_activation_chain_split_fuse"
+          },
+          {
+            "system": "rocq",
+            "identifier": "Ojasx.M4Equality.m4_activation_chain_split_fuse"
+          },
+          {
+            "system": "z3",
+            "identifier": "m4_activation_chain_split_fuse"
+          }
+        ]
+      },
+      {
+        "rule": "activation_fuse",
+        "family": "streaming",
+        "before": "sigmoid then activation_chain",
+        "after": "activation_chain[2]",
+        "semantics": "core_reproducible",
+        "side_conditions": [
+          "pure elementwise composition",
+          "intermediate e-classes remain available"
+        ],
+        "error_bound": null,
+        "proofs": [
+          {
+            "system": "lean4",
+            "identifier": "OjasXMath.m4_activation_chain_split_fuse"
+          },
+          {
+            "system": "rocq",
+            "identifier": "Ojasx.M4Equality.m4_activation_chain_split_fuse"
+          },
+          {
+            "system": "z3",
+            "identifier": "m4_activation_chain_split_fuse"
+          }
+        ]
+      }
+    ],
+    "generated_obligations": 33,
+    "saturation": {
+      "iterations": 5,
+      "saturated": true,
+      "eclasses": 6,
+      "enodes": 31
+    },
+    "evaluated_candidates": 32,
+    "optimal_for_searched_space": false,
+    "method": "equality_saturation_beam",
+    "scope": "logical live storage plus declared explicit operator workspace; work counts operator/local derivative invocations and traffic counts logical value reads/writes; excludes allocator retention, library-internal workspace, Python, hardware traffic, and runtime overhead"
+  },
+  "m25_peak_bytes": 400,
+  "execution": {
+    "output_bitwise_equal": true,
+    "input_gradient_bitwise_equal": true
+  },
+  "deterministic_repeated_plan": true,
+  "scope": "Logical memory/work/traffic certificate and CPU execution smoke; not measured hardware traffic, FLOPs, or CUDA qualification."
+}
