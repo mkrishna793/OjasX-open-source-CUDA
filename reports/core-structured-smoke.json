@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "torch_version": "2.8.0",
+  "cases": [
+    {
+      "name": "sigmoid_dense_boundary",
+      "shape": [
+        4,
+        8
+      ],
+      "dtype": "torch.float64",
+      "dense_peak_bytes": 1280,
+      "structured_peak_bytes": 1032,
+      "peak_saved_bytes": 248,
+      "topology": {
+        "uniform_values": [
+          5
+        ],
+        "uniform_regions": [
+          [
+            5
+          ]
+        ],
+        "boundary_nodes": [
+          3
+        ],
+        "materialization_nodes": [],
+        "logical_bytes": 256,
+        "managed_bytes": 8,
+        "saved_bytes": 248
+      },
+      "objective_bitwise_equal": true,
+      "gradient_bitwise_equal": true,
+      "structured_graph_digest": "6c88eb63317fc18a5e26455d235c521c1908a13b7e19f3238189399b5b87efc1"
+    },
+    {
+      "name": "reshape_transpose_sum",
+      "shape": [
+        2,
+        3,
+        4
+      ],
+      "dtype": "torch.float32",
+      "dense_peak_bytes": 196,
+      "structured_peak_bytes": 104,
+      "peak_saved_bytes": 92,
+      "topology": {
+        "uniform_values": [
+          6,
+          7,
+          8,
+          9
+        ],
+        "uniform_regions": [
+          [
+            6,
+            7,
+            8,
+            9
+          ]
+        ],
+        "boundary_nodes": [
+          8
+        ],
+        "materialization_nodes": [
+          8
+        ],
+        "logical_bytes": 292,
+        "managed_bytes": 16,
+        "saved_bytes": 276
+      },
+      "objective_bitwise_equal": true,
+      "gradient_bitwise_equal": true,
+      "structured_graph_digest": "50936d659ffb6643529e561bdbc505454c7dfb2a92bd0b7cae80adc3bc99fdbf"
+    },
+    {
+      "name": "additive_fanout_sum",
+      "shape": [
+        2,
+        3
+      ],
+      "dtype": "torch.float64",
+      "dense_peak_bytes": 152,
+      "structured_peak_bytes": 104,
+      "peak_saved_bytes": 48,
+      "topology": {
+        "uniform_values": [
+          5,
+          6,
+          7,
+          8,
+          9
+        ],
+        "uniform_regions": [
+          [
+            5,
+            6,
+            7,
+            8,
+            9
+          ]
+        ],
+        "boundary_nodes": [
+          7
+        ],
+        "materialization_nodes": [
+          7
+        ],
+        "logical_bytes": 200,
+        "managed_bytes": 40,
+        "saved_bytes": 160
+      },
+      "objective_bitwise_equal": true,
+      "gradient_bitwise_equal": true,
+      "structured_graph_digest": "8deb4d9b8fd706de009b9fd4df0841d56a1cdd208f8bf60901f25f0e62f4b2e9"
+    }
+  ],
+  "relu_policy_selection": {
+    "dense": {
+      "policy": "packed_sign",
+      "peak_bytes": 908
+    },
+    "structured": {
+      "policy": "resident_input",
+      "peak_bytes": 712
+    }
+  },
+  "scope": "CPU bitwise differential execution and logical certificate metrics; region savings are not necessarily peak savings; no allocator, FLOP, hardware-traffic, CUDA, or speed claim"
+}
