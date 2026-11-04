@@ -1,0 +1,263 @@
+{
+  "solver_version": "5.1.0",
+  "proofs": [
+    {
+      "name": "linear_demand_residual_sufficiency_000",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Exact real scalar affine adjoint; dx=g*w, dw=x*g, db=g; requested mask 000; no floating or matrix-kernel claim",
+      "counterexample": null
+    },
+    {
+      "name": "linear_demand_residual_sufficiency_001",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Exact real scalar affine adjoint; dx=g*w, dw=x*g, db=g; requested mask 001; no floating or matrix-kernel claim",
+      "counterexample": null
+    },
+    {
+      "name": "linear_demand_residual_sufficiency_010",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Exact real scalar affine adjoint; dx=g*w, dw=x*g, db=g; requested mask 010; no floating or matrix-kernel claim",
+      "counterexample": null
+    },
+    {
+      "name": "linear_demand_residual_sufficiency_011",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Exact real scalar affine adjoint; dx=g*w, dw=x*g, db=g; requested mask 011; no floating or matrix-kernel claim",
+      "counterexample": null
+    },
+    {
+      "name": "linear_demand_residual_sufficiency_100",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Exact real scalar affine adjoint; dx=g*w, dw=x*g, db=g; requested mask 100; no floating or matrix-kernel claim",
+      "counterexample": null
+    },
+    {
+      "name": "linear_demand_residual_sufficiency_101",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Exact real scalar affine adjoint; dx=g*w, dw=x*g, db=g; requested mask 101; no floating or matrix-kernel claim",
+      "counterexample": null
+    },
+    {
+      "name": "linear_demand_residual_sufficiency_110",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Exact real scalar affine adjoint; dx=g*w, dw=x*g, db=g; requested mask 110; no floating or matrix-kernel claim",
+      "counterexample": null
+    },
+    {
+      "name": "linear_demand_residual_sufficiency_111",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Exact real scalar affine adjoint; dx=g*w, dw=x*g, db=g; requested mask 111; no floating or matrix-kernel claim",
+      "counterexample": null
+    },
+    {
+      "name": "linear_demand_residual_sufficiency",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Exact real scalar affine adjoint and all three residual formulas; eight demand projections are separate nonvacuous queries above",
+      "counterexample": null
+    },
+    {
+      "name": "jet_normalized_product_order_four",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Exact real normalized Taylor convolution at order four; raw derivative inputs, binomial Leibniz coefficients, no IEEE claim",
+      "counterexample": null
+    },
+    {
+      "name": "jet_horner_order_four",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Exact real fourth-order sparse-composition Horner evaluation; does not prove operator-specific transcendental coefficients",
+      "counterexample": null
+    },
+    {
+      "name": "m25_replay_cotangent_chain",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Exact real three-layer cotangent recurrence; replay re-encoding must separately reconstruct each tail residual",
+      "counterexample": null
+    },
+    {
+      "name": "m25_policy_choice_memory_guard",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Integer managed-memory candidate selection; minimum peak never exceeds the original candidate, not an allocator measurement",
+      "counterexample": null
+    },
+    {
+      "name": "m25_cached_work_le_streaming",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Nonnegative integer chain depth; cached L evaluations versus streaming L(L+1)/2 prefix evaluations, compared without division",
+      "counterexample": null
+    },
+    {
+      "name": "m4_activation_chain_split_fuse",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Function-composition model of activation-program append and segmentation",
+      "counterexample": null
+    },
+    {
+      "name": "m4_matmul_reassociation",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Explicit 2x2 exact-real matrix reassociation model; not an FP bitwise claim",
+      "counterexample": null
+    },
+    {
+      "name": "m4_transpose_matmul",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Explicit 2x2 exact-real structured transpose/adjoint model",
+      "counterexample": null
+    },
+    {
+      "name": "m4_transpose_involution",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Transpose involution on the explicit matrix model",
+      "counterexample": null
+    },
+    {
+      "name": "structured_sum_uniform",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Full-sum adjoint decodes one scalar witness as the constant ones field",
+      "counterexample": null
+    },
+    {
+      "name": "structured_mean_uniform",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Exact-real nonzero mean divisor and scalar-before-broadcast decoding",
+      "counterexample": null
+    },
+    {
+      "name": "structured_uniform_add",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Scalar uniform addition and exact-real additive composition; no FP reassociation claim",
+      "counterexample": null
+    },
+    {
+      "name": "structured_uniform_reindex",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Contravariant reindex composition preserves the constant-field invariant",
+      "counterexample": null
+    },
+    {
+      "name": "structured_materialize_identity",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Dense materialization is entry-for-entry decoding of the uniform witness",
+      "counterexample": null
+    },
+    {
+      "name": "structured_uniform_region_storage",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Three nonempty uniform values: exact logical/managed/saved byte decomposition",
+      "counterexample": null
+    },
+    {
+      "name": "packed_sign_roundtrip_and_pullback",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "All 256 packed bytes plus FP32 ReLU pullback for arbitrary input, including NaN input and signed zero; NaN upstream excluded from bitwise payload comparison",
+      "counterexample": null
+    },
+    {
+      "name": "core_fanout_accumulation",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Two exact real cotangent contributions to one shared value; floating reassociation is intentionally not claimed",
+      "counterexample": null
+    },
+    {
+      "name": "m4_original_retained_without_strict_improvement",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "Lexicographic backward-inclusive objective: without a strictly better candidate the selected four-part cost is the original",
+      "counterexample": null
+    },
+    {
+      "name": "m4_bounded_error_budget_nonnegative",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "scope": "A nonnegative admitted error bound within budget implies a nonnegative error budget",
+      "counterexample": null
+    }
+  ],
+  "all_proofs_passed": true,
+  "counterexamples": [
+    {
+      "name": "positive_only_relu_mask_refuted_for_NaN",
+      "status": "sat",
+      "refutation_verified": true,
+      "model": "[core_relu_input = NaN, core_relu_upstream = +0.0]",
+      "scope": "FP32 NaN input: PyTorch threshold convention differs from x>0"
+    },
+    {
+      "name": "m25_universal_fusion_peak_improvement_refuted",
+      "status": "sat",
+      "refutation_verified": true,
+      "model": "[m25_fused_peak = 1, m25_native_peak = 1]",
+      "scope": "A fused candidate may have no lower peak; the optimizer must retain the original candidate"
+    },
+    {
+      "name": "m4_unconditional_bitwise_reassociation_refuted",
+      "status": "sat",
+      "refutation_verified": true,
+      "model": "[m4_fp_b = 1.8201904296875*(2**-81),\n core_relu_input = -1.99999964237213134765625*(2**-62),\n m4_fp_c = -1.03509521484375*(2**-80),\n fp.to_ieee_bv = [else -> fp.to_ieee_bv(Var(0))]]",
+      "scope": "Finite FP32 addition reassociation counterexample; matrix contraction inherits this numerical boundary"
+    },
+    {
+      "name": "m4_square_output_only_residual_refuted",
+      "status": "sat",
+      "refutation_verified": true,
+      "model": "[m4_square_x = 1, m4_square_y = 1]",
+      "scope": "Distinct exact-real input fibers x and -x have the same square output"
+    }
+  ],
+  "no_GPU_hardware_certification": true,
+  "lean_rocq_kernels_executed_by_this_tool": false,
+  "scoped_kernel_report": "reports/formal-kernel-results.json"
+}

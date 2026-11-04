@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "solver_version": "5.1.0",
+  "proofs": [
+    {
+      "name": "accumulation_complete_window_is_arithmetic_mean",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "counterexample": null,
+      "scope": "Four independent real gradients; one logical optimizer window; not an IEEE rounding claim"
+    },
+    {
+      "name": "accumulation_partial_flush_1_of_4",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "counterexample": null,
+      "scope": "Real mean of the final 1 microbatches after rescaling by 4/1"
+    },
+    {
+      "name": "accumulation_partial_flush_2_of_4",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "counterexample": null,
+      "scope": "Real mean of the final 2 microbatches after rescaling by 4/2"
+    },
+    {
+      "name": "accumulation_partial_flush_3_of_4",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "counterexample": null,
+      "scope": "Real mean of the final 3 microbatches after rescaling by 4/3"
+    },
+    {
+      "name": "accumulation_consumption_clears_count_and_storage",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "counterexample": null,
+      "scope": "Abstract consumed-window state; packed/unpacked storage cleanup is separately exercised in PyTorch tests"
+    },
+    {
+      "name": "native_row_groups_make_flat_scale_reshape_exact",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "counterexample": null,
+      "scope": "Unbounded positive integer dimensions; exact per-row scale-count arithmetic"
+    },
+    {
+      "name": "compressed_block_layout_padding_bound",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "counterexample": null,
+      "scope": "Positive integer element count and 32-wide blocks; exact ceil-div padding and one-block bound"
+    },
+    {
+      "name": "raw_wire_allocation_has_a_strict_element_derived_bound",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "counterexample": null,
+      "scope": "Bounded integer allocation arithmetic for supported 16/32/64-bit raw dtypes; frame limits are separate"
+    },
+    {
+      "name": "checked_candidate_selection_preserves_native_fallback",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "counterexample": null,
+      "scope": "Exact selection logic after independent value/gradient validation; floating allclose is tested separately"
+    },
+    {
+      "name": "mesh_ordered_session_rejects_immediate_replay",
+      "preconditions": "sat",
+      "counterexample_query": "unsat",
+      "verified": true,
+      "counterexample": null,
+      "scope": "Ordered per-connection sequence state only; random session binding/HMAC and cross-connection replay require the protocol implementation"
+    }
+  ],
+  "counterexamples": [
+    {
+      "name": "old_trainer_and_optimizer_double_scaling_refuted",
+      "status": "sat",
+      "refutation_verified": true,
+      "model": "[g3 = 0, g2 = 0, g1 = 0, g0 = 1]",
+      "witness": {
+        "old_effective_gradient": "1/16",
+        "required_mean_gradient": "1/4"
+      },
+      "scope": "Old G=4 pipeline: backward gradients divided by four and optimizer divides by four again"
+    },
+    {
+      "name": "flat_total_divisibility_is_not_a_native_row_layout",
+      "status": "sat",
+      "refutation_verified": true,
+      "model": "[native_k = 48, native_group = 32, native_n = 4]",
+      "witness": {
+        "total_scales": 6,
+        "scales_mod_rows": 2
+      },
+      "scope": "K=48,N=4,G=32: total divisibility holds, but six scales cannot reshape as four complete rows"
+    }
+  ],
+  "all_proofs_passed": true,
+  "all_counterexamples_verified": true,
+  "source_sha256": {
+    "ojasx2/grad_free_optimizer.py": "81c445afc2467c842b8ff8ae9f42c0744292b548d83aab5b8ea43286d89f5ffd",
+    "ojasx2/numerical_repairs.py": "d48faf4a8ff4f24f4f6f406e7d7618d94f9e69753ae501adb43af659b8bccc9f",
+    "ojasx2/math/lattice.py": "e2bb4bcf3ebde953c63da1ff867a0a06921f50ab940c7c4cb91d7fdb886f045b",
+    "ojasx2/mesh_hal.py": "6df3d1271775e43b5189aa3003e116be7f8d64da77133ee0f6a57af3d780dcf0",
+    "tools/verify_remediation_z3.py": "f0f32e68f860cc2a49024a344ba4d49a909a1830579529d8247eecc1e0f10e4d"
+  },
+  "trust_boundary": "Exact SMT models of the stated real/integer/selection/state contracts. No claim of Python-to-SMT refinement, cryptographic HMAC security, IEEE accuracy, or hardware qualification."
+}

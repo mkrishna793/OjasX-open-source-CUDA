@@ -1,0 +1,239 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-04T09:31:55.858504+00:00",
+  "status": "passed",
+  "full_certification": false,
+  "kernel_versions": {
+    "rocq": "9.2",
+    "lean": "4.34.0"
+  },
+  "scope": {
+    "rocq_sources": [
+      "rocq/M25Activation.v",
+      "rocq/M4Equality.v",
+      "rocq/StructuredTopology.v",
+      "rocq/CoreOperators.v"
+    ],
+    "lean_sources": [
+      "lean/OjasXMath/M25ReplayCore.lean",
+      "lean/OjasXMath/M4Equality.lean",
+      "lean/OjasXMath/StructuredTopology.lean"
+    ],
+    "rocq_assumption_audit": true,
+    "lean_assumption_audit": true,
+    "mathlib_dependent_sources_checked": false,
+    "negative_controls": true
+  },
+  "limitations": [
+    "Only the listed dependency-free sources are checked; mathlib-dependent M2.5 adjoint sources and the complete project are outside this scoped gate.",
+    "Native Rocq 9.2 executes standard 'Print Assumptions' audits verifying global context closure.",
+    "Native Lean 4 executes '#print axioms' audits verifying independence from unproved axioms (allowing standard propext, Classical.choice, Quot.sound).",
+    "These checks do not establish floating-point, allocator, CUDA, or hardware semantics beyond the explicit theorem statements."
+  ],
+  "checks": [
+    {
+      "command": [
+        "/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/.tools/opam-root/ojasx-rocq-9.2/bin/rocq",
+        "compile",
+        "-Q",
+        "/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq",
+        "Ojasx",
+        "/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq/ojasx-rocq-audit-ex8noro6/M25ActivationAssumptionAudit.v"
+      ],
+      "returncode": 0,
+      "seconds": 0.584,
+      "output_tail": "File \"/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq/ojasx-rocq-audit-ex8noro6/M25ActivationAssumptionAudit.v\", line 1, characters 15-28:\nWarning: Loading Stdlib without prefix is deprecated.\nUse \"From Stdlib Require QArith.Qcanon\"\nor the deprecated \"From Coq Require QArith.Qcanon\"\nfor compatibility with older Coq versions.\n[deprecated-missing-stdlib,deprecated-since-9.0,deprecated,default]\nFile \"/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq/ojasx-rocq-audit-ex8noro6/M25ActivationAssumptionAudit.v\", line 1, characters 29-33:\nWarning: Loading Stdlib without prefix is deprecated.\nUse \"From Stdlib Require Ring\" or the deprecated \"From Coq Require Ring\"\nfor compatibility with older Coq versions.\n[deprecated-missing-stdlib,deprecated-since-9.0,deprecated,default]\nFile \"/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq/ojasx-rocq-audit-ex8noro6/M25ActivationAssumptionAudit.v\", line 1, characters 34-37:\nWarning: Loading Stdlib without prefix is deprecated.\nUse \"From Stdlib Require Lia\" or the deprecated \"From Coq Require Lia\"\nfor compatibility with older Coq versions.\n[deprecated-missing-stdlib,deprecated-since-9.0,deprecated,default]\nClosed under the global context\nClosed under the global context\nClosed under the global context\nClosed under the global context\nClosed under the global context\nClosed under the global context\n",
+      "kernel": "rocq-native",
+      "kernel_version": "9.2",
+      "source": "rocq/M25Activation.v",
+      "source_sha256": "1b1dbaedde03f6f51647cd017d7259af94b741801436b4413c37cc22b3c3b41f",
+      "declarations": [
+        "m25_replay_tail_pullback",
+        "m25_replay_tail_optimizer",
+        "m25_cotangent_chain",
+        "m25_policy_choice_memory_guard",
+        "m25_cached_work_le_streaming",
+        "m25_fusion_peak_not_universal"
+      ],
+      "assumption_audit": "closed_under_global_context",
+      "passed": true
+    },
+    {
+      "command": [
+        "/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/.tools/opam-root/ojasx-rocq-9.2/bin/rocq",
+        "compile",
+        "-Q",
+        "/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq",
+        "Ojasx",
+        "/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq/ojasx-rocq-audit-ex8noro6/M4EqualityAssumptionAudit.v"
+      ],
+      "returncode": 0,
+      "seconds": 0.288,
+      "output_tail": "File \"/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq/ojasx-rocq-audit-ex8noro6/M4EqualityAssumptionAudit.v\", line 1, characters 38-56:\nWarning: \"From Coq\" has been replaced by \"From Stdlib\".\n[deprecated-from-Coq,deprecated-since-9.0,deprecated,default]\nFile \"/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq/ojasx-rocq-audit-ex8noro6/M4EqualityAssumptionAudit.v\", line 1, characters 15-28:\nWarning: Loading Stdlib without prefix is deprecated.\nUse \"From Stdlib Require QArith.Qcanon\"\nor the deprecated \"From Coq Require QArith.Qcanon\"\nfor compatibility with older Coq versions.\n[deprecated-missing-stdlib,deprecated-since-9.0,deprecated,default]\nFile \"/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq/ojasx-rocq-audit-ex8noro6/M4EqualityAssumptionAudit.v\", line 1, characters 29-33:\nWarning: Loading Stdlib without prefix is deprecated.\nUse \"From Stdlib Require Ring\" or the deprecated \"From Coq Require Ring\"\nfor compatibility with older Coq versions.\n[deprecated-missing-stdlib,deprecated-since-9.0,deprecated,default]\nFile \"/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq/ojasx-rocq-audit-ex8noro6/M4EqualityAssumptionAudit.v\", line 1, characters 34-37:\nWarning: Loading Stdlib without prefix is deprecated.\nUse \"From Stdlib Require Lia\" or the deprecated \"From Coq Require Lia\"\nfor compatibility with older Coq versions.\n[deprecated-missing-stdlib,deprecated-since-9.0,deprecated,default]\nClosed under the global context\nClosed under the global context\nClosed under the global context\nClosed under the global context\nClosed under the global context\n",
+      "kernel": "rocq-native",
+      "kernel_version": "9.2",
+      "source": "rocq/M4Equality.v",
+      "source_sha256": "4fd887742cf05a9ae1325d42be4ba2fb873644d871966360ab483c1881bb21fa",
+      "declarations": [
+        "m4_activation_chain_split_fuse",
+        "m4_transpose_involution",
+        "m4_square_output_residual_incomplete",
+        "m4_original_retained_without_strict_improvement",
+        "m4_bounded_error_budget_nonnegative"
+      ],
+      "assumption_audit": "closed_under_global_context",
+      "passed": true
+    },
+    {
+      "command": [
+        "/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/.tools/opam-root/ojasx-rocq-9.2/bin/rocq",
+        "compile",
+        "-Q",
+        "/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq",
+        "Ojasx",
+        "/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq/ojasx-rocq-audit-ex8noro6/StructuredTopologyAssumptionAudit.v"
+      ],
+      "returncode": 0,
+      "seconds": 0.296,
+      "output_tail": "File \"/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq/ojasx-rocq-audit-ex8noro6/StructuredTopologyAssumptionAudit.v\", line 1, characters 38-52:\nWarning: \"From Coq\" has been replaced by \"From Stdlib\".\n[deprecated-from-Coq,deprecated-since-9.0,deprecated,default]\nFile \"/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq/ojasx-rocq-audit-ex8noro6/StructuredTopologyAssumptionAudit.v\", line 1, characters 15-28:\nWarning: Loading Stdlib without prefix is deprecated.\nUse \"From Stdlib Require QArith.Qcanon\"\nor the deprecated \"From Coq Require QArith.Qcanon\"\nfor compatibility with older Coq versions.\n[deprecated-missing-stdlib,deprecated-since-9.0,deprecated,default]\nFile \"/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq/ojasx-rocq-audit-ex8noro6/StructuredTopologyAssumptionAudit.v\", line 1, characters 29-33:\nWarning: Loading Stdlib without prefix is deprecated.\nUse \"From Stdlib Require Ring\" or the deprecated \"From Coq Require Ring\"\nfor compatibility with older Coq versions.\n[deprecated-missing-stdlib,deprecated-since-9.0,deprecated,default]\nFile \"/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq/ojasx-rocq-audit-ex8noro6/StructuredTopologyAssumptionAudit.v\", line 1, characters 34-37:\nWarning: Loading Stdlib without prefix is deprecated.\nUse \"From Stdlib Require Lia\" or the deprecated \"From Coq Require Lia\"\nfor compatibility with older Coq versions.\n[deprecated-missing-stdlib,deprecated-since-9.0,deprecated,default]\nClosed under the global context\nClosed under the global context\nClosed under the global context\nClosed under the global context\nClosed under the global context\nClosed under the global context\nClosed under the global context\n",
+      "kernel": "rocq-native",
+      "kernel_version": "9.2",
+      "source": "rocq/StructuredTopology.v",
+      "source_sha256": "5c1a52c3be855565da7a4ae20d8ac9263ee9240de58672e86b4c5ef44eb7be1d",
+      "declarations": [
+        "structured_sum_uniform",
+        "structured_mean_uniform",
+        "structured_uniform_add",
+        "structured_uniform_reindex",
+        "structured_reindex_identity",
+        "structured_materialize_identity",
+        "structured_uniform_region_storage"
+      ],
+      "assumption_audit": "closed_under_global_context",
+      "passed": true
+    },
+    {
+      "command": [
+        "/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/.tools/opam-root/ojasx-rocq-9.2/bin/rocq",
+        "compile",
+        "-Q",
+        "/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq",
+        "Ojasx",
+        "/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq/ojasx-rocq-audit-ex8noro6/CoreOperatorsAssumptionAudit.v"
+      ],
+      "returncode": 0,
+      "seconds": 0.555,
+      "output_tail": "Closed under the global context\nClosed under the global context\nClosed under the global context\nClosed under the global context\nClosed under the global context\nClosed under the global context\nClosed under the global context\nClosed under the global context\n",
+      "kernel": "rocq-native",
+      "kernel_version": "9.2",
+      "source": "rocq/CoreOperators.v",
+      "source_sha256": "2ac0164403033f488efc107941f5de50bbd5af0d0d3022a4fc0c7271fc73b819",
+      "declarations": [
+        "core_linear_pairing",
+        "core_add_pullback",
+        "core_sum_pullback",
+        "core_fanout_accumulation",
+        "core_linear_demand_all",
+        "core_linear_demand_weight_only",
+        "core_linear_demand_input_only",
+        "core_linear_demand_none"
+      ],
+      "assumption_audit": "closed_under_global_context",
+      "passed": true
+    },
+    {
+      "command": [
+        "/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/.tools/opam-root/ojasx-rocq-9.2/bin/rocq",
+        "compile",
+        "-Q",
+        "/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq",
+        "Ojasx",
+        "/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq/ojasx-rocq-audit-ex8noro6/FalseKernelGuard.v"
+      ],
+      "returncode": 1,
+      "seconds": 0.03,
+      "output_tail": "File \"/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/rocq/ojasx-rocq-audit-ex8noro6/FalseKernelGuard.v\", line 2, characters 7-18:\nError: Unable to unify \"1\" with \"0\".\n\n",
+      "kernel": "rocq-native",
+      "kernel_version": "9.2",
+      "negative_control": true,
+      "passed": true
+    },
+    {
+      "command": [
+        "/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/.tools/elan/bin/lean",
+        "/var/folders/cg/h5t4h00n5p51252tdk6zlj0c0000gn/T/ojasx-lean-audit-wbt6svgv/M25ReplayCoreAssumptionAudit.lean"
+      ],
+      "returncode": 0,
+      "seconds": 1.18,
+      "output_tail": "'OjasXMath.m25_replay_tail_substitution' does not depend on any axioms\n'OjasXMath.m25_replay_optimizer_substitution' does not depend on any axioms\n'OjasXMath.m25_minimum_candidate_guard' depends on axioms: [propext]\n",
+      "kernel": "lean4-native",
+      "kernel_version": "4.34.0",
+      "source": "lean/OjasXMath/M25ReplayCore.lean",
+      "source_sha256": "7a400e8c46d5e15285b179be95a81563d9bc4ade6c9145afe7a98ccd992f7c5f",
+      "declarations": [
+        "m25_replay_tail_substitution",
+        "m25_replay_optimizer_substitution",
+        "m25_minimum_candidate_guard"
+      ],
+      "assumption_audit": "standard_axioms_only",
+      "passed": true
+    },
+    {
+      "command": [
+        "/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/.tools/elan/bin/lean",
+        "/var/folders/cg/h5t4h00n5p51252tdk6zlj0c0000gn/T/ojasx-lean-audit-wbt6svgv/M4EqualityAssumptionAudit.lean"
+      ],
+      "returncode": 0,
+      "seconds": 0.16,
+      "output_tail": "'OjasXMath.m4_activation_chain_split_fuse' does not depend on any axioms\n'OjasXMath.m4_original_retained_without_strict_improvement' depends on axioms: [propext]\n'OjasXMath.m4_bounded_error_budget_nonnegative' depends on axioms: [propext, Classical.choice, Quot.sound]\n",
+      "kernel": "lean4-native",
+      "kernel_version": "4.34.0",
+      "source": "lean/OjasXMath/M4Equality.lean",
+      "source_sha256": "577bf758947683fa9a37511f5bf39c0d81f658b84c8f8e8f3283e3adbae186af",
+      "declarations": [
+        "m4_activation_chain_split_fuse",
+        "m4_original_retained_without_strict_improvement",
+        "m4_bounded_error_budget_nonnegative"
+      ],
+      "assumption_audit": "standard_axioms_only",
+      "passed": true
+    },
+    {
+      "command": [
+        "/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/.tools/elan/bin/lean",
+        "/var/folders/cg/h5t4h00n5p51252tdk6zlj0c0000gn/T/ojasx-lean-audit-wbt6svgv/StructuredTopologyAssumptionAudit.lean"
+      ],
+      "returncode": 0,
+      "seconds": 0.168,
+      "output_tail": "'OjasXMath.structured_sum_uniform' does not depend on any axioms\n'OjasXMath.structured_mean_uniform' depends on axioms: [propext, Classical.choice, Quot.sound]\n'OjasXMath.structured_uniform_add' depends on axioms: [propext, Classical.choice, Quot.sound]\n'OjasXMath.structured_uniform_reindex' does not depend on any axioms\n'OjasXMath.structured_reindex_identity' does not depend on any axioms\n'OjasXMath.structured_materialize_identity' does not depend on any axioms\n",
+      "kernel": "lean4-native",
+      "kernel_version": "4.34.0",
+      "source": "lean/OjasXMath/StructuredTopology.lean",
+      "source_sha256": "e9c4d8db5355eb6508d1f644d4325e4c0595469093e4cd06419c7fb786796e33",
+      "declarations": [
+        "structured_sum_uniform",
+        "structured_mean_uniform",
+        "structured_uniform_add",
+        "structured_uniform_reindex",
+        "structured_reindex_identity",
+        "structured_materialize_identity"
+      ],
+      "assumption_audit": "standard_axioms_only",
+      "passed": true
+    },
+    {
+      "command": [
+        "/Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt/.tools/elan/bin/lean",
+        "/var/folders/cg/h5t4h00n5p51252tdk6zlj0c0000gn/T/ojasx-lean-audit-wbt6svgv/FalseKernelGuard.lean"
+      ],
+      "returncode": 1,
+      "seconds": 0.148,
+      "output_tail": "/var/folders/cg/h5t4h00n5p51252tdk6zlj0c0000gn/T/ojasx-lean-audit-wbt6svgv/FalseKernelGuard.lean:1:0: error: Not a definitional equality: the left-hand side\n  0\nis not definitionally equal to the right-hand side\n  1\n/var/folders/cg/h5t4h00n5p51252tdk6zlj0c0000gn/T/ojasx-lean-audit-wbt6svgv/FalseKernelGuard.lean:1:44: error: Type mismatch\n  rfl\nhas type\n  ?m.8 = ?m.8\nbut is expected to have type\n  0 = 1\n",
+      "kernel": "lean4-native",
+      "kernel_version": "4.34.0",
+      "negative_control": true,
+      "assumption_audit": "not_applicable",
+      "passed": true
+    }
+  ]
+}
