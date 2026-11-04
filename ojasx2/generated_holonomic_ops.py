@@ -18,74 +18,48 @@ import torch.nn.functional as F
 
 HOLONOMIC_DECLARATIONS_LEDGER: Dict[str, Any] = {
   "namespace": "ojasx_holonomic",
-  "version": "2.0.0",
   "operators": [
     {
-      "name": "rmsnorm",
+      "backward_formula": "dx = rstd * (dy * gamma) - (x * rstd^3 / D) * sum((dy * gamma) * x, dim=-1, keepdim=True); dgamma = sum(dy * x * rstd, batch_dims)",
+      "dispatch_keys": [
+        "MPS",
+        "CPU",
+        "Meta",
+        "Autograd"
+      ],
       "edge_cases": [
         "empty_numel_guard",
         "non_contiguous_reshape",
         "higher_order_recompute"
       ],
+      "forward_formula": "rstd = rsqrt(mean(x^2, dim=-1, keepdim=True) + eps); y = (x * rstd) * gamma",
+      "fresh_saved_contract": "O(M) scalar rstd per token [M, 1]; 99.98% reduction vs [M, D] intermediate copies",
       "func_schema": "rmsnorm(Tensor x, Tensor gamma, float eps=1e-6) -> (Tensor, Tensor)",
-      "dispatch_keys": [
-        "MPS",
-        "CPU",
-        "Meta",
-        "Autograd"
-      ],
+      "name": "rmsnorm",
       "saved_for_backward": [
         "x",
         "gamma",
         "rstd"
-      ],
-      "fresh_saved_contract": "O(M) scalar rstd per token [M, 1]; 99.98% reduction vs [M, D] intermediate copies",
-      "forward_formula": "rstd = rsqrt(mean(x^2, dim=-1, keepdim=True) + eps); y = (x * rstd) * gamma",
-      "backward_formula": "dx = rstd * (dy * gamma) - (x * rstd^3 / D) * sum((dy * gamma) * x, dim=-1, keepdim=True); dgamma = sum(dy * x * rstd, batch_dims)"
+      ]
     },
     {
-      "name": "swiglu",
-      "edge_cases": [
-        "empty_numel_guard",
-        "non_contiguous_reshape",
-        "higher_order_recompute",
-        "optional_bias_handling"
-      ],
-      "func_schema": "swiglu(Tensor x, Tensor w_gate, Tensor w_up, Tensor? b_gate=None, Tensor? b_up=None) -> Tensor",
+      "backward_formula": "sig = sigmoid(z_gate); ds = sig * (1 + z_gate * (1 - sig)); dz_up = dy * (z_gate * sig); dz_gate = dy * z_up * ds",
       "dispatch_keys": [
         "MPS",
         "CPU",
         "Meta",
         "Autograd"
       ],
-      "saved_for_backward": [
-        "x",
-        "w_gate",
-        "w_up",
-        "b_gate",
-        "b_up",
-        "z_gate",
-        "z_up"
+      "edge_cases": [
+        "empty_numel_guard",
+        "non_contiguous_reshape",
+        "higher_order_recompute",
+        "optional_bias_handling"
       ],
-      "fresh_saved_contract": "0 bytes post-activation DRAM storage; in-register silu & derivative reconstruction",
       "forward_formula": "z_gate = linear(x, w_gate, b_gate); z_up = linear(x, w_up, b_up); y = silu(z_gate) * z_up",
-      "backward_formula": "sig = sigmoid(z_gate); ds = sig * (1 + z_gate * (1 - sig)); dz_up = dy * (z_gate * sig); dz_gate = dy * z_up * ds"
-    },
-    {
-      "name": "geglu",
-      "edge_cases": [
-        "empty_numel_guard",
-        "non_contiguous_reshape",
-        "higher_order_recompute",
-        "optional_bias_handling"
-      ],
-      "func_schema": "geglu(Tensor x, Tensor w_gate, Tensor w_up, Tensor? b_gate=None, Tensor? b_up=None) -> Tensor",
-      "dispatch_keys": [
-        "MPS",
-        "CPU",
-        "Meta",
-        "Autograd"
-      ],
+      "fresh_saved_contract": "0 bytes post-activation DRAM storage; in-register silu & derivative reconstruction",
+      "func_schema": "swiglu(Tensor x, Tensor w_gate, Tensor w_up, Tensor? b_gate=None, Tensor? b_up=None) -> Tensor",
+      "name": "swiglu",
       "saved_for_backward": [
         "x",
         "w_gate",
@@ -94,58 +68,84 @@ HOLONOMIC_DECLARATIONS_LEDGER: Dict[str, Any] = {
         "b_up",
         "z_gate",
         "z_up"
-      ],
-      "fresh_saved_contract": "0 bytes post-activation DRAM storage; in-register gelu_tanh & derivative reconstruction",
-      "forward_formula": "z_gate = linear(x, w_gate, b_gate); z_up = linear(x, w_up, b_up); y = gelu_tanh(z_gate) * z_up",
-      "backward_formula": "dz_up = dy * gelu_tanh(z_gate); dz_gate = gelu_backward(dy * z_up, z_gate, approximate='tanh')"
+      ]
     },
     {
-      "name": "rope",
+      "backward_formula": "dz_up = dy * gelu_tanh(z_gate); dz_gate = gelu_backward(dy * z_up, z_gate, approximate='tanh')",
+      "dispatch_keys": [
+        "MPS",
+        "CPU",
+        "Meta",
+        "Autograd"
+      ],
+      "edge_cases": [
+        "empty_numel_guard",
+        "non_contiguous_reshape",
+        "higher_order_recompute",
+        "optional_bias_handling"
+      ],
+      "forward_formula": "z_gate = linear(x, w_gate, b_gate); z_up = linear(x, w_up, b_up); y = gelu_tanh(z_gate) * z_up",
+      "fresh_saved_contract": "0 bytes post-activation DRAM storage; in-register gelu_tanh & derivative reconstruction",
+      "func_schema": "geglu(Tensor x, Tensor w_gate, Tensor w_up, Tensor? b_gate=None, Tensor? b_up=None) -> Tensor",
+      "name": "geglu",
+      "saved_for_backward": [
+        "x",
+        "w_gate",
+        "w_up",
+        "b_gate",
+        "b_up",
+        "z_gate",
+        "z_up"
+      ]
+    },
+    {
+      "backward_formula": "dy1, dy2 = split_half(dy); dx = cat(dy1 * cos + dy2 * sin, -dy1 * sin + dy2 * cos, dim=-1)",
+      "dispatch_keys": [
+        "MPS",
+        "CPU",
+        "Meta",
+        "Autograd"
+      ],
       "edge_cases": [
         "empty_numel_guard",
         "even_last_dim_guard",
         "broadcast_trig_tables",
         "higher_order_orthogonal"
       ],
+      "forward_formula": "x1, x2 = split_half(x); y = cat(x1 * cos - x2 * sin, x1 * sin + x2 * cos, dim=-1)",
+      "fresh_saved_contract": "0 bytes input x retention; orthogonal group inverse x = R_{-theta}(y) and dx = R_{-theta}(dy)",
       "func_schema": "rope(Tensor x, Tensor cos, Tensor sin) -> Tensor",
+      "name": "rope",
+      "saved_for_backward": [
+        "y",
+        "cos",
+        "sin"
+      ]
+    },
+    {
+      "backward_formula": "p = exp(scores - lse); dscores = p * (dp - sum(dp * p, dim=-1, keepdim=True))",
       "dispatch_keys": [
         "MPS",
         "CPU",
         "Meta",
         "Autograd"
       ],
-      "saved_for_backward": [
-        "y",
-        "cos",
-        "sin"
-      ],
-      "fresh_saved_contract": "0 bytes input x retention; orthogonal group inverse x = R_{-theta}(y) and dx = R_{-theta}(dy)",
-      "forward_formula": "x1, x2 = split_half(x); y = cat(x1 * cos - x2 * sin, x1 * sin + x2 * cos, dim=-1)",
-      "backward_formula": "dy1, dy2 = split_half(dy); dx = cat(dy1 * cos + dy2 * sin, -dy1 * sin + dy2 * cos, dim=-1)"
-    },
-    {
-      "name": "attention_softmax_lse",
       "edge_cases": [
         "empty_numel_guard",
         "numerical_max_shift_stability",
         "higher_order_recompute"
       ],
+      "forward_formula": "m = amax(scores, dim=-1, keepdim=True); lse = m + log(sum(exp(scores - m), dim=-1, keepdim=True)); p = exp(scores - lse)",
+      "fresh_saved_contract": "Retains scalar log-sum-exp lse [..., M, 1] instead of materializing full [..., M, M] probability buffer for backward",
       "func_schema": "attention_softmax_lse(Tensor scores) -> (Tensor, Tensor)",
-      "dispatch_keys": [
-        "MPS",
-        "CPU",
-        "Meta",
-        "Autograd"
-      ],
+      "name": "attention_softmax_lse",
       "saved_for_backward": [
         "scores",
         "lse"
-      ],
-      "fresh_saved_contract": "Retains scalar log-sum-exp lse [..., M, 1] instead of materializing full [..., M, M] probability buffer for backward",
-      "forward_formula": "m = amax(scores, dim=-1, keepdim=True); lse = m + log(sum(exp(scores - m), dim=-1, keepdim=True)); p = exp(scores - lse)",
-      "backward_formula": "p = exp(scores - lse); dscores = p * (dp - sum(dp * p, dim=-1, keepdim=True))"
+      ]
     }
-  ]
+  ],
+  "version": "2.0.0"
 }
 
 
