@@ -3,6 +3,7 @@ import OjasXMath.Algebra
 import OjasXMath.CachedReverse
 import OjasXMath.CertifiedBackprop
 import OjasXMath.Composition
+import OjasXMath.CoreOperators
 import OjasXMath.Contraction
 import OjasXMath.CoordinateCompiler
 import OjasXMath.CoordinateDiscovered
@@ -17,12 +18,16 @@ import OjasXMath.HolonomicJet
 import OjasXMath.InvariantDiscovered
 import OjasXMath.InvariantRadial
 import OjasXMath.LossCompiler
+import OjasXMath.M25Activation
+import OjasXMath.M4Equality
+import OjasXMath.StructuredTopology
 import OjasXMath.Multilinear
 import OjasXMath.Nonlinear
 import OjasXMath.NonlinearBounds
 import OjasXMath.NonlinearDiscovered
 import OjasXMath.ObjectiveCompiler
 import OjasXMath.RadialCore
+import OjasXMath.Remediation
 import OjasXMath.Residuals
 import OjasXMath.ReversibleOptic
 import OjasXMath.SpectralChebyshev
@@ -54,6 +59,14 @@ import OjasXMath.StreamedDagger
 #print axioms OjasXMath.dagger_involution
 #print axioms OjasXMath.dagger_composition
 #print axioms OjasXMath.matrix_product_pullback
+#print axioms OjasXMath.core_linear_pairing
+#print axioms OjasXMath.core_add_pullback
+#print axioms OjasXMath.core_sum_pullback
+#print axioms OjasXMath.core_fanout_accumulation
+#print axioms OjasXMath.core_normalized_product_order_four
+#print axioms OjasXMath.core_jet_horner_order_four
+#print axioms OjasXMath.core_weight_output_only_insufficient
+#print axioms OjasXMath.core_input_output_only_insufficient
 #print axioms OjasXMath.cotangent_fanout
 #print axioms OjasXMath.shared_projection_pullback
 #print axioms OjasXMath.sab_scalar_reconstruction
@@ -88,6 +101,15 @@ import OjasXMath.StreamedDagger
 #print axioms OjasXMath.certified_pullback_unique
 #print axioms OjasXMath.certified_fanout_accumulates
 #print axioms OjasXMath.certified_residual_reencoding
+#print axioms OjasXMath.m25_replay_tail_substitution
+#print axioms OjasXMath.m25_replay_optimizer_substitution
+#print axioms OjasXMath.m25_minimum_candidate_guard
+#print axioms OjasXMath.m25_replay_tail_primal
+#print axioms OjasXMath.m25_replay_tail_pullback
+#print axioms OjasXMath.m25_replay_tail_dagger
+#print axioms OjasXMath.m25_replay_tail_optimizer
+#print axioms OjasXMath.m25_policy_choice_memory_guard
+#print axioms OjasXMath.m4_activation_chain_split_fuse
 #print axioms OjasXMath.backward_error_composition
 #print axioms OjasXMath.reverse_composition_forward
 #print axioms OjasXMath.reverse_composition_pullback
@@ -334,6 +356,7 @@ import OjasXMath.StreamedDagger
 #print axioms OjasXMath.invariant_aligned_cubic
 #print axioms OjasXMath.invariant_norm_scale_cancellation
 #print axioms OjasXMath.stable_scaled_norm_actual_derivative
+#print axioms OjasXMath.stable_scaled_norm_zero_derivative
 #print axioms OjasXMath.stable_scaled_norm_overflow_avoiding_form
 #print axioms OjasXMath.loss_partition_positive
 #print axioms OjasXMath.loss_log_partition_derivative
@@ -585,6 +608,25 @@ import OjasXMath.StreamedDagger
 #print axioms OjasXMath.streamed_accumulation_correct
 #print axioms OjasXMath.encoded_operand_tape_elimination
 #print axioms OjasXMath.streamed_scratch_independent_of_channels
+#print axioms OjasXMath.microbatch_scaled_sum
+#print axioms OjasXMath.accumulation_partial_flush
+#print axioms OjasXMath.old_double_scaling_not_mean
+#print axioms OjasXMath.native_row_scale_reshape
+#print axioms OjasXMath.compressed_padding_bound_32
+#print axioms OjasXMath.compressed_rows_positive_32
+#print axioms OjasXMath.mesh_ordered_session_rejects_replay
+#print axioms OjasXMath.accumulation_consumption_clears_state
+#print axioms OjasXMath.accepted_checked_candidate_uses_trial
+#print axioms OjasXMath.invalid_value_preserves_native
+#print axioms OjasXMath.invalid_gradient_preserves_native
 #print axioms OjasXMath.operand_only_backward_cost
 #print axioms OjasXMath.operand_only_joint_cost
 #print axioms OjasXMath.operand_only_square_crossover
+#print axioms OjasXMath.structured_sum_uniform
+#print axioms OjasXMath.structured_mean_uniform
+#print axioms OjasXMath.structured_uniform_add
+#print axioms OjasXMath.structured_uniform_reindex
+#print axioms OjasXMath.structured_reindex_identity
+#print axioms OjasXMath.structured_materialize_identity
+#print axioms OjasXMath.m4_original_retained_without_strict_improvement
+#print axioms OjasXMath.m4_bounded_error_budget_nonnegative
