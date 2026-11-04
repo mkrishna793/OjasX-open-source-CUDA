@@ -1,0 +1,29 @@
+{
+  "base_commit": "1b0a2636491cbb451d82ebff6976220a473e84b1",
+  "codegen_declarations": 5,
+  "command": ".venv/bin/python tools/verify_static_and_symbolic.py",
+  "formal_source_tree": {
+    "algorithm": "sha256 over length-prefixed relative paths and file bytes",
+    "digest": "2ee1acef115ac773f6c03387524d870dc9e07e44029a8dfef0a5c02b8b34c442",
+    "file_count": 64
+  },
+  "generated_at_utc": "2026-11-03T10:19:37.142571+00:00",
+  "imported_symbols_verified": 453,
+  "lean_theorems_in_source_audit": 570,
+  "log": "reports/static-remediation.txt",
+  "log_sha256": "053af01bd62c1fd7fc5c54087c23e7b0f0dff1bef06193ee5d62514a2e1b96dd",
+  "metal_swizzle_scope": "tested grid/panel set only",
+  "mlir_ssa_pass_audit": "passed",
+  "proof_kernels_executed": [],
+  "python_files_scanned": 515,
+  "result": "passed",
+  "rocq_files_scanned": 28,
+  "schema_version": 1,
+  "source_tree": {
+    "algorithm": "sha256 over length-prefixed relative paths and file bytes",
+    "digest": "2a81a95dd44c2dd421a5e24febdc3218d641d9ec6be23690420305dc07aae082",
+    "file_count": 232
+  },
+  "symplectic_max_error": 4.58e-16,
+  "trust_boundary": "AST/import/source scans and numerical/SSA checks only; no Lean/Rocq kernel execution, Python refinement proof, native accelerator compilation, or hardware qualification."
+}

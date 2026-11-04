@@ -1,0 +1,34 @@
+.....................................................s.................. [  6%]
+.........................................s.........................s.... [ 13%]
+.......................sssss............................................ [ 20%]
+........................................................................ [ 27%]
+..................................................sss................... [ 34%]
+........................................................................ [ 41%]
+................ssssssssssssssssssssssssssssssssssssssssssssssssssssssss [ 48%]
+ss...................................................................... [ 55%]
+........................................................................ [ 62%]
+........................................................................ [ 69%]
+........................................................................ [ 76%]
+........................................................................ [ 83%]
+........................................................................ [ 90%]
+........................................................................ [ 96%]
+................................                                         [100%]
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_math_native.py:3: native math extension is not built; run the native artifact qualification on a supported host
+SKIPPED [1] tests/test_audit_fixes_a.py:203: Apple Silicon MPS not available on this host
+SKIPPED [1] tests/test_audit_fixes_d.py:29: MPS not available
+SKIPPED [1] tests/test_backendbench_matrix.py:586: 1B forward/backward qualification is memory-intensive; opt in with OJASX_RUN_1B=1 on a qualified host
+SKIPPED [4] tests/test_cached_reverse.py:94: MPS unavailable
+SKIPPED [1] tests/test_cached_reverse.py:114: MPS unavailable
+SKIPPED [1] tests/test_fused_e8_gemm.py:158: Native C++ ternary kernel not compiled in this build
+SKIPPED [1] tests/test_hardware.py:11: cuda hardware unavailable; no hardware verification claimed
+SKIPPED [1] tests/test_hardware.py:11: mps hardware unavailable; no hardware verification claimed
+SKIPPED [14] tests/test_mps_qualification.py:29: MPS unavailable
+SKIPPED [7] tests/test_mps_qualification.py:47: MPS unavailable
+SKIPPED [6] tests/test_mps_qualification.py:71: MPS unavailable
+SKIPPED [2] tests/test_mps_qualification.py:95: MPS unavailable
+SKIPPED [2] tests/test_mps_qualification.py:110: MPS unavailable
+SKIPPED [3] tests/test_mps_qualification.py:124: MPS unavailable
+SKIPPED [16] tests/test_mps_qualification.py:136: MPS unavailable
+SKIPPED [8] tests/test_mps_qualification.py:151: MPS unavailable
+971 passed, 70 skipped in 51.69s

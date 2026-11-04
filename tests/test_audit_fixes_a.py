@@ -120,12 +120,12 @@ def test_optimizer_grad_accum_steps():
     assert torch.equal(p_weight, orig_weight)  # Still not updated
     assert opt.last_step_updated_params == 0
 
-    # Micro-step 3 (trigger boundary: 3 % 3 == 0)
+    # Micro-step 3 completes and consumes the window.
     x3 = torch.randn(2, 4)
     loss3 = lin(x3).sum()
     loss3.backward()
 
-    assert st["accum_count"] == 3
+    assert st["accum_count"] == 0
     assert st["grad_accum"] is None  # Cleared after update
     assert p_weight.grad is None
     assert not torch.equal(p_weight, orig_weight)  # Successfully updated!

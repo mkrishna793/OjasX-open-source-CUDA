@@ -1,0 +1,33 @@
+{
+  "base_commit": "1b0a2636491cbb451d82ebff6976220a473e84b1",
+  "command": "CI=true OJASX_DISABLE_UPDATE_CHECK=1 OJASX_BUILD_NATIVE=0 PYTORCH_ENABLE_MPS_FALLBACK=0 PYTHONPATH=. .venv/bin/python -m pytest -q --tb=short --junitxml=reports/pytest-remediation.xml",
+  "duration_seconds": 51.688,
+  "errors": 0,
+  "failures": 0,
+  "generated_at_utc": "2026-11-03T10:19:37.138801+00:00",
+  "generated_cpu_source": "tests/test_emitted_cpu_kernel.py compiled and executed the generated C++20 CPU kernel; this is not a Torch native-extension build.",
+  "log": "reports/pytest-remediation.txt",
+  "log_sha256": "7ea5e06c5b7700bc9d345ad1e1251d5ea9d33dd4e457069c155419f3d45a2ffd",
+  "passed": 971,
+  "result": "passed",
+  "schema_version": 1,
+  "scope": "Complete tests/ discovery on portable CPU. Native math/Torch libraries, MPS/CUDA hardware, and the opt-in 1B workload were not executed. Lean/Rocq proof kernels are outside this pytest result.",
+  "skip_reasons": {
+    "1B forward/backward qualification is memory-intensive; opt in with OJASX_RUN_1B=1 on a qualified host": 1,
+    "Apple Silicon MPS not available on this host": 1,
+    "MPS not available": 1,
+    "MPS unavailable": 63,
+    "Native C++ ternary kernel not compiled in this build": 1,
+    "collection skipped": 1,
+    "cuda hardware unavailable; no hardware verification claimed": 1,
+    "mps hardware unavailable; no hardware verification claimed": 1
+  },
+  "skipped": 70,
+  "source_tree": {
+    "algorithm": "sha256 over length-prefixed relative paths and file bytes",
+    "digest": "2a81a95dd44c2dd421a5e24febdc3218d641d9ec6be23690420305dc07aae082",
+    "file_count": 232
+  },
+  "tests": 1041,
+  "working_tree": "uncommitted remediation working tree"
+}

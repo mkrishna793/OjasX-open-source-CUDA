@@ -149,19 +149,19 @@ def checked_value_and_grad(native, candidate, operands, create_graph=False,
     trajectory certificate. Callbacks must be pure/deterministic, with fixed
     random masks and no mutation. Native NaN semantics survive rejection.
     """
-    # Removed MPS-only restriction; support CUDA/ROCm/CPU/XPU
-    # Original: if any(t.device.type != "mps" for t in operands):
-    #              raise ValueError("MPS only")
-    if any(t.device.type not in ("mps", "cuda", "cpu", "xpu", "rocm") for t in operands):
-        pass  # Universal hardware support
+    supported_devices = {"cpu", "cuda", "mps", "xpu"}
+    if not operands or any(not isinstance(t, torch.Tensor) for t in operands):
+        raise TypeError("operands must be a nonempty tuple of tensors")
+    if any(t.device.type not in supported_devices for t in operands):
+        raise ValueError(f"Expected operands on {sorted(supported_devices)}; ROCm uses the CUDA device type")
     active = tuple(t for t in operands if t.requires_grad)
+
     def run(fn, higher):
         value = fn(*operands)
-    # Removed MPS-only restriction; support CUDA/ROCm/CPU/XPU
-    # Original: if value.numel() != 1 or value.device.type != "mps":
-    #              raise ValueError("Expected scalar MPS loss")
-    if value.numel() != 1 or value.device.type not in ("mps", "cuda", "cpu", "xpu", "rocm"):
-        raise ValueError("Expected scalar universal loss")
+        if not isinstance(value, torch.Tensor) or value.numel() != 1:
+            raise ValueError("Expected a scalar tensor loss")
+        if value.device.type not in supported_devices:
+            raise ValueError("Loss device does not satisfy the checked execution contract")
         grads = (torch.autograd.grad(value, active, create_graph=higher,
                                     allow_unused=True) if active else ())
         it = iter(grads)
