@@ -55,6 +55,8 @@ def main():
     run('feature-core-run', [sys.executable, '-B', 'tools/test_feature_core.py'])
     run('polynomial-roundoff-run', [sys.executable, '-B', 'tools/certify_polynomial_roundoff.py'])
     run('z3', [sys.executable, '-B', 'tools/verify_z3.py'])
+    run('remediation-z3', [sys.executable, '-B', 'tools/verify_remediation_z3.py'])
+    run('markdown-links', [sys.executable, '-B', 'tools/check_markdown_links.py', '--json', 'reports/markdown-link-check.json'])
     run('reversible-z3', [sys.executable, '-B', 'tools/verify_reversible_z3.py'])
     run('cached-reverse-z3', [sys.executable, '-B', 'tools/verify_cached_reverse_z3.py'])
     run('pytest', [sys.executable, '-B', '-m', 'pytest', '-p', 'no:cacheprovider', '-q', '--junitxml=reports/pytest.xml'])
@@ -81,6 +83,12 @@ def main():
               'backprop_discovery': discovery,
               'feature_core': json.loads((REPORTS/'feature-core.json').read_text()),
               'polynomial_roundoff': json.loads((REPORTS/'polynomial-roundoff.json').read_text()),
+              'remediation_z3': {
+                  'proofs': len(json.loads((REPORTS/'remediation-z3.json').read_text())['proofs']),
+                  'counterexamples': len(json.loads((REPORTS/'remediation-z3.json').read_text())['counterexamples']),
+                  'scope': 'Exact scoped SMT contracts; not Python/hardware refinement or IEEE certification',
+              },
+              'markdown_links': json.loads((REPORTS/'markdown-link-check.json').read_text()),
               'reversible_z3': {'proofs':len(json.loads((REPORTS/'reversible-z3.json').read_text())['proofs']),
                                 'refutations':len(json.loads((REPORTS/'reversible-z3.json').read_text())['counterexamples'])},
               'cached_reverse_z3': {'proofs':len(json.loads((REPORTS/'cached-reverse-z3.json').read_text())['proofs']),

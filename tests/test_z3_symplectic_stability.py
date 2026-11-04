@@ -43,13 +43,14 @@ def smt_prove(
     negation: z3.BoolRef,
     description: str,
     timeout_ms: int = 15000,
+    tactic: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Prove a proposition by checking that its negation is UNSAT.
 
     Also performs a non-vacuity check: verifies that the assumptions/preconditions
     are satisfiable (SAT) before checking the negation.
     """
-    solver = z3.Solver()
+    solver = z3.Tactic(tactic).solver() if tactic else z3.Solver()
     solver.set(timeout=timeout_ms)
     for a in assumptions:
         solver.add(a)
@@ -526,6 +527,9 @@ def check_symplectic_squeeze_product_preservation(dim: int = 1) -> Dict[str, Any
         assumptions=assumptions,
         negation=negation,
         description=f"Scaling dual streams by (lambda, 1/lambda) preserves <J u, v> for dim={dim}",
+        # Use the complete quantifier-free nonlinear-real procedure. The generic
+        # nonlinear SMT strategy can time out after unrelated large suites load.
+        tactic="qfnra-nlsat",
     )
 
 
@@ -746,7 +750,7 @@ def test_z3_fp_ieee_direct_simulation() -> None:
 def test_symplectic_squeeze_product_preservation() -> None:
     for d in (1, 2, 4):
         r = check_symplectic_squeeze_product_preservation(dim=d)
-        assert r["verified"] is True, f"Failed: {r['name']}"
+        assert r["verified"] is True, f"Failed: {r}"
 
 
 def test_symplectic_squeeze_matrix_algebra() -> None:

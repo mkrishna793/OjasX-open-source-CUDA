@@ -44,6 +44,7 @@ from ojasx2.holonomic_math_compiler import (
     holonomic_linear,
     holonomic_swiglu,
 )
+from ojasx2.tensor_specs import parse_tensor_spec_args
 
 
 def log(msg: str) -> None:
@@ -222,18 +223,6 @@ def run_backendbench_real_parquet(
     total_dataset_rows = len(df)
     log(f"Total Rows in BackendBench Parquet: {total_dataset_rows:,}")
 
-    # Environment for evaluating args string
-    eval_env = {
-        "T": TensorSpec,
-        "f16": torch.float16,
-        "f32": torch.float32,
-        "bf16": torch.bfloat16,
-        "i32": torch.int32,
-        "i64": torch.int64,
-        "b8": torch.bool,
-        "torch": torch,
-    }
-
     # Filter for runnable matrix operations
     mm_ops = df[
         (df["op_name"].isin(["aten.mm.default", "aten.bmm.default", "aten.addmm.default"])) &
@@ -254,7 +243,7 @@ def run_backendbench_real_parquet(
         args_str = row["args"]
 
         try:
-            parsed_args, parsed_kwargs = eval(args_str, eval_env)
+            parsed_args, parsed_kwargs = parse_tensor_spec_args(args_str, TensorSpec)
             tensors = [a.create(device=device, requires_grad=True) for a in parsed_args if isinstance(a, TensorSpec)]
 
             torch.mps.synchronize()

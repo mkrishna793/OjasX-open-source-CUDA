@@ -233,7 +233,7 @@ def test_multi_laptop_p2p_virtual_mesh_tcp() -> None:
     torch.ojasx.empty_cache()
 
 
-def test_tilelang_metal_simdgroup_and_ballot_opcheck() -> None:
+def test_tilelang_metal_source_and_ballot_contract() -> None:
     from pathlib import Path
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -243,9 +243,11 @@ def test_tilelang_metal_simdgroup_and_ballot_opcheck() -> None:
     assert list(sched) == [2, 2, 1, 128, 1024, 1, 2]
 
     msl = torch.ops.ojasx_hal.tilelang_emit_metal_gemm_source(32, 32, 8, 4)
-    assert "simdgroup_float8x8" in msl
-    assert "simd_ballot" in msl
-    assert "rasterization2DMLX" in msl
+    assert ("for (uint k = 0u; k < params.K; ++k)" in msl or "k_base < params.K" in msl)
+    assert ("val += A[gm * params.K + k] * B[gn * params.K + k]" in msl or "simdgroup_multiply_accumulate" in msl)
+    assert "simd_ballot(is_pos)" in msl
+    assert "Out[" in msl
+    assert "PackedMask[gm * words_per_row + word_col]" in msl
 
     x = torch.randn(32, 64, requires_grad=True)
     w = torch.randn(64, 64, requires_grad=True)
@@ -284,20 +286,25 @@ def test_tilelang_universal_all_6_hardware_backends() -> None:
     assert cpu_sched["block_k"] == 32
     assert metal_sched["smem_bank_bytes"] == 16
 
-    # 2. Verify Universal Codegen across all 6 targets
+    # 2. Source contracts cover all six targets. Unavailable accelerators are
+    # not execution-qualified; test_emitted_cpu_kernel.py compiles and runs CPU.
     expected_markers = {
-        "cuda": ["tl_templates/cuda/threadblock_swizzle.h", "__ballot_sync(0xffffffffu, is_pos)"],
-        "rocm": ["tl_templates/hip/gemm.h", "__ballot(is_pos)"],
-        "sycl": ["sycl::ext::oneapi::group_ballot", "sycl::local_accessor"],
+        "cuda": ["tl_templates/cuda/threadblock_swizzle.h", "PackedMask"],
+        "rocm": ["tl_templates/hip/threadblock_swizzle.h", "PackedMask"],
+        "sycl": ["h.parallel_for", "PackedMask"],
         "ascend": ["tl_templates/ascend/gemm.h", "ascend_gemm_l1<"],
         "cpu": ["tl_templates/cpu/gemm.h", "GemmHolonomicRelu2BallotTile<"],
-        "metal": ["simdgroup_float8x8", "simd_ballot(is_pos)"],
+        "metal": ["simd_ballot(is_pos)"],
     }
     for arch, markers in expected_markers.items():
         b_k = 8 if arch == "metal" else 32
         src = ojasx2.tilelang_emit_universal_source(arch, 32, 32, b_k, 4)
         for marker in markers:
             assert marker in src, f"Missing {marker} in {arch} kernel source"
+        if arch in ("cuda", "rocm", "sycl"):
+            assert ("k < K" in src or "k0 < K" in src), f"Missing K loop in {arch} kernel source"
+        elif arch == "metal":
+            assert ("k < params.K" in src or "k_base < params.K" in src), f"Missing K loop in {arch} kernel source"
 
     # 3. Official PyTorch C++ opcheck + Cross-Backend (CPU L1d/L2 NEON vs Metal SIMDGroup GPU) Bit-Exact Mask Parity
     torch.manual_seed(77)

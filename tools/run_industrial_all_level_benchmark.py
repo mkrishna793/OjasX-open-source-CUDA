@@ -60,6 +60,7 @@ from ojasx2 import (
     verify_xor_swizzle_and_ballot_smt,
 )
 from ojasx2.tile_hal import tile_kernel_status
+from ojasx2.tensor_specs import parse_tensor_spec_args
 
 
 def init_safe_gpu() -> torch.device:
@@ -253,24 +254,13 @@ def main() -> None:
             self.dtype = dtype
             self.stride = stride
 
-    eval_env = {
-        "T": _TSpec,
-        "f16": torch.float16,
-        "f32": torch.float32,
-        "bf16": torch.bfloat16,
-        "i32": torch.int32,
-        "i64": torch.int64,
-        "b8": torch.bool,
-        "torch": torch,
-    }
-
     bb_passed = 0
     bb_total = 0
     bb_cos_sims: List[float] = []
     bb_saved_ratio_list: List[float] = []
 
     for _, row in mm_df.iterrows():
-        raw_args = eval(row["args"], {"__builtins__": {}}, eval_env)
+        raw_args = parse_tensor_spec_args(row["args"], _TSpec)
         args_tuple = raw_args[0] if isinstance(raw_args, tuple) and len(raw_args) == 2 and isinstance(raw_args[1], dict) else raw_args
         if row["op_name"] == "aten.mm.default" and len(args_tuple) >= 2:
             M, K = args_tuple[0].shape[0], args_tuple[0].shape[1]

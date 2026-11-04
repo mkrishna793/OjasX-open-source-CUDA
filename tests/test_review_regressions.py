@@ -99,6 +99,11 @@ def test_platform_candidates_and_failed_native_load(monkeypatch, tmp_path):
     monkeypatch.setattr(hal, "_LOADED_TILE_DYLIB", False)
     monkeypatch.setattr(hal, "_NATIVE_TILELANG_LOADED", False)
     monkeypatch.setattr(hal, "_NATIVE_LOAD_ERRORS", [])
+    # Package import may already have registered fallbacks. Isolate the loader
+    # probe from that state without changing the production duplicate-load guard.
+    import ojasx2.tile_fallback as fallback
+    monkeypatch.setattr(fallback, "fallbacks_registered", lambda: False)
+    monkeypatch.delenv("OJASX_DISABLE_NATIVE", raising=False)
     def incompatible(path):
         raise OSError("incompatible ABI")
     monkeypatch.setattr(torch.ops, "load_library", incompatible)

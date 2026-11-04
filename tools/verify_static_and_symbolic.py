@@ -1,7 +1,7 @@
 """
 tools/verify_static_and_symbolic.py
 
-Self-contained static, symbolic, and formal verification gate for OjasX v0.5.1.
+Self-contained static and symbolic gate for OjasX v0.13.0.
 Executes without requiring a GPU:
   1. AST syntax and undefined-symbol audit across all Python files in the repository.
   2. Cross-module import and symbol resolution audit across `ojasx2.*`.
@@ -9,7 +9,7 @@ Executes without requiring a GPU:
   4. 3-Dialect MLIR SSA verification (`fx_to_holonomic_mlir`, `HolonomicToSubgraphPass`, `SubgraphToTilePass`).
   5. Metal 2D threadblock panel swizzle bijection proof across grid/panel configurations.
   6. Symplectic Hamiltonian coupling reversibility verification in FP64.
-  7. Lean 4 (558 theorems) and Rocq 9.2 (25 files) zero-axiom / zero-sorry audit.
+  7. Lean/Rocq source audit coverage and forbidden-trust-escape scan (no proof-kernel execution).
 """
 
 from __future__ import annotations
@@ -24,22 +24,68 @@ import re
 import subprocess
 import sys
 import types
+from typing import Optional
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def resolve_python_module(module: str) -> Optional[Path]:
+    """Resolve an OjasX module without importing or executing it."""
+    base = REPO_ROOT.joinpath(*module.split("."))
+    for candidate in (base.with_suffix(".py"), base / "__init__.py"):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def module_definitions(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    definitions: set[str] = set()
+    statements = []
+
+    def collect_module_statements(nodes) -> None:
+        for node in nodes:
+            statements.append(node)
+            if isinstance(node, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.Try)):
+                for field in ("body", "orelse", "finalbody"):
+                    collect_module_statements(getattr(node, field, []))
+                for handler in getattr(node, "handlers", []):
+                    collect_module_statements(handler.body)
+
+    collect_module_statements(tree.body)
+    for node in statements:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            definitions.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                definitions.update(
+                    child.id for child in ast.walk(target)
+                    if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store)
+                )
+        elif isinstance(node, ast.Import):
+            definitions.update((alias.asname or alias.name).split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            definitions.update(alias.asname or alias.name for alias in node.names if alias.name != "*")
+    return definitions
+
+
 def main() -> int:
     os.chdir(REPO_ROOT)
     print("=" * 84)
-    print("  OJASX v0.5.1 STATIC, SYMBOLIC & FORMAL VERIFICATION SUITE")
+    print("  OJASX v0.13.0 STATIC, SYMBOLIC & FORMAL-SOURCE VERIFICATION SUITE")
     print("=" * 84)
 
     # 1. AST & Undefined-Name Audit
     builtin_names = set(dir(builtins)) | {
         "__file__", "__name__", "__doc__", "__package__", "__all__", "__spec__"
     }
-    py_files = sorted(glob.glob("**/*.py", recursive=True))
+    excluded_directories = {"build", "dist", "node_modules", "__pycache__"}
+    py_files = sorted(
+        path for path in glob.glob("**/*.py", recursive=True)
+        if not excluded_directories.intersection(Path(path).parts)
+    )
     for path in py_files:
         with open(path, "r", encoding="utf-8") as fp:
             src = fp.read()
@@ -81,41 +127,34 @@ def main() -> int:
         assert not missing, f"Undefined symbols in {path}: {missing}"
     print(f"[1/7] AST & Symbol Resolution Audit   : PASS ({len(py_files)} Python files, 0 undefined names)")
 
-    # 2. Cross-Module Import Audit
-    ojasx_modules = {os.path.splitext(os.path.basename(f))[0] for f in glob.glob("ojasx2/*.py")} | {"codegen"}
+    # 2. Cross-Module Import Audit. Resolve nested files/packages without
+    # executing imports; an explicitly imported child module is also a symbol.
+    checked_imports = 0
+    definition_cache: dict[Path, set[str]] = {}
     for path in py_files:
-        with open(path, "r", encoding="utf-8") as fp:
-            tree = ast.parse(fp.read(), filename=path)
+        tree = ast.parse(Path(path).read_text(encoding="utf-8"), filename=path)
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("ojasx2."):
-                submod = node.module.split(".")[1]
-                assert submod in ojasx_modules, f"{path}:{node.lineno} missing submodule {node.module}"
-                mod_path = f"ojasx2/{submod}.py"
-                if os.path.exists(mod_path):
-                    with open(mod_path, "r", encoding="utf-8") as mfp:
-                        mtree = ast.parse(mfp.read(), filename=mod_path)
-                    mdefs = set()
-                    for mnode in mtree.body:
-                        if isinstance(mnode, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                            mdefs.add(mnode.name)
-                        elif isinstance(mnode, ast.Assign):
-                            for t in mnode.targets:
-                                if isinstance(t, ast.Name):
-                                    mdefs.add(t.id)
-                        elif isinstance(mnode, ast.AnnAssign) and isinstance(mnode.target, ast.Name):
-                            mdefs.add(mnode.target.id)
-                        elif isinstance(mnode, ast.ImportFrom):
-                            for a in mnode.names:
-                                mdefs.add(a.asname or a.name)
-                    for a in node.names:
-                        if a.name != "*":
-                            assert a.name in mdefs, f"{path}:{node.lineno} missing symbol {a.name} in {node.module}"
-    print(f"[2/7] Cross-Module Import Audit       : PASS ({len(ojasx_modules)} ojasx2 submodules verified)")
+            if not (isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("ojasx2.")):
+                continue
+            module_path = resolve_python_module(node.module)
+            assert module_path is not None, f"{path}:{node.lineno} missing submodule {node.module}"
+            if module_path not in definition_cache:
+                definition_cache[module_path] = module_definitions(module_path)
+            definitions = definition_cache[module_path]
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                checked_imports += 1
+                child_module = resolve_python_module(f"{node.module}.{alias.name}")
+                assert alias.name in definitions or child_module is not None, (
+                    f"{path}:{node.lineno} missing symbol {alias.name} in {node.module}"
+                )
+    print(f"[2/7] Cross-Module Import Audit       : PASS ({checked_imports} imported symbols verified)")
 
-    # 3. SymPy Declarative Codegen Check
+    # 3. Deterministic declarative codegen drift check
     res = subprocess.run([sys.executable, "ojasx2/codegen/gen_holonomic_ops.py", "--check"], capture_output=True, text=True)
     assert res.returncode == 0, f"Codegen check failed: {res.stdout}\n{res.stderr}"
-    print("[3/7] SymPy Operator Codegen Check    : PASS (5 symbolic operators verified)")
+    print("[3/7] Declarative Codegen Check       : PASS (5 declarations; deterministic bytes)")
 
     # 4. MLIR 3-Dialect Pipeline & SSA Verification
     if "torch" not in sys.modules:
@@ -157,6 +196,7 @@ def main() -> int:
             self.name = name
             self.target = target
             self.args = args
+            self.meta = {}
 
     n_in = DummyNode("placeholder", "x")
     n_norm = DummyNode("call_function", "norm", "rmsnorm", (n_in,))
@@ -203,7 +243,7 @@ def main() -> int:
                             assert 0 <= bx < grid_x and 0 <= by < grid_y
                             mapped.add((bx, by))
                     assert len(mapped) == grid_x * grid_y
-    print("[5/7] Metal 2D Panel Swizzle Bijection: PASS (100% bijective across all grid/panel sizes)")
+    print("[5/7] Metal 2D Panel Swizzle Bijection: PASS (bijective across the tested grid/panel set)")
 
     # 6. Symplectic Coupling Reversibility Check
     rng = np.random.default_rng(42)
@@ -235,9 +275,9 @@ def main() -> int:
     for p in rocq_sources:
         stripped = re.sub(r"\(\*.*?\*\)", "", p.read_text(), flags=re.S)
         assert not re.search(r"\b(Admitted|Axiom|Parameter|Abort)\b", stripped), f"Forbidden keyword in {p}"
-    print(f"[7/7] Lean 4 & Rocq 9.2 Proof Audit   : PASS ({len(expected)} Lean theorems, {len(rocq_sources)} Rocq files, 0 axioms/sorry)")
+    print(f"[7/7] Formal Source Trust-Escape Audit : PASS ({len(expected)} Lean theorems, {len(rocq_sources)} Rocq files; source audit only, kernel evidence separate)")
     print("=" * 84)
-    print("  ALL 7 VERIFICATION GATES PASSED")
+    print("  ALL 7 SCOPED VERIFICATION GATES PASSED")
     print("=" * 84)
     return 0
 
