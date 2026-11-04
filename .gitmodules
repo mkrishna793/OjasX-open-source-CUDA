@@ -1,0 +1,6 @@
+[submodule "third_party/BackendBench"]
+	path = third_party/BackendBench
+	url = https://github.com/meta-pytorch/BackendBench.git
+[submodule "third_party/TorchCTS"]
+	path = third_party/TorchCTS
+	url = https://github.com/TorchCTS/TorchCTS.git
