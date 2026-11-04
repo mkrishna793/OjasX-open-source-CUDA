@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "torch_version": "2.8.0",
+  "case": "unchanged native MLP, four sigmoid activations, AdamW, two steps, two microsteps",
+  "max_loss_difference": 0.0,
+  "max_gradient_difference": 1.0842021724855044e-19,
+  "max_parameter_difference": 6.938893903907228e-18,
+  "tolerances": {
+    "loss": 2e-11,
+    "gradient": 2e-10,
+    "parameters": 2e-09
+  },
+  "compilation_reports": [
+    {
+      "changed": true,
+      "regions": [
+        {
+          "operations": [
+            "sigmoid",
+            "sigmoid",
+            "sigmoid",
+            "sigmoid"
+          ],
+          "replaced": true,
+          "reason": "strict_objective_improvement",
+          "baseline_expression": "sigmoid(sigmoid(sigmoid(sigmoid(input({'name': 'backend_input'}), policy='demanded'), policy='demanded'), policy='demanded'), policy='demanded')",
+          "selected_expression": "sigmoid(sigmoid(activation_chain(sigmoid(input({'name': 'backend_input'}), policy='demanded'), attrs=(('operations', ('sigmoid',)),), policy='replay_cached'), policy='demanded'), policy='demanded')",
+          "baseline_cost": {
+            "memory_bytes": 1688,
+            "work_units": 10,
+            "traffic_bytes": 6256,
+            "final_bytes": 248
+          },
+          "selected_cost": {
+            "memory_bytes": 1448,
+            "work_units": 11,
+            "traffic_bytes": 6736,
+            "final_bytes": 248
+          },
+          "proof_obligations": 11
+        }
+      ],
+      "original_nodes": [
+        "l_self_modules_input_projection_parameters_weight_",
+        "l_self_modules_input_projection_parameters_bias_",
+        "l_value_",
+        "l_self_modules_output_projection_parameters_weight_",
+        "l_self_modules_output_projection_parameters_bias_",
+        "hidden",
+        "hidden_1",
+        "hidden_2",
+        "hidden_3",
+        "hidden_4",
+        "linear_1",
+        "output"
+      ],
+      "hardware_profile": {
+        "device_type": "cpu",
+        "architecture": "arm64_neon",
+        "preferred_executor": "aot_boxed",
+        "supports_inductor": true,
+        "supports_tilelang": true,
+        "prefer_aot_boxed": true,
+        "vector_width_bits": 128,
+        "sram_budget_bytes": 65536,
+        "simd_isa": "neon"
+      }
+    }
+  ],
+  "original_fallback": {
+    "output_bitwise_equal": true,
+    "gradient_bitwise_equal": true,
+    "changed": false,
+    "report": {
+      "changed": false,
+      "regions": [
+        {
+          "operations": [
+            "sigmoid",
+            "tanh",
+            "square"
+          ],
+          "replaced": false,
+          "reason": "original_not_strictly_worse",
+          "baseline_expression": "square(tanh(sigmoid(input({'name': 'backend_input'}), policy='demanded'), policy='demanded'), policy='demanded')",
+          "selected_expression": "square(tanh(sigmoid(input({'name': 'backend_input'}), policy='demanded'), policy='demanded'), policy='demanded')",
+          "baseline_cost": {
+            "memory_bytes": 584,
+            "work_units": 8,
+            "traffic_bytes": 1936,
+            "final_bytes": 104
+          },
+          "selected_cost": {
+            "memory_bytes": 584,
+            "work_units": 8,
+            "traffic_bytes": 1936,
+            "final_bytes": 104
+          },
+          "proof_obligations": 0
+        }
+      ],
+      "original_nodes": [
+        "l_value_",
+        "sigmoid",
+        "tanh",
+        "square",
+        "mean",
+        "output"
+      ],
+      "hardware_profile": {
+        "device_type": "cpu",
+        "architecture": "arm64_neon",
+        "preferred_executor": "aot_boxed",
+        "supports_inductor": true,
+        "supports_tilelang": true,
+        "prefer_aot_boxed": true,
+        "vector_width_bits": 128,
+        "sram_budget_bytes": 65536,
+        "simd_isa": "neon"
+      }
+    }
+  },
+  "scope": "CPU eager reference versus Dynamo/AOT backend with accumulated model-level training; logical planning costs only, no speed, allocator, CUDA, or whole-model coverage claim"
+}
