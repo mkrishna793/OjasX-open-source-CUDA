@@ -1,5 +1,5 @@
 {
-  "solver_version": "5.1.0",
+  "solver_version": "5.3.3",
   "proofs": [
     {
       "name": "mask_byte_roundtrip",
