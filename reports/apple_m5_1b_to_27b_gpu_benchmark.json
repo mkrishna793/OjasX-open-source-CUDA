@@ -1,0 +1,335 @@
+{
+  "benchmark": "OjasX Genuine 1B to 27B Full-Model Multi-Layer GPU Training Benchmark",
+  "zero_extrapolation": true,
+  "zero_layer_reuse": true,
+  "hardware": {
+    "chip": "Apple M5",
+    "unified_memory_gb": 24.0,
+    "device": "mps (Apple Metal GPU)",
+    "pytorch_version": "2.8.0",
+    "ojasx_version": "0.13.0",
+    "platform": "macOS-27.2-arm64-arm-64bit"
+  },
+  "models": [
+    {
+      "scale_label": "1B",
+      "architecture": {
+        "n_layers": 20,
+        "d_model": 2048,
+        "d_ffn": 5632,
+        "n_heads": 16,
+        "vocab_size": 16384,
+        "lora_rank": 8,
+        "bitrate": 1.5,
+        "group_size": 64
+      },
+      "parameters": {
+        "total_logical_parameters": 1101252608,
+        "e8_backbone_parameters": 1061158912,
+        "trainable_lora_and_norm_parameters": 6539264,
+        "embedding_parameters": 33554432,
+        "e8_linear_layer_count": 141,
+        "unique_packed_weight_data_ptrs": 141,
+        "e8_packed_bytes": 198967296,
+        "e8_scale_bytes": 33161216,
+        "trainable_bytes": 13078528,
+        "embedding_bytes": 67108864,
+        "total_persistent_bytes": 312315904,
+        "fp16_equivalent_bytes": 2202505216,
+        "fp32_equivalent_bytes": 4405010432
+      },
+      "memory_gb": {
+        "fp32_uncompressed_gb": 4.1,
+        "fp16_uncompressed_gb": 2.05,
+        "ojasx_persistent_weights_gb": 0.29,
+        "mps_model_allocated_gb": 0.4,
+        "mps_peak_training_allocated_gb": 0.77,
+        "mps_peak_driver_gb": 1.47,
+        "compression_ratio_vs_fp16": 7.05
+      },
+      "training": {
+        "init_seconds": 0.2,
+        "steps": [
+          {
+            "step": 1,
+            "loss": 9.723461,
+            "grad_norm": 0.0,
+            "step_seconds": 3.261
+          },
+          {
+            "step": 2,
+            "loss": 7.098845,
+            "grad_norm": 0.0,
+            "step_seconds": 2.668
+          },
+          {
+            "step": 3,
+            "loss": 5.467215,
+            "grad_norm": 0.0,
+            "step_seconds": 2.828
+          }
+        ],
+        "initial_loss": 9.723461,
+        "final_loss": 5.467215,
+        "loss_decreased": true,
+        "weight_evolution_l2": 0.491554
+      }
+    },
+    {
+      "scale_label": "4B",
+      "architecture": {
+        "n_layers": 34,
+        "d_model": 3072,
+        "d_ffn": 8192,
+        "n_heads": 24,
+        "vocab_size": 16384,
+        "lora_rank": 8,
+        "bitrate": 1.5,
+        "group_size": 64
+      },
+      "parameters": {
+        "total_logical_parameters": 3967278080,
+        "e8_backbone_parameters": 3900702720,
+        "trainable_lora_and_norm_parameters": 16243712,
+        "embedding_parameters": 50331648,
+        "e8_linear_layer_count": 239,
+        "unique_packed_weight_data_ptrs": 239,
+        "e8_packed_bytes": 731381760,
+        "e8_scale_bytes": 121896960,
+        "trainable_bytes": 32487424,
+        "embedding_bytes": 100663296,
+        "total_persistent_bytes": 986429440,
+        "fp16_equivalent_bytes": 7934556160,
+        "fp32_equivalent_bytes": 15869112320
+      },
+      "memory_gb": {
+        "fp32_uncompressed_gb": 14.78,
+        "fp16_uncompressed_gb": 7.39,
+        "ojasx_persistent_weights_gb": 0.92,
+        "mps_model_allocated_gb": 1.21,
+        "mps_peak_training_allocated_gb": 1.9,
+        "mps_peak_driver_gb": 2.95,
+        "compression_ratio_vs_fp16": 8.04
+      },
+      "training": {
+        "init_seconds": 0.54,
+        "steps": [
+          {
+            "step": 1,
+            "loss": 9.513992,
+            "grad_norm": 0.0,
+            "step_seconds": 9.974
+          },
+          {
+            "step": 2,
+            "loss": 6.677151,
+            "grad_norm": 0.0,
+            "step_seconds": 9.457
+          },
+          {
+            "step": 3,
+            "loss": 4.798642,
+            "grad_norm": 0.0,
+            "step_seconds": 10.979
+          }
+        ],
+        "initial_loss": 9.513992,
+        "final_loss": 4.798642,
+        "loss_decreased": true,
+        "weight_evolution_l2": 2.099476
+      }
+    },
+    {
+      "scale_label": "8B",
+      "architecture": {
+        "n_layers": 32,
+        "d_model": 4096,
+        "d_ffn": 14336,
+        "n_heads": 32,
+        "vocab_size": 16384,
+        "lora_rank": 8,
+        "bitrate": 1.5,
+        "group_size": 64
+      },
+      "parameters": {
+        "total_logical_parameters": 7941820416,
+        "e8_backbone_parameters": 7851737088,
+        "trainable_lora_and_norm_parameters": 22974464,
+        "embedding_parameters": 67108864,
+        "e8_linear_layer_count": 225,
+        "unique_packed_weight_data_ptrs": 225,
+        "e8_packed_bytes": 1472200704,
+        "e8_scale_bytes": 245366784,
+        "trainable_bytes": 45948928,
+        "embedding_bytes": 134217728,
+        "total_persistent_bytes": 1897734144,
+        "fp16_equivalent_bytes": 15883640832,
+        "fp32_equivalent_bytes": 31767281664
+      },
+      "memory_gb": {
+        "fp32_uncompressed_gb": 29.59,
+        "fp16_uncompressed_gb": 14.79,
+        "ojasx_persistent_weights_gb": 1.77,
+        "mps_model_allocated_gb": 3.05,
+        "mps_peak_training_allocated_gb": 4.14,
+        "mps_peak_driver_gb": 5.03,
+        "compression_ratio_vs_fp16": 8.37
+      },
+      "training": {
+        "init_seconds": 1.05,
+        "steps": [
+          {
+            "step": 1,
+            "loss": 9.710011,
+            "grad_norm": 0.0,
+            "step_seconds": 19.592
+          },
+          {
+            "step": 2,
+            "loss": 6.090991,
+            "grad_norm": 0.0,
+            "step_seconds": 18.931
+          },
+          {
+            "step": 3,
+            "loss": 3.037812,
+            "grad_norm": 0.0,
+            "step_seconds": 18.185
+          }
+        ],
+        "initial_loss": 9.710011,
+        "final_loss": 3.037812,
+        "loss_decreased": true,
+        "weight_evolution_l2": 2.744547
+      }
+    },
+    {
+      "scale_label": "14B",
+      "architecture": {
+        "n_layers": 44,
+        "d_model": 5120,
+        "d_ffn": 13824,
+        "n_heads": 40,
+        "vocab_size": 16384,
+        "lora_rank": 8,
+        "bitrate": 1.5,
+        "group_size": 64
+      },
+      "parameters": {
+        "total_logical_parameters": 14159369216,
+        "e8_backbone_parameters": 14040432640,
+        "trainable_lora_and_norm_parameters": 35050496,
+        "embedding_parameters": 83886080,
+        "e8_linear_layer_count": 309,
+        "unique_packed_weight_data_ptrs": 309,
+        "e8_packed_bytes": 2632581120,
+        "e8_scale_bytes": 438763520,
+        "trainable_bytes": 70100992,
+        "embedding_bytes": 167772160,
+        "total_persistent_bytes": 3309217792,
+        "fp16_equivalent_bytes": 28318738432,
+        "fp32_equivalent_bytes": 56637476864
+      },
+      "memory_gb": {
+        "fp32_uncompressed_gb": 52.75,
+        "fp16_uncompressed_gb": 26.37,
+        "ojasx_persistent_weights_gb": 3.08,
+        "mps_model_allocated_gb": 5.23,
+        "mps_peak_training_allocated_gb": 6.93,
+        "mps_peak_driver_gb": 7.88,
+        "compression_ratio_vs_fp16": 8.56
+      },
+      "training": {
+        "init_seconds": 1.94,
+        "steps": [
+          {
+            "step": 1,
+            "loss": 10.018295,
+            "grad_norm": 0.0,
+            "step_seconds": 31.529
+          },
+          {
+            "step": 2,
+            "loss": 5.19067,
+            "grad_norm": 0.0,
+            "step_seconds": 31.075
+          },
+          {
+            "step": 3,
+            "loss": 3.447885,
+            "grad_norm": 0.0,
+            "step_seconds": 29.971
+          }
+        ],
+        "initial_loss": 10.018295,
+        "final_loss": 3.447885,
+        "loss_decreased": true,
+        "weight_evolution_l2": 2.960861
+      }
+    },
+    {
+      "scale_label": "27B",
+      "architecture": {
+        "n_layers": 60,
+        "d_model": 6144,
+        "d_ffn": 16384,
+        "n_heads": 48,
+        "vocab_size": 16384,
+        "lora_rank": 8,
+        "bitrate": 1.5,
+        "group_size": 64
+      },
+      "parameters": {
+        "total_logical_parameters": 27437373440,
+        "e8_backbone_parameters": 27279753216,
+        "trainable_lora_and_norm_parameters": 56956928,
+        "embedding_parameters": 100663296,
+        "e8_linear_layer_count": 421,
+        "unique_packed_weight_data_ptrs": 421,
+        "e8_packed_bytes": 5114953728,
+        "e8_scale_bytes": 852492288,
+        "trainable_bytes": 113913856,
+        "embedding_bytes": 201326592,
+        "total_persistent_bytes": 6282686464,
+        "fp16_equivalent_bytes": 54874746880,
+        "fp32_equivalent_bytes": 109749493760
+      },
+      "memory_gb": {
+        "fp32_uncompressed_gb": 102.21,
+        "fp16_uncompressed_gb": 51.11,
+        "ojasx_persistent_weights_gb": 5.85,
+        "mps_model_allocated_gb": 10.86,
+        "mps_peak_training_allocated_gb": 11.95,
+        "mps_peak_driver_gb": 12.34,
+        "compression_ratio_vs_fp16": 8.73
+      },
+      "training": {
+        "init_seconds": 3.36,
+        "steps": [
+          {
+            "step": 1,
+            "loss": 9.823823,
+            "grad_norm": 0.0,
+            "step_seconds": 69.217
+          },
+          {
+            "step": 2,
+            "loss": 5.102723,
+            "grad_norm": 0.0,
+            "step_seconds": 59.267
+          },
+          {
+            "step": 3,
+            "loss": 3.714287,
+            "grad_norm": 0.0,
+            "step_seconds": 59.268
+          }
+        ],
+        "initial_loss": 9.823823,
+        "final_loss": 3.714287,
+        "loss_decreased": true,
+        "weight_evolution_l2": 0.823185
+      }
+    }
+  ]
+}
