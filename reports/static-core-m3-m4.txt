@@ -1,0 +1,16 @@
+====================================================================================
+  OJASX v0.13.0 STATIC, SYMBOLIC & FORMAL-SOURCE VERIFICATION SUITE
+====================================================================================
+[1/7] AST & Symbol Resolution Audit   : PASS (553 Python files, 0 undefined names)
+[2/7] Cross-Module Import Audit       : PASS (583 imported symbols verified)
+[3/7] Declarative Codegen Check       : PASS (5 declarations; deterministic bytes)
+[OjasX MLIR Dialects] INFO: Lowering FX graph 'verify_full_fx' to MLIR artifacts (target: nvvm)
+[OjasX MLIR Dialects] INFO: SSA verification passed: True (Holonomic: True, Subgraph: True, Tile: True)
+[OjasX MLIR Dialects] INFO: Compiling MLIR module 'verify_full_fx_subgraph_tile' to target 'nvvm'
+[4/7] MLIR 3-Dialect SSA & Pass Audit : PASS (m1, m2, m3 SSA verified, 0 in-place mutations)
+[5/7] Metal 2D Panel Swizzle Bijection: PASS (bijective across the tested grid/panel set)
+[6/7] Symplectic Chain Reversibility  : PASS (max error = 4.58e-16)
+[7/7] Formal Source Trust-Escape Audit : PASS (595 Lean theorems, 32 Rocq files; source audit only, kernel evidence separate)
+====================================================================================
+  ALL 7 SCOPED VERIFICATION GATES PASSED
+====================================================================================
