@@ -52,9 +52,32 @@ jobs:
       - name: Annotate Failure
         if: failure()
         run: |
-          tail -n 80 test_run.log | while IFS= read -r line; do
-            echo "::error title=PytestFailure::$line"
-          done
+          python -c '
+          import xml.etree.ElementTree as ET
+          try:
+              tree = ET.parse("test-results.xml")
+              for tc in tree.findall(".//testcase"):
+                  for fail in tc.findall("failure"):
+                      name = f"{tc.attrib.get(\"classname\", \"\")}.{tc.attrib.get(\"name\", \"\")}"
+                      msg = fail.attrib.get("message", "Test failed").replace("\n", " ")
+                      print(f"::error title=TestFailure::{name} -> {msg}")
+          except Exception as e:
+              print(f"Error parsing xml: {e}")
+          '
+          echo "=== Pytest Failures and Tracebacks ==="
+          python -c '
+          try:
+              with open("test_run.log") as f:
+                  content = f.read()
+              if "FAILURES" in content:
+                  print(content[content.index("FAILURES"):])
+              elif "ERRORS" in content:
+                  print(content[content.index("ERRORS"):])
+              else:
+                  print(content[-3000:])
+          except Exception as e:
+              print(e)
+          '
 
       - name: Run scoped symbolic, source, codegen, and documentation gates
         env:
