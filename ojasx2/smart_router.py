@@ -290,7 +290,9 @@ class SmartWorkloadRouter:
         tiny_param_threshold: int = 1024,
         large_vocab_threshold: int = 8192,
         prefer_unified_mlp: bool = False,
+        upgrade_attention: bool = True,
     ) -> None:
+        self.upgrade_attention = upgrade_attention
         self.tiny_param_threshold = tiny_param_threshold
         self.large_vocab_threshold = large_vocab_threshold
         self.prefer_unified_mlp = prefer_unified_mlp
@@ -368,6 +370,7 @@ class SmartWorkloadRouter:
         prefer_unified_mlp: Optional[bool] = None,
         compile_mlir: bool = False,
         mlir_target: str = "auto",
+        compile_backend: Optional[Union[str, bool]] = None,
     ) -> Tuple[nn.Module, SmartWorkloadReport]:
         if prefer_unified_mlp is not None:
             self.prefer_unified_mlp = prefer_unified_mlp
@@ -390,6 +393,18 @@ class SmartWorkloadRouter:
                     exec_mod = compile_mlir_executable(mod, target=mlir_target)
                     report.mlir_pipeline = exec_mod.mlir_artifacts.to_dict()
                     mod._ojasx_mlir_artifacts = exec_mod.mlir_artifacts
+                except Exception:
+                    pass
+            if compile_backend:
+                backend_name = "ojasx_verified" if compile_backend is True else str(compile_backend)
+                if backend_name == "ojasx_verified":
+                    try:
+                        from .core.backend import register_backend
+                        register_backend()
+                    except Exception:
+                        pass
+                try:
+                    mod = torch.compile(mod, backend=backend_name)
                 except Exception:
                     pass
             return mod, report
@@ -854,6 +869,8 @@ class SmartWorkloadRouter:
         report: SmartWorkloadReport,
     ) -> Tuple[bool, Optional[nn.Module]]:
         """Detects Transformer attention layers and rewrites them into Holonomic Dagger Attention."""
+        if not self.upgrade_attention:
+            return False, None
         if isinstance(module, (HolonomicDaggerAttention, DaggerAttention)):
             return False, None
 
@@ -1457,8 +1474,10 @@ def optimize_model(
     mode: str = "auto",
     recompute_mode: str = "single_grad",
     enable_checkpointing: bool = True,
+    upgrade_attention: bool = True,
     target: Optional[str] = None,
     example_inputs: Optional[Sequence[torch.Tensor]] = None,
+    compile_backend: Optional[Union[str, bool]] = None,
     **router_kwargs,
 ) -> Tuple[nn.Module, Any]:
     """Top-level model optimizer for both pre-training and fine-tuning.
@@ -1503,7 +1522,8 @@ def optimize_model(
             for child_name, child_mod in list(parent_mod.named_children()):
                 # Upgrade Q/K/V attention modules to DaggerAttention
                 if (
-                    not isinstance(child_mod, DaggerAttention)
+                    upgrade_attention
+                    and not isinstance(child_mod, DaggerAttention)
                     and hasattr(child_mod, "q_proj")
                     and hasattr(child_mod, "k_proj")
                     and hasattr(child_mod, "v_proj")
@@ -1556,6 +1576,7 @@ def optimize_model(
         tiny_param_threshold=tiny_param_threshold,
         large_vocab_threshold=large_vocab_threshold,
         prefer_unified_mlp=prefer_unified_mlp,
+        upgrade_attention=upgrade_attention,
         **router_kwargs,
     )
     model, report = router.optimize_model(
@@ -1565,6 +1586,7 @@ def optimize_model(
         prefer_unified_mlp=prefer_unified_mlp,
         compile_mlir=compile_mlir,
         mlir_target=mlir_target,
+        compile_backend=compile_backend,
     )
 
     # Attach fine-tuning counts to report

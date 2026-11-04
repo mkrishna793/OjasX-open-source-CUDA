@@ -158,6 +158,201 @@ class HolonomicGradFreeOptimizer(Optimizer):
         st["grad_accum_padded_rows"] = padded_rows
         st.pop("grad_accum", None)
 
+    @staticmethod
+    def _reset_accumulation_state(st: Dict[str, Any]) -> None:
+        """Clear every representation of a pending accumulation window."""
+        st["grad_accum"] = None
+        st["accum_count"] = 0
+        for key in ("grad_accum_packed", "grad_accum_scales", "grad_accum_padded_rows"):
+            st.pop(key, None)
+
+    def _consume_accumulation(
+        self,
+        param: nn.Parameter,
+        group: Dict[str, Any],
+        *,
+        force: bool,
+    ) -> Optional[torch.Tensor]:
+        """Return the mean gradient for one complete or explicitly flushed window.
+
+        Stored accumulation is sum(g_i / N). A complete N-microbatch window
+        therefore needs no rescaling. A partial window of r microbatches is
+        multiplied by N/r so its result is sum(g_i)/r, not sum(g_i)/N.
+        """
+        st = self.state[param]
+        count = int(st.get("accum_count", 0))
+        if count == 0:
+            return None
+        steps = int(group.get("grad_accum_steps", self.grad_accum_steps))
+        if steps <= 1:
+            raise RuntimeError("accumulation state exists when grad_accum_steps <= 1")
+        if not force and count < steps:
+            return None
+        use_e8 = bool(group.get("quantize_moments_e8", self.quantize_moments_e8))
+        if use_e8 and param.numel() >= 8 and "grad_accum_packed" in st:
+            accumulated = self._unpack_grad_accum(st, param.shape, param.dtype)
+        else:
+            accumulated = st.get("grad_accum")
+        if accumulated is None:
+            self._reset_accumulation_state(st)
+            raise RuntimeError("accumulation counter and gradient storage disagree")
+        if count != steps:
+            accumulated = accumulated * (float(steps) / float(count))
+        self._reset_accumulation_state(st)
+        return accumulated
+
+    def _apply_effective_grad(
+        self,
+        _p: nn.Parameter,
+        group: Dict[str, Any],
+        effective_grad: torch.Tensor,
+        use_e8_mom: bool,
+    ) -> None:
+        st = self.state[_p]
+        lr = float(group["lr"])
+        weight_decay = float(group.get("weight_decay", 0.0))
+        betas = group.get("betas", (0.9, 0.999))
+        eps = float(group.get("eps", 1e-8))
+        momentum = float(group.get("momentum", 0.0))
+        max_grad_norm = group.get("max_grad_norm")
+        algo = group.get("algorithm", self.algorithm).lower()
+        if algo == "low_memory_adamw":
+            algo = "adafactor"
+
+        if max_grad_norm is not None and max_grad_norm > 0:
+            if self._prev_global_norm > 0:
+                effective_norm = self._prev_global_norm
+            else:
+                effective_norm = float(torch.linalg.vector_norm(effective_grad.float()).item())
+            if effective_norm > max_grad_norm:
+                effective_grad = effective_grad * (max_grad_norm / (effective_norm + 1e-6))
+
+        st["step"] = st.get("step", 0) + 1
+        step = st["step"]
+        is_half = _p.dtype in (torch.float16, torch.bfloat16)
+
+        if algo == "sgd":
+            d_p = effective_grad.float() if is_half else effective_grad
+            p_data = _p.float() if is_half else _p
+
+            if weight_decay != 0.0:
+                d_p = d_p.add(p_data, alpha=weight_decay)
+
+            if momentum != 0.0:
+                buf = st.get("momentum_buffer")
+                if buf is None:
+                    buf = st["momentum_buffer"] = torch.clone(d_p).detach()
+                else:
+                    buf.mul_(momentum).add_(d_p)
+                d_p = buf
+
+            if is_half:
+                _p.copy_((p_data - lr * d_p).to(_p.dtype))
+            else:
+                _p.add_(d_p, alpha=-lr)
+
+        elif algo == "adamw":
+            beta1, beta2 = betas
+            p_f32 = _p.float() if is_half else _p
+            g_f32 = effective_grad.float() if is_half else effective_grad
+
+            if weight_decay != 0.0:
+                if is_half:
+                    p_f32 = p_f32 * (1.0 - lr * weight_decay)
+                else:
+                    _p.mul_(1.0 - lr * weight_decay)
+
+            if "exp_avg" not in st and "exp_avg_packed" not in st:
+                exp_avg_f32 = torch.zeros_like(p_f32)
+            else:
+                exp_avg_f32 = self._unpack_exp_avg(st, _p.shape, torch.float32)
+
+            exp_avg_sq = st.get("exp_avg_sq")
+            if exp_avg_sq is None:
+                exp_avg_sq = st["exp_avg_sq"] = torch.zeros_like(p_f32)
+            elif is_half and exp_avg_sq.dtype != torch.float32:
+                exp_avg_sq = st["exp_avg_sq"] = exp_avg_sq.float()
+
+            exp_avg_f32.mul_(beta1).add_(g_f32, alpha=1.0 - beta1)
+            exp_avg_sq.mul_(beta2).addcmul_(g_f32, g_f32, value=1.0 - beta2)
+            self._pack_exp_avg(st, exp_avg_f32, use_e8_mom, torch.float32)
+
+            bias_correction1 = 1.0 - (beta1 ** step)
+            bias_correction2 = 1.0 - (beta2 ** step)
+            step_size = lr / bias_correction1
+            denom = (exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(eps)
+
+            delta = -step_size * (exp_avg_f32 / denom)
+            if is_half:
+                _p.copy_((p_f32 + delta).to(_p.dtype))
+            else:
+                _p.add_(delta)
+
+        elif algo == "adafactor":
+            beta1, beta2 = betas
+            p_f32 = _p.float() if is_half else _p
+            g_f32 = effective_grad.float() if is_half else effective_grad
+
+            if weight_decay != 0.0:
+                if is_half:
+                    p_f32 = p_f32 * (1.0 - lr * weight_decay)
+                else:
+                    _p.mul_(1.0 - lr * weight_decay)
+
+            grad_sq = g_f32.square()
+            bias_correction2 = 1.0 - (beta2 ** step)
+
+            if _p.ndim >= 2:
+                exp_avg_sq_row = st.get("exp_avg_sq_row")
+                exp_avg_sq_col = st.get("exp_avg_sq_col")
+                if exp_avg_sq_row is None or exp_avg_sq_col is None:
+                    row_shape = _p.shape[:-1]
+                    col_shape = _p.shape[:-2] + _p.shape[-1:]
+                    exp_avg_sq_row = st["exp_avg_sq_row"] = torch.zeros(
+                        row_shape, dtype=torch.float32, device=_p.device
+                    )
+                    exp_avg_sq_col = st["exp_avg_sq_col"] = torch.zeros(
+                        col_shape, dtype=torch.float32, device=_p.device
+                    )
+
+                row_mean = grad_sq.mean(dim=-1)
+                col_mean = grad_sq.mean(dim=-2)
+
+                exp_avg_sq_row.mul_(beta2).add_(row_mean, alpha=1.0 - beta2)
+                exp_avg_sq_col.mul_(beta2).add_(col_mean, alpha=1.0 - beta2)
+
+                r_factor = exp_avg_sq_row / exp_avg_sq_row.mean(dim=-1, keepdim=True).clamp(min=eps)
+                v_hat = r_factor.unsqueeze(-1) * exp_avg_sq_col.unsqueeze(-2)
+                denom = (v_hat.sqrt() / math.sqrt(bias_correction2)).add_(eps)
+            else:
+                exp_avg_sq = st.get("exp_avg_sq")
+                if exp_avg_sq is None:
+                    exp_avg_sq = st["exp_avg_sq"] = torch.zeros_like(p_f32)
+                exp_avg_sq.mul_(beta2).addcmul_(g_f32, g_f32, value=1.0 - beta2)
+                denom = (exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(eps)
+
+            if beta1 > 0.0:
+                if "exp_avg" not in st and "exp_avg_packed" not in st:
+                    exp_avg_f32 = torch.zeros_like(p_f32)
+                else:
+                    exp_avg_f32 = self._unpack_exp_avg(st, _p.shape, torch.float32)
+
+                exp_avg_f32.mul_(beta1).add_(g_f32, alpha=1.0 - beta1)
+                self._pack_exp_avg(st, exp_avg_f32, use_e8_mom, _p.dtype)
+                bias_correction1 = 1.0 - (beta1 ** step)
+                update = exp_avg_f32 / bias_correction1
+            else:
+                update = g_f32
+
+            delta = -lr * (update / denom)
+            if is_half:
+                _p.copy_((p_f32 + delta).to(_p.dtype))
+            else:
+                _p.add_(delta)
+
+        self.last_step_updated_params += 1
+
+
     def _make_hook(self, param: nn.Parameter) -> Any:
         @torch.no_grad()
         def _hook(_p: nn.Parameter) -> None:
@@ -211,164 +406,15 @@ class HolonomicGradFreeOptimizer(Optimizer):
                     else:
                         st["grad_accum"].add_(scaled_grad.to(_p.dtype))
 
-                if st["accum_count"] % grad_accum_steps != 0:
+                effective_grad = self._consume_accumulation(_p, group, force=False)
+                if effective_grad is None:
                     return
-
-                if use_e8_mom and _p.numel() >= 8 and "grad_accum_packed" in st:
-                    effective_grad = self._unpack_grad_accum(st, _p.shape, _p.dtype)
-                    st.pop("grad_accum_packed", None)
-                    st.pop("grad_accum_scales", None)
-                    st.pop("grad_accum_padded_rows", None)
-                else:
-                    effective_grad = st["grad_accum"]
-                    st["grad_accum"] = None
             else:
                 effective_grad = grad
                 _p.grad = None
                 self.last_step_freed_bytes += grad_bytes
 
-            lr = float(group["lr"])
-            weight_decay = float(group.get("weight_decay", 0.0))
-            betas = group.get("betas", (0.9, 0.999))
-            eps = float(group.get("eps", 1e-8))
-            momentum = float(group.get("momentum", 0.0))
-            max_grad_norm = group.get("max_grad_norm")
-            algo = group.get("algorithm", self.algorithm).lower()
-            if algo == "low_memory_adamw":
-                algo = "adafactor"
-
-            if max_grad_norm is not None and max_grad_norm > 0:
-                if self._prev_global_norm > 0:
-                    effective_norm = self._prev_global_norm
-                else:
-                    effective_norm = float(torch.linalg.vector_norm(effective_grad.float()).item())
-                if effective_norm > max_grad_norm:
-                    effective_grad = effective_grad * (max_grad_norm / (effective_norm + 1e-6))
-
-            st["step"] = st.get("step", 0) + 1
-            step = st["step"]
-            is_half = _p.dtype in (torch.float16, torch.bfloat16)
-
-            if algo == "sgd":
-                d_p = effective_grad.float() if is_half else effective_grad
-                p_data = _p.float() if is_half else _p
-
-                if weight_decay != 0.0:
-                    d_p = d_p.add(p_data, alpha=weight_decay)
-
-                if momentum != 0.0:
-                    buf = st.get("momentum_buffer")
-                    if buf is None:
-                        buf = st["momentum_buffer"] = torch.clone(d_p).detach()
-                    else:
-                        buf.mul_(momentum).add_(d_p)
-                    d_p = buf
-
-                if is_half:
-                    _p.copy_((p_data - lr * d_p).to(_p.dtype))
-                else:
-                    _p.add_(d_p, alpha=-lr)
-
-            elif algo == "adamw":
-                beta1, beta2 = betas
-                p_f32 = _p.float() if is_half else _p
-                g_f32 = effective_grad.float() if is_half else effective_grad
-
-                if weight_decay != 0.0:
-                    if is_half:
-                        p_f32 = p_f32 * (1.0 - lr * weight_decay)
-                    else:
-                        _p.mul_(1.0 - lr * weight_decay)
-
-                if "exp_avg" not in st and "exp_avg_packed" not in st:
-                    exp_avg_f32 = torch.zeros_like(p_f32)
-                else:
-                    exp_avg_f32 = self._unpack_exp_avg(st, _p.shape, torch.float32)
-
-                exp_avg_sq = st.get("exp_avg_sq")
-                if exp_avg_sq is None:
-                    exp_avg_sq = st["exp_avg_sq"] = torch.zeros_like(p_f32)
-                elif is_half and exp_avg_sq.dtype != torch.float32:
-                    exp_avg_sq = st["exp_avg_sq"] = exp_avg_sq.float()
-
-                exp_avg_f32.mul_(beta1).add_(g_f32, alpha=1.0 - beta1)
-                exp_avg_sq.mul_(beta2).addcmul_(g_f32, g_f32, value=1.0 - beta2)
-                self._pack_exp_avg(st, exp_avg_f32, use_e8_mom, torch.float32)
-
-                bias_correction1 = 1.0 - (beta1 ** step)
-                bias_correction2 = 1.0 - (beta2 ** step)
-                step_size = lr / bias_correction1
-                denom = (exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(eps)
-
-                delta = -step_size * (exp_avg_f32 / denom)
-                if is_half:
-                    _p.copy_((p_f32 + delta).to(_p.dtype))
-                else:
-                    _p.add_(delta)
-
-            elif algo == "adafactor":
-                beta1, beta2 = betas
-                p_f32 = _p.float() if is_half else _p
-                g_f32 = effective_grad.float() if is_half else effective_grad
-
-                if weight_decay != 0.0:
-                    if is_half:
-                        p_f32 = p_f32 * (1.0 - lr * weight_decay)
-                    else:
-                        _p.mul_(1.0 - lr * weight_decay)
-
-                grad_sq = g_f32.square()
-                bias_correction2 = 1.0 - (beta2 ** step)
-
-                if _p.ndim >= 2:
-                    exp_avg_sq_row = st.get("exp_avg_sq_row")
-                    exp_avg_sq_col = st.get("exp_avg_sq_col")
-                    if exp_avg_sq_row is None or exp_avg_sq_col is None:
-                        row_shape = _p.shape[:-1]
-                        col_shape = _p.shape[:-2] + _p.shape[-1:]
-                        exp_avg_sq_row = st["exp_avg_sq_row"] = torch.zeros(
-                            row_shape, dtype=torch.float32, device=_p.device
-                        )
-                        exp_avg_sq_col = st["exp_avg_sq_col"] = torch.zeros(
-                            col_shape, dtype=torch.float32, device=_p.device
-                        )
-
-                    row_mean = grad_sq.mean(dim=-1)
-                    col_mean = grad_sq.mean(dim=-2)
-
-                    exp_avg_sq_row.mul_(beta2).add_(row_mean, alpha=1.0 - beta2)
-                    exp_avg_sq_col.mul_(beta2).add_(col_mean, alpha=1.0 - beta2)
-
-                    r_factor = exp_avg_sq_row / exp_avg_sq_row.mean(dim=-1, keepdim=True).clamp(min=eps)
-                    v_hat = r_factor.unsqueeze(-1) * exp_avg_sq_col.unsqueeze(-2)
-                    denom = (v_hat.sqrt() / math.sqrt(bias_correction2)).add_(eps)
-                else:
-                    exp_avg_sq = st.get("exp_avg_sq")
-                    if exp_avg_sq is None:
-                        exp_avg_sq = st["exp_avg_sq"] = torch.zeros_like(p_f32)
-                    exp_avg_sq.mul_(beta2).addcmul_(g_f32, g_f32, value=1.0 - beta2)
-                    denom = (exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(eps)
-
-                if beta1 > 0.0:
-                    if "exp_avg" not in st and "exp_avg_packed" not in st:
-                        exp_avg_f32 = torch.zeros_like(p_f32)
-                    else:
-                        exp_avg_f32 = self._unpack_exp_avg(st, _p.shape, torch.float32)
-
-                    exp_avg_f32.mul_(beta1).add_(g_f32, alpha=1.0 - beta1)
-                    self._pack_exp_avg(st, exp_avg_f32, use_e8_mom, _p.dtype)
-                    bias_correction1 = 1.0 - (beta1 ** step)
-                    update = exp_avg_f32 / bias_correction1
-                else:
-                    update = g_f32
-
-                delta = -lr * (update / denom)
-                if is_half:
-                    _p.copy_((p_f32 + delta).to(_p.dtype))
-                else:
-                    _p.add_(delta)
-
-            self.last_step_updated_params += 1
+            self._apply_effective_grad(_p, group, effective_grad, use_e8_mom)
 
             # Auto-latch global norm when all trainable parameters have fired in this backward pass
             total_trainable = self._trainable_param_count()
@@ -384,6 +430,28 @@ class HolonomicGradFreeOptimizer(Optimizer):
                 self._hooks_fired_in_cycle = 0
 
         return _hook
+
+    @torch.no_grad()
+    def flush_accumulation(self) -> int:
+        """Apply every pending partial window using its actual microbatch count.
+
+        Returns the number of parameter tensors updated. Complete windows are
+        already applied by the backward hooks and are not applied again.
+        """
+        before = self.last_step_updated_params
+        for group in self.param_groups:
+            if not (self.enabled and group.get("enabled", True)):
+                continue
+            if int(group.get("grad_accum_steps", self.grad_accum_steps)) <= 1:
+                continue
+            use_e8_mom = bool(group.get("quantize_moments_e8", self.quantize_moments_e8))
+            for param in group["params"]:
+                if param not in self.state:
+                    continue
+                effective_grad = self._consume_accumulation(param, group, force=True)
+                if effective_grad is not None:
+                    self._apply_effective_grad(param, group, effective_grad, use_e8_mom)
+        return self.last_step_updated_params - before
 
     def reset_step_metrics(self) -> None:
         if isinstance(self._running_global_norm_sq, torch.Tensor):
@@ -406,8 +474,7 @@ class HolonomicGradFreeOptimizer(Optimizer):
                     else:
                         p.grad.zero_()
                 if p in self.state:
-                    self.state[p]["grad_accum"] = None
-                    self.state[p]["accum_count"] = 0
+                    self._reset_accumulation_state(self.state[p])
 
     def step(self, closure: Optional[Any] = None) -> Optional[float]:
         self.reset_step_metrics()

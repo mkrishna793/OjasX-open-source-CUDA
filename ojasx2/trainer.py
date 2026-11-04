@@ -66,20 +66,36 @@ class LowRAMTrainer:
         fused_loss: bool = True,
         device: Optional[Union[str, torch.device]] = None,
         dtype: Optional[torch.dtype] = None,
+        compile_backend: Optional[Union[str, bool]] = "ojasx_verified",
     ) -> None:
         self.device = torch.device(device or _get_device_str())
-        self.model = model.to(self.device)
         self.fused_loss = fused_loss
         self.grad_accum_steps = max(1, grad_accum_steps)
         self.max_grad_norm = max_grad_norm
+        self.compile_backend = compile_backend
 
         if dtype is None:
-            if self.device.type in ("cuda", "mps"):
-                self.dtype = torch.float16
-            else:
-                self.dtype = torch.float32
+            self.dtype = torch.float16 if self.device.type in ("cuda", "mps") else torch.float32
         else:
             self.dtype = dtype
+        if self.dtype not in (torch.float16, torch.bfloat16, torch.float32, torch.float64):
+            raise ValueError("Trainer dtype must be float16, bfloat16, float32, or float64")
+        self.use_autocast = self.dtype in (torch.float16, torch.bfloat16)
+        # AMP keeps FP32 master weights. Full-precision modes convert the model
+        # itself, so the dtype option has an observable meaning in both modes.
+        master_dtype = torch.float32 if self.use_autocast else self.dtype
+        self.model = model.to(device=self.device, dtype=master_dtype)
+
+        self._compiled_model: Optional[Callable[..., Any]] = None
+        if self.compile_backend:
+            backend_name = "ojasx_verified" if self.compile_backend is True else str(self.compile_backend)
+            if backend_name == "ojasx_verified":
+                from .core.backend import register_backend
+                register_backend()
+            try:
+                self._compiled_model = torch.compile(self.model, backend=backend_name)
+            except Exception:
+                self._compiled_model = None
 
         # Initialize low-RAM optimizer with E8 momentum compression
         self.optimizer = HolonomicGradFreeOptimizer(
@@ -92,6 +108,11 @@ class LowRAMTrainer:
             algorithm="adamw",
         )
 
+    def __getattr__(self, name: str) -> Any:
+        if "model" in self.__dict__ and hasattr(self.__dict__["model"], name):
+            return getattr(self.__dict__["model"], name)
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+
     def train_epoch(
         self,
         dataloader: Iterable[Any],
@@ -101,9 +122,15 @@ class LowRAMTrainer:
     ) -> Dict[str, float]:
         """Runs a single training epoch with live memory and throughput telemetry."""
         self.model.train()
+        if self._compiled_model is not None and hasattr(self._compiled_model, "train"):
+            try:
+                self._compiled_model.train()
+            except Exception:
+                pass
         total_loss = 0.0
         total_tokens = 0
         step_count = 0
+        optimizer_steps = 0
         t0 = time.perf_counter()
 
         for batch_idx, batch in enumerate(dataloader):
@@ -116,28 +143,45 @@ class LowRAMTrainer:
                 inputs, targets = batch, batch
 
             inputs = inputs.to(self.device)
+            if torch.is_floating_point(inputs) and not self.use_autocast:
+                inputs = inputs.to(dtype=self.dtype)
             targets = targets.to(self.device)
             batch_tokens = inputs.numel()
 
-            # Forward pass
-            outputs = self.model(inputs)
+            # Forward and loss share one autocast region. Backward remains
+            # outside it, as in ordinary PyTorch AMP training.
+            with torch.autocast(
+                device_type=self.device.type,
+                dtype=self.dtype if self.use_autocast else None,
+                enabled=self.use_autocast,
+            ):
+                if self.compile_backend and self._compiled_model is not None:
+                    try:
+                        outputs = self._compiled_model(inputs)
+                    except Exception:
+                        outputs = self.model(inputs)
+                else:
+                    outputs = self.model(inputs)
+                if lm_head_weight is not None:
+                    head_weight = lm_head_weight.to(device=outputs.device, dtype=outputs.dtype)
+                    if self.fused_loss:
+                        loss_val = fused_linear_cross_entropy(outputs, head_weight, targets)
+                    else:
+                        logits = torch.nn.functional.linear(outputs, head_weight)
+                        loss_val = nn.functional.cross_entropy(
+                            logits.reshape(-1, logits.size(-1)), targets.reshape(-1)
+                        )
+                else:
+                    logits = outputs.logits if hasattr(outputs, "logits") else outputs
+                    if not isinstance(logits, torch.Tensor):
+                        raise TypeError("Trainer model must return a logits tensor or an object with .logits")
+                    loss_val = nn.functional.cross_entropy(
+                        logits.reshape(-1, logits.size(-1)), targets.reshape(-1)
+                    )
 
-            # Fused or standard cross-entropy
-            if lm_head_weight is not None and self.fused_loss:
-                loss_val = fused_linear_cross_entropy(outputs, lm_head_weight, targets)
-            elif isinstance(outputs, torch.Tensor) and outputs.shape[-1] == targets.max().item() + 1:
-                # Standard logits
-                logits = outputs.view(-1, outputs.size(-1))
-                loss_val = nn.functional.cross_entropy(logits, targets.view(-1))
-            elif hasattr(outputs, "logits"):
-                logits = outputs.logits.view(-1, outputs.logits.size(-1))
-                loss_val = nn.functional.cross_entropy(logits, targets.view(-1))
-            else:
-                logits = outputs.view(-1, outputs.size(-1))
-                loss_val = nn.functional.cross_entropy(logits, targets.view(-1))
-
-            scaled_loss = loss_val / float(self.grad_accum_steps)
-            scaled_loss.backward()
+            # The optimizer owns microbatch averaging. Dividing here as well
+            # would scale every accumulated gradient by 1/N twice.
+            loss_val.backward()
 
             total_loss += float(loss_val.item())
             total_tokens += batch_tokens
@@ -146,6 +190,7 @@ class LowRAMTrainer:
             if (batch_idx + 1) % self.grad_accum_steps == 0:
                 self.optimizer.step()
                 self.optimizer.zero_grad()
+                optimizer_steps += 1
 
             if (batch_idx + 1) % log_interval == 0:
                 elapsed = max(1e-5, time.perf_counter() - t0)
@@ -157,12 +202,22 @@ class LowRAMTrainer:
                     f"Speed: {tok_per_sec:.1f} tok/s | RAM: {mem_mb:.1f} MB"
                 )
 
+        # A short final window is averaged by its actual microbatch count.
+        # Flush before zero_grad, whose documented purpose is to discard state.
+        flushed = self.optimizer.flush_accumulation()
+        if flushed:
+            optimizer_steps += 1
+            self.optimizer.step()
+        self.optimizer.zero_grad()
+
         elapsed = max(1e-5, time.perf_counter() - t0)
         return {
             "epoch": epoch,
             "avg_loss": total_loss / max(1, step_count),
             "tokens_per_sec": total_tokens / elapsed,
             "steps": step_count,
+            "optimizer_steps": optimizer_steps,
+            "flushed_parameter_updates": flushed,
         }
 
     @staticmethod
@@ -186,8 +241,12 @@ def train(
     grad_accum_steps: int = 1,
     max_grad_norm: float = 1.0,
     quantize_moments: bool = True,
+    fused_loss: bool = True,
+    lm_head_weight: Optional[torch.Tensor] = None,
+    dtype: Optional[torch.dtype] = None,
     device: Optional[Union[str, torch.device]] = None,
     log_interval: int = 10,
+    compile_backend: Optional[Union[str, bool]] = "ojasx_verified",
 ) -> Dict[str, Any]:
     """Turnkey high-level training entrypoint for training brand-new or custom models."""
     trainer = LowRAMTrainer(
@@ -197,13 +256,19 @@ def train(
         grad_accum_steps=grad_accum_steps,
         max_grad_norm=max_grad_norm,
         quantize_moments=quantize_moments,
+        fused_loss=fused_loss,
+        dtype=dtype,
         device=device,
+        compile_backend=compile_backend,
     )
 
     history = []
     print(f"\n🚀 OjasX Low-RAM Training Started | Device: {trainer.device} | Moments: E8 (2-bit)")
     for ep in range(1, epochs + 1):
-        metrics = trainer.train_epoch(dataloader, epoch=ep, log_interval=log_interval)
+        metrics = trainer.train_epoch(
+            dataloader, epoch=ep, log_interval=log_interval,
+            lm_head_weight=lm_head_weight,
+        )
         history.append(metrics)
         print(f"✅ Epoch {ep} complete | Avg Loss: {metrics['avg_loss']:.4f} | Throughput: {metrics['tokens_per_sec']:.1f} tok/s")
 
@@ -216,7 +281,11 @@ def finetune(
     epochs: int = 1,
     lr: float = 5e-5,
     grad_accum_steps: int = 2,
+    fused_loss: bool = True,
+    lm_head_weight: Optional[torch.Tensor] = None,
+    dtype: Optional[torch.dtype] = None,
     device: Optional[Union[str, torch.device]] = None,
+    compile_backend: Optional[Union[str, bool]] = "ojasx_verified",
 ) -> Dict[str, Any]:
     """Turnkey fine-tuning helper optimized for adapting pretrained models on minimal RAM."""
     return train(
@@ -226,5 +295,9 @@ def finetune(
         lr=lr,
         grad_accum_steps=grad_accum_steps,
         device=device,
+        dtype=dtype,
+        fused_loss=fused_loss,
+        lm_head_weight=lm_head_weight,
         quantize_moments=True,
+        compile_backend=compile_backend,
     )
