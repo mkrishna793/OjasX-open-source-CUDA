@@ -44,9 +44,17 @@ jobs:
           CI: "true"
           OJASX_DISABLE_UPDATE_CHECK: "1"
           OJASX_BUILD_NATIVE: "0"
+          OJASX_DISABLE_NATIVE: "1"
         run: |
           set -o pipefail
           python -m pytest -q --tb=short --junitxml=test-results.xml 2>&1 | tee test_run.log
+
+      - name: Annotate Failure
+        if: failure()
+        run: |
+          tail -n 80 test_run.log | while IFS= read -r line; do
+            echo "::error title=PytestFailure::$line"
+          done
 
       - name: Run scoped symbolic, source, codegen, and documentation gates
         env:

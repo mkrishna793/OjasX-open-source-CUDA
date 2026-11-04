@@ -1,9 +1,16 @@
 import pytest
 import torch
-native = pytest.importorskip(
-    "ojasx2.math.csrc.ojasx_math_native",
-    reason="native math extension is not built; run the native artifact qualification on a supported host",
-)
+
+try:
+    import ojasx2.math.csrc.ojasx_math_native as native
+except (ImportError, OSError):
+    native = None
+
+if native is None:
+    pytest.skip(
+        "native math extension is not built; run the native artifact qualification on a supported host",
+        allow_module_level=True,
+    )
 
 
 def test_native_import_and_metal_detection():

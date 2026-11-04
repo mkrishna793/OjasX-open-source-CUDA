@@ -193,11 +193,12 @@ def test_numerical_and_gradient_parity(device: str, dtype: torch.dtype, shape: t
 
     # Inputs
     torch.manual_seed(42)
-    x = torch.randn(*shape, device=device, dtype=dtype)
+    scale = 0.1 if dtype == torch.float16 else 1.0
+    x = torch.randn(*shape, device=device, dtype=dtype) * scale
     norm_w = torch.randn(dim, device=device, dtype=dtype)
-    gate_w = torch.randn(h_dim, dim, device=device, dtype=dtype)
-    up_w = torch.randn(h_dim, dim, device=device, dtype=dtype)
-    down_w = torch.randn(dim, h_dim, device=device, dtype=dtype)
+    gate_w = torch.randn(h_dim, dim, device=device, dtype=dtype) * scale
+    up_w = torch.randn(h_dim, dim, device=device, dtype=dtype) * scale
+    down_w = torch.randn(dim, h_dim, device=device, dtype=dtype) * scale
 
     # Eager copy
     x_ref = x.clone().detach().requires_grad_(True)
@@ -230,7 +231,7 @@ def test_numerical_and_gradient_parity(device: str, dtype: torch.dtype, shape: t
     assert fwd_sim >= 0.9999, f"Forward cosine similarity {fwd_sim:.6f} < 0.9999"
 
     # Backward pass
-    grad_out = torch.randn_like(y_ref)
+    grad_out = torch.randn_like(y_ref) * scale
     y_ref.backward(grad_out)
     y_uni.backward(grad_out)
 

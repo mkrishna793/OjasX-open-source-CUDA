@@ -45,6 +45,13 @@ struct OjasXGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   c10::DeviceIndex deviceCount() const noexcept override {
     return 1;
   }
+
+  bool queryStream(const c10::Stream& /*stream*/) const noexcept override {
+    return true;
+  }
+
+  void synchronizeStream(const c10::Stream& /*stream*/) const noexcept override {
+  }
 };
 
 C10_REGISTER_GUARD_IMPL(PrivateUse1, OjasXGuardImpl);

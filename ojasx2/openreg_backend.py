@@ -100,7 +100,7 @@ def register_ojasx_openreg(bind_privateuse1: bool = False) -> _OjasXDeviceModule
     """
     global _OPENREG_REGISTERED, _PRIVATEUSE1_BOUND, _CPP_GUARD_LIB
     if not _OPENREG_REGISTERED:
-        if os.environ.get("OJASX_DISABLE_NATIVE", "0") != "1":
+        if os.environ.get("OJASX_DISABLE_NATIVE", "0") != "1" and os.environ.get("OJASX_BUILD_NATIVE", "1") != "0":
             ext = ".dylib" if sys.platform == "darwin" else (".so" if sys.platform.startswith("linux") else ".dll")
             lib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "csrc", f"libojasx_openreg{ext}")
             if os.path.exists(lib_path):
