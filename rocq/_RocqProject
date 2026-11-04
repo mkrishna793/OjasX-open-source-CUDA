@@ -1,6 +1,7 @@
 -Q . Ojasx
 Product.v
 Matrix.v
+CoreOperators.v
 Nonlinear.v
 Optimizer.v
 Planner.v
@@ -25,5 +26,8 @@ CotangentQuotient.v
 DemandAlgebra.v
 DenseJoint.v
 HolonomicJet.v
+M25Activation.v
+M4Equality.v
+StructuredTopology.v
 Extract.v
 Audit.v

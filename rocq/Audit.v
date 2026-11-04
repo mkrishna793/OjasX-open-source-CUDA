@@ -1,4 +1,4 @@
-From Ojasx Require Import Product Matrix Nonlinear Optimizer Planner Contracts Structured RankSeven Foundation Compact Indexed TaylorDiscovered CoordinateCompiler CoordinateDiscovered GradientFactors GradientDiscovered InvariantRadial InvariantDiscovered SpectralFoundation SpectralDiscovered ObjectiveCompiler LossCompiler CotangentQuotient DemandAlgebra DenseJoint HolonomicJet.
+From Ojasx Require Import Product Matrix CoreOperators Nonlinear Optimizer Planner Contracts Structured RankSeven Foundation Compact Indexed TaylorDiscovered CoordinateCompiler CoordinateDiscovered GradientFactors GradientDiscovered InvariantRadial InvariantDiscovered SpectralFoundation SpectralDiscovered ObjectiveCompiler LossCompiler CotangentQuotient DemandAlgebra DenseJoint HolonomicJet M25Activation M4Equality.
 
 Print Assumptions Product.scale_compose.
 Print Assumptions Product.scale_one.
@@ -30,6 +30,14 @@ Print Assumptions Matrix.linear_pair_db.
 Print Assumptions Matrix.mm_first_order.
 Print Assumptions Matrix.mm_input_adjoint.
 Print Assumptions Matrix.mm_weight_adjoint.
+Print Assumptions CoreOperators.core_linear_pairing.
+Print Assumptions CoreOperators.core_add_pullback.
+Print Assumptions CoreOperators.core_sum_pullback.
+Print Assumptions CoreOperators.core_fanout_accumulation.
+Print Assumptions CoreOperators.core_linear_demand_all.
+Print Assumptions CoreOperators.core_linear_demand_weight_only.
+Print Assumptions CoreOperators.core_linear_demand_input_only.
+Print Assumptions CoreOperators.core_linear_demand_none.
 Print Assumptions Nonlinear.relu_one_bit_sufficient.
 Print Assumptions Nonlinear.relu_fixed_region_exact.
 Print Assumptions Nonlinear.mm_gate_columns.
@@ -266,3 +274,12 @@ Print Assumptions DenseJoint.dense_rank7_scaled_saving.
 Print Assumptions DenseJoint.dense_residual_tape.
 Print Assumptions DenseJoint.dense_swiglu_tape.
 Print Assumptions DenseJoint.dense_bias_pair.
+Print Assumptions M25Activation.m25_replay_tail_pullback.
+Print Assumptions M25Activation.m25_replay_tail_optimizer.
+Print Assumptions M25Activation.m25_cotangent_chain.
+Print Assumptions M25Activation.m25_policy_choice_memory_guard.
+Print Assumptions M25Activation.m25_cached_work_le_streaming.
+Print Assumptions M25Activation.m25_fusion_peak_not_universal.
+Print Assumptions M4Equality.m4_activation_chain_split_fuse.
+Print Assumptions M4Equality.m4_transpose_involution.
+Print Assumptions M4Equality.m4_square_output_residual_incomplete.
