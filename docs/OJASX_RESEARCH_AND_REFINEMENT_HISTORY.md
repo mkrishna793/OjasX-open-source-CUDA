@@ -23,11 +23,11 @@ The original version 1.8 consolidation improved specification/evidence organizat
 
 The current whole-project audit reports **547 Lean theorem declarations and 266 Rocq theorem/lemma declarations**. These are statement counts, not 813 independent inventions. Some generated statements specialize the same underlying identity. Lean uses the standard audited axioms propext, Classical.choice and Quot.sound; the audit finds no added optimization axioms. Rocq assumptions are closed and independently rechecked.
 
-The authoritative current bundle is [formal verification](reports/spectral-formal-verification.json), [bounded discovery](reports/spectral-discovery.json), [GPU observations](reports/spectral-gpu.json), and [source-matched qualification](reports/spectral-qualification.json). Earlier reports retain their original scopes and historical counts. They should not be added together or treated as current global source-hash certifications.
+The authoritative current bundle is formal verification (evidence not included: `reports/spectral-formal-verification.json`), bounded discovery (evidence not included: `reports/spectral-discovery.json`), GPU observations (evidence not included: `reports/spectral-gpu.json`), and source-matched qualification (evidence not included: `reports/spectral-qualification.json`). Earlier reports retain their original scopes and historical counts. They should not be added together or treated as current global source-hash certifications.
 
 ## 1. Architectural audit and the first mathematical core
 
-The original project and supplied architectural/monograph notes motivated a separate verified reference rebuild. The original OjasX implementation was preserved. This reference core does not replace its entire allocator, GPU driver or production compiler. The [combined project audit](../OjasX-combined-analysis.md) records the earlier architecture analysis.
+The original project and supplied architectural/monograph notes motivated a separate verified reference rebuild. The original OjasX implementation was preserved. This reference core does not replace its entire allocator, GPU driver or production compiler. The combined project audit (evidence not included: `../OjasX-combined-analysis.md`) records the earlier architecture analysis.
 
 The first useful clarification was that reverse mode uses the **adjoint of the derivative at the actual forward state**. For a nonlinear function f, this is Df(x)*, not an inverse activation and not a fixed matrix independent of x.
 
@@ -49,7 +49,7 @@ $$
 
 Streaming channels can avoid retaining every encoded intermediate. It does not prove that two requested gradients have become one cheaper dense multiplication. Sum/difference packing of two outputs remains an invertible representation of both outputs and has floating overflow/rounding counterexamples.
 
-Proofs: [Algebra](lean/OjasXMath/Algebra.lean), [Composition](lean/OjasXMath/Composition.lean), [StreamedDagger](lean/OjasXMath/StreamedDagger.lean). Runtime: [bilinear](ojasx2/bilinear.py), [streamed](ojasx2/streamed.py).
+Proofs: [Algebra](../lean/OjasXMath/Algebra.lean), [Composition](../lean/OjasXMath/Composition.lean), [StreamedDagger](../lean/OjasXMath/StreamedDagger.lean). Runtime: [bilinear](../ojasx2/bilinear.py), [streamed](../ojasx2/streamed.py).
 
 ## 2. Certified composition, residual information and multilinear gradients
 
@@ -68,7 +68,7 @@ Multilinear product rules were made division-free, including at zeros. A prefix/
 
 Sphere and Stiefel projection identities add geometry for explicitly constrained models. They establish selected tangent/projection properties; they do not invisibly replace Euclidean training or prove general constrained-optimizer convergence.
 
-Proofs: [CertifiedBackprop](lean/OjasXMath/CertifiedBackprop.lean), [Residuals](lean/OjasXMath/Residuals.lean), [Multilinear](lean/OjasXMath/Multilinear.lean), [Geometry](lean/OjasXMath/Geometry.lean).
+Proofs: [CertifiedBackprop](../lean/OjasXMath/CertifiedBackprop.lean), [Residuals](../lean/OjasXMath/Residuals.lean), [Multilinear](../lean/OjasXMath/Multilinear.lean), [Geometry](../lean/OjasXMath/Geometry.lean).
 
 ## 3. Joint linear contraction planning
 
@@ -84,7 +84,7 @@ This work extended to longer matrix chains and demand-aware contraction plans. S
 
 Recorded favorable CPU experiments supplied early algorithmic evidence; later MPS qualification supplied GPU evidence. Neither establishes a gain for every shape. Current repeated large linear-block results are summarized below.
 
-Proofs: [Contraction](lean/OjasXMath/Contraction.lean), [GradientFactors](lean/OjasXMath/GradientFactors.lean). Runtime: [contractions](ojasx2/contractions.py), [planner](ojasx2/planner.py), [gradient factor compiler](ojasx2/gradient_factor_compiler.py).
+Proofs: [Contraction](../lean/OjasXMath/Contraction.lean), [GradientFactors](../lean/OjasXMath/GradientFactors.lean). Runtime: [contractions](../ojasx2/contractions.py), [planner](../ojasx2/planner.py), [gradient factor compiler](../ojasx2/gradient_factor_compiler.py).
 
 ## 4. Pointwise memory and reversible coupling
 
@@ -96,7 +96,7 @@ The cached reverse refinement retains selected preactivations, removes redundant
 
 Floating reconstruction drift, large coefficients and activation derivatives refined the original exact-real coupling argument. Numerical reconstruction and differentiation need their own contract.
 
-Proofs: [ReversibleOptic](lean/OjasXMath/ReversibleOptic.lean), [CachedReverse](lean/OjasXMath/CachedReverse.lean). Runtime: [reversible](ojasx2/reversible.py), [cached reverse](ojasx2/cached_reverse.py). Evidence: [cached GPU report](reports/reversible-cache-mps.json).
+Proofs: [ReversibleOptic](../lean/OjasXMath/ReversibleOptic.lean), [CachedReverse](../lean/OjasXMath/CachedReverse.lean). Runtime: [reversible](../ojasx2/reversible.py), [cached reverse](../ojasx2/cached_reverse.py). Evidence: cached GPU report (evidence not included: `reports/reversible-cache-mps.json`).
 
 ## 5. Rocq, extraction, structured Jacobians and broader compatibility
 
@@ -112,7 +112,7 @@ Historical CPU compatibility tests cover linear chains, GELU MLPs, SwiGLU, convo
 
 A significant negative result is retained: a Conv2d-bias → BatchNorm composition trained with AdamW had tiny local gradient differences but about **0.00104** maximum bias-parameter deviation after three steps, beyond the 0.0002 parameter contract. Local gradient tolerance alone is insufficient for optimizer trajectory qualification.
 
-Sources: [Rocq foundation](ROCQ_MATH_FOUNDATION.md), [refinement](FOUNDATION_REFINEMENT.md), [broad CPU reference report](reports/broad-foundation.json), [edge report](reports/foundation-edges.json), [workload report](reports/workload-scaling.json).
+Sources: [Rocq foundation](ROCQ_MATH_FOUNDATION.md), [refinement](FOUNDATION_REFINEMENT.md), broad CPU reference report (evidence not included: `reports/broad-foundation.json`), edge report (evidence not included: `reports/foundation-edges.json`), workload report (evidence not included: `reports/workload-scaling.json`).
 
 ## 6. Matrix multiplication candidates
 
@@ -128,7 +128,7 @@ With product cost M and addition cost A, the modeled non-increase conditions are
 
 This is verification and adaptation of known algorithms. It is not evidence of a newly invented universally faster GEMM or a current qualified GPU replacement.
 
-Proof: [RankSeven.v](rocq/RankSeven.v). Reference: [math foundation](ojasx2/math_foundation.py). Evidence: [broad report](reports/broad-foundation.json).
+Proof: [RankSeven.v](../rocq/RankSeven.v). Reference: [math foundation](../ojasx2/math_foundation.py). Evidence: broad report (evidence not included: `reports/broad-foundation.json`).
 
 ## 7. Abstract engine and automated polynomial discovery
 
@@ -138,7 +138,7 @@ Bounded discovery introduced polynomial basis refinement: reject insufficient ba
 
 The central limitation became explicit: a polynomial basis can grow faster than the computation it was intended to compress. A mathematical representation is useful only after construction, reverse contraction, original parameter-gradient recovery, memory and numerical costs are counted.
 
-Proof: [AbstractEngine](lean/OjasXMath/AbstractEngine.lean). Earlier circuit: [feature core](ojasx2/feature_core.py). Discovery: [discover_backprop.py](tools/discover_backprop.py). Guide: [abstract engine](ABSTRACT_BACKPROP_ENGINE.md).
+Proof: [AbstractEngine](../lean/OjasXMath/AbstractEngine.lean). Earlier circuit: [feature core](../ojasx2/feature_core.py). Discovery: [discover_backprop.py](../tools/discover_backprop.py). Guide: [abstract engine](ABSTRACT_BACKPROP_ENGINE.md).
 
 ## 8. Early GPU nonlinear approximation
 
@@ -148,7 +148,7 @@ The retained activation storage improved, but the final guarded nonlinear refere
 
 These experiments motivated the later larger-domain degree-8 refinement. They do not show that an approximate derivative can be substituted into an unchanged activation forward pass without changing the gradient semantics.
 
-Sources: [nonlinear research](GPU_NONLINEAR_DISCOVERY.md), [NonlinearBounds](lean/OjasXMath/NonlinearBounds.lean), [TaylorDiscovered.v](rocq/TaylorDiscovered.v), [nonlinear GPU search](reports/nonlinear-gpu-search.json).
+Sources: [nonlinear research](GPU_NONLINEAR_DISCOVERY.md), [NonlinearBounds](../lean/OjasXMath/NonlinearBounds.lean), [TaylorDiscovered.v](../rocq/TaylorDiscovered.v), nonlinear GPU search (evidence not included: `reports/nonlinear-gpu-search.json`).
 
 ## 9. Closed nonlinear coordinates and Koopman representations
 
@@ -171,7 +171,7 @@ Original distinct stage parameters or shared parameters remain trainable. Ordere
 
 Repeated squaring rejects the tested fixed monomial bases because the highest degree doubles. This refutes those bases, not every imaginable representation. Ordinary GELU/SiLU was not shown to possess an equally cheap exact closed basis.
 
-Sources: [coordinate compiler](MATHEMATICAL_COMPILER.md), [coordinate runtime](ojasx2/coordinate_compiler.py), [CoordinateCompiler proofs](lean/OjasXMath/CoordinateCompiler.lean), [coordinate qualification](reports/coordinate-qualification.json).
+Sources: [coordinate compiler](MATHEMATICAL_COMPILER.md), [coordinate runtime](../ojasx2/coordinate_compiler.py), [CoordinateCompiler proofs](../lean/OjasXMath/CoordinateCompiler.lean), coordinate qualification (evidence not included: `reports/coordinate-qualification.json`).
 
 ## 10. Joint activation and all-gradient factor refinement
 
@@ -188,7 +188,7 @@ The GPU suite recorded **83 checks with zero failures** across correctness, size
 
 Small shapes remained slower. ReLU did not pass repeated speed admission, and heterogeneous masks retained native execution. Ordinary dense GELU/SiLU had no admitted exact factor rule.
 
-Sources: [activation/backprop refinement](ACTIVATION_BACKPROP_REFINEMENT.md), [GradientFactors](lean/OjasXMath/GradientFactors.lean), [gradient GPU report](reports/gradient-factor-gpu.json), [gradient ledger](reports/gradient-qualification.json).
+Sources: [activation/backprop refinement](ACTIVATION_BACKPROP_REFINEMENT.md), [GradientFactors](../lean/OjasXMath/GradientFactors.lean), gradient GPU report (evidence not included: `reports/gradient-factor-gpu.json`), gradient ledger (evidence not included: `reports/gradient-qualification.json`).
 
 ## 11. Invariant radial compilation
 
@@ -214,7 +214,7 @@ At [8192,128,4096,2], repeated cubic, reciprocal and trainable sigmoid radial bl
 
 Three radial–LayerNorm–radial cases failed the relative-gradient criterion near cancellation and retain native execution. A stable joint normalization identity was proved at this phase. Version 1.9 implements it, while sensitive full-model relative qualification remains unsuccessful. Certified chamber ReLU cases were correct but slower, with no saved-storage gain.
 
-Sources: [invariant refinement](INVARIANT_FOUNDATION_REFINEMENT.md), [InvariantRadial proofs](lean/OjasXMath/InvariantRadial.lean), [radial runtime](ojasx2/invariant_radial_compiler.py), [composition GPU report](reports/invariant-composition-gpu.json), [invariant ledger](reports/invariant-qualification.json).
+Sources: [invariant refinement](INVARIANT_FOUNDATION_REFINEMENT.md), [InvariantRadial proofs](../lean/OjasXMath/InvariantRadial.lean), [radial runtime](../ojasx2/invariant_radial_compiler.py), composition GPU report (evidence not included: `reports/invariant-composition-gpu.json`), invariant ledger (evidence not included: `reports/invariant-qualification.json`).
 
 ## 12. Latest coordinate-sensitive spectral refinement
 
@@ -262,19 +262,19 @@ The latest suite has two scalar grids, twelve polynomial cases, twelve repeated 
 
 The full feature count is S = binomial(k+D,D). Degree eight has 9 features for k=1, 45 for k=2 and 495 for k=4. For a conventional large dense input width it is prohibitive. The runtime grammar allows k=1–4 and at most 512 features; actual qualification is narrower.
 
-Sources: [spectral refinement](SPECTRAL_COORDINATE_FOUNDATION.md), [spectral runtime](ojasx2/spectral_compiler.py), [SpectralFoundation](lean/OjasXMath/SpectralFoundation.lean), [SpectralChebyshev](lean/OjasXMath/SpectralChebyshev.lean), [current qualification](reports/spectral-qualification.json).
+Sources: [spectral refinement](SPECTRAL_COORDINATE_FOUNDATION.md), [spectral runtime](../ojasx2/spectral_compiler.py), [SpectralFoundation](../lean/OjasXMath/SpectralFoundation.lean), [SpectralChebyshev](../lean/OjasXMath/SpectralChebyshev.lean), current qualification (evidence not included: `reports/spectral-qualification.json`).
 
 ## 13. Numerical reliability repair, version 1.9
 
 A stable scale–LayerNorm pullback now uses epsilon/D times inverse sqrt(D), where D=a² variance+epsilon, instead of subtracting nearly equal contributions or first forming an inverse cube. Lean proves the actual scalar derivative and equivalent evaluation form. Rocq checks the cotangent identities; three nonvacuous Z3 checks cover cancellation, ratio evaluation and zero scale.
 
-The new [GPU-only implementation](ojasx2/numerical_repairs.py) retains original operand dependencies for higher derivatives. A joint radial–LayerNorm prototype preserves original X/W/b/Q/gate parameters. Conservative projection routing upgrades eligible explicit degree-4 approximation requests to degree eight, avoids inadmissible wide feature construction, retains native two-input SiLU, and uses native execution for requested higher-order original-activation semantics.
+The new [GPU-only implementation](../ojasx2/numerical_repairs.py) retains original operand dependencies for higher derivatives. A joint radial–LayerNorm prototype preserves original X/W/b/Q/gate parameters. Conservative projection routing upgrades eligible explicit degree-4 approximation requests to degree eight, avoids inadmissible wide feature construction, retains native two-input SiLU, and uses native execution for requested higher-order original-activation semantics.
 
 A checked scalar-loss/all-gradient interface evaluates both pure deterministic programs and selects the native results on mismatched gradients, nonfinite candidates or candidate errors. This adds verification work and is not an acceleration.
 
-The [new GPU report](reports/numerical-repairs-gpu.json) records seven normalization/overflow cases, three composed models with three native-compared SGD steps, five policy cases, three invalid-epsilon cases and three rejection cases. All final reliability checks pass. Two raw relative normalization comparisons and the three sensitive algebraic model candidates still fail the original criterion; native routing resolves their execution rather than qualifying those optimizations. No tolerance was relaxed.
+The new GPU report (evidence not included: `reports/numerical-repairs-gpu.json`) records seven normalization/overflow cases, three composed models with three native-compared SGD steps, five policy cases, three invalid-epsilon cases and three rejection cases. All final reliability checks pass. Two raw relative normalization comparisons and the three sensitive algebraic model candidates still fail the original criterion; native routing resolves their execution rather than qualifying those optimizations. No tolerance was relaxed.
 
-The [repair verifier](tools/verify_numerical_repairs.py) rebuilds the complete proof audit, checks the new SMT identities and validates current GPU source hashes. This phase adds two Lean and two Rocq statements. Its [verification report](reports/numerical-repairs-verification.json) records the limits explicitly.
+The [repair verifier](../tools/verify_numerical_repairs.py) rebuilds the complete proof audit, checks the new SMT identities and validates current GPU source hashes. This phase adds two Lean and two Rocq statements. Its verification report (evidence not included: `reports/numerical-repairs-verification.json`) records the limits explicitly.
 
 ## What is new within this project
 
@@ -319,19 +319,19 @@ The two consolidated files are the primary reading path. Earlier guides below pr
 | [COMPILER_PLAN](COMPILER_PLAN.md) | Planned semantic IR and target lowering |
 | [OJASX_SINGLE_GPU_PLAN](OJASX_SINGLE_GPU_PLAN.md) | Capacity/throughput objective and whole-model qualification |
 | [WORK_PLAN](WORK_PLAN.md) | Initial task plan |
-| [Verification overview](reports/VERIFICATION.md) | Historical combined checks and measurement accounting |
+| [Verification overview](../reports/VERIFICATION.md) | Historical combined checks and measurement accounting |
 
-All 25 current Lean modules are in [lean/OjasXMath](lean/OjasXMath); the complete audit imports them through [OjasXMath.lean](lean/OjasXMath.lean). Rocq modules are enumerated by [_RocqProject](rocq/_RocqProject), with assumptions printed by [Audit.v](rocq/Audit.v). Reference engines are in [ojasx2](ojasx2), search/verification/qualification tools in [tools](tools), raw evidence in [reports](reports), and older spectral prototypes in [experiments](experiments).
+All 25 current Lean modules are in [lean/OjasXMath](../lean/OjasXMath); the complete audit imports them through [OjasXMath.lean](../lean/OjasXMath.lean). Rocq modules are enumerated by [_RocqProject](../rocq/_RocqProject), with assumptions printed by [Audit.v](../rocq/Audit.v). Reference engines are in [ojasx2](../ojasx2), search/verification/qualification tools in [tools](../tools), raw evidence in [reports](../reports), and older spectral prototypes in [experiments](../experiments).
 
-The supplied notes remain original proposals, not proof certificates: [architecture](</Users/mohana/.codex/attachments/2d98fb04-5c83-4d32-946e-8c9d4da5d99b/Pasted text.txt>), [initial monograph](</Users/mohana/.codex/attachments/5756547f-8f02-413c-acc6-cf836cfb1384/Pasted text.txt>), [directional-arrow proposal](</Users/mohana/.codex/attachments/2fb26243-01a6-4cb3-9dc9-f8e9ff3c7815/Pasted text.txt>), [reversible proposal](</Users/mohana/.codex/attachments/820f08cd-44bc-4cdb-9117-cfa70a1c1b25/Pasted text.txt>), [Rocq workflow](</Users/mohana/.codex/attachments/95a9b6db-d558-4c4e-a305-c8a383dc1e3a/Pasted text.txt>), [alternative algebra](</Users/mohana/.codex/attachments/62d05f6e-f977-4d79-8054-3a8ae234a189/Pasted text.txt>), and [Hermite/Veronese proposal](</Users/mohana/.codex/attachments/050d1579-2cef-4630-ac14-4ac395260822/Pasted text.txt>).
+The supplied notes remain original proposals, not proof certificates. The external attachments are not included in this repository; their labels are retained for provenance only: architecture, initial monograph, directional-arrow proposal, reversible proposal, Rocq workflow, alternative algebra, and Hermite/Veronese proposal.
 
 ## Rechecking this record
 
 Use the formal-only current runner and existing GPU evidence:
 
 ~~~sh
-cd /Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt
-/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/refine_spectral_foundation.py --qualify-existing-gpu
+cd /path/to/OjasX-open-source-CUDA
+.venv/bin/python -B tools/refine_spectral_foundation.py --qualify-existing-gpu
 ~~~
 
 It performs bounded symbolic discovery, rebuilds/audits the full formal foundation, independently rechecks Rocq, refreshes source hashes and rejects stale spectral GPU evidence. It runs no numerical CPU ML. A GPU rerun is a separate opt-in command described in the companion foundation.
@@ -343,13 +343,13 @@ The current evidence supports conditional algorithms worth building upon. The ne
 
 This refinement broadened the joint mathematical unit from selected projection blocks to complete scalar training objectives. It added a squared-error Gram schedule and an explicitly separable streaming program, preserving ordinary nonlinear activation functions and original parameter objects. The algebra uses established finite-sum differentiation and Gram/trace identities; the contribution here is their executable joint schedule, contracts, original-gradient recovery, proof integration and measured rejection policy.
 
-The new sources are [objective_compiler.py](ojasx2/objective_compiler.py), [ObjectiveCompiler.lean](lean/OjasXMath/ObjectiveCompiler.lean), [ObjectiveCompiler.v](rocq/ObjectiveCompiler.v), [bounded discovery](tools/discover_objective_rules.py), [GPU qualification](tools/test_objective_gpu.py) and [combined runner](tools/refine_objective_foundation.py). The current [foundation specification](OJASX_MATHEMATICAL_FOUNDATION.md) gives the equations and API.
+The new sources are [objective_compiler.py](../ojasx2/objective_compiler.py), [ObjectiveCompiler.lean](../lean/OjasXMath/ObjectiveCompiler.lean), [ObjectiveCompiler.v](../rocq/ObjectiveCompiler.v), [bounded discovery](../tools/discover_objective_rules.py), [GPU qualification](../tools/test_objective_gpu.py) and [combined runner](../tools/refine_objective_foundation.py). The current [foundation specification](OJASX_MATHEMATICAL_FOUNDATION.md) gives the equations and API.
 
 Lean adds 23 theorems, including actual derivatives rather than adjoint algebra alone. Rocq adds 16 rational theorem/lemma declarations. Z3 checks all entries of a finite quadratic example against SymPy differentiation and falsifies plausible omissions; the formal tensor identities are dimension-general. The final search includes 24 checks/counterexamples and 27 shape decisions. No new mathematical axiom asserts cheapness or numerical correctness.
 
 The initial GPU phase passed full loss/gradient and short SGD/AdamW comparisons for six synthetic objective families. It showed substantial retained-activation savings but rejected speed admission for both the Gram and sparse-weight reference schedules. Larger layers were measured rather than assumed faster. The runtime then gained a distinct gradient-cancellation guard: a loss-energy check alone admitted a stationary-weight example whose raw rearranged gradient differed from a native zero gradient. That raw failure is retained beside the repaired native backward result. Bias and requested-gradient costs use the original dense baseline, and the encoded extra feature is charged only to the Gram candidate. The fallback preserves the original bias placement and residual scaling order.
 
-The source-matched final results are [objective-gpu.json](reports/objective-gpu.json) and [objective-qualification.json](reports/objective-qualification.json). [objective-gpu-pre-gradient-guard.json](reports/objective-gpu-pre-gradient-guard.json) preserves an earlier run, with its old source hashes and narrower guard scope. It is historical evidence only. No accuracy tolerance was relaxed to admit the cancellation example.
+The source-matched final results are objective-gpu.json (evidence not included: `reports/objective-gpu.json`) and objective-qualification.json (evidence not included: `reports/objective-qualification.json`). objective-gpu-pre-gradient-guard.json (evidence not included: `reports/objective-gpu-pre-gradient-guard.json`) preserves an earlier run, with its old source hashes and narrower guard scope. It is historical evidence only. No accuracy tolerance was relaxed to admit the cancellation example.
 
 Separable streaming reduces peak retained chunk tape as batch grows, with no forward replay. It does not reduce all arithmetic for unmasked examples. Removing fixed zero-weight independent examples can reduce model arithmetic, but requires uniform parameter usage and finite per-example loss/gradient obligations; finite operands alone cannot rule out overflow. Batch-coupled objectives, training BatchNorm, hidden mutation, fresh randomness, and arbitrary higher-order differentiation are outside this first-order contract. Callback declarations are not automatically kernel-checked.
 

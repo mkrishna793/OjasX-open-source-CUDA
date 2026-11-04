@@ -4,7 +4,7 @@ The new work provides an automated, checked mathematical candidate for reducing 
 
 All new ML tensor computations, reference comparisons, gradient tests and timings ran on the Apple GPU through PyTorch MPS, with `PYTORCH_ENABLE_MPS_FALLBACK=0`. Python orchestrated the runs and read scalar results. SymPy, Z3, Lean and Rocq ran as host proof processes. No CPU ML reference was substituted. The Neural Engine was not used.
 
-The machine-readable results are [qualification](reports/nonlinear-qualification.json), [GPU cases](reports/nonlinear-gpu-search.json), [repeat timings](reports/nonlinear-gpu-repeat.json), [edge cases](reports/nonlinear-gpu-edges.json), [formal audit](reports/nonlinear-formal-verification.json) and [discovery trace](reports/nonlinear-discovery.json). Qualification checks the recorded source hashes against the current files.
+The machine-readable results are qualification (evidence not included: `reports/nonlinear-qualification.json`), GPU cases (evidence not included: `reports/nonlinear-gpu-search.json`), repeat timings (evidence not included: `reports/nonlinear-gpu-repeat.json`), edge cases (evidence not included: `reports/nonlinear-gpu-edges.json`), formal audit (evidence not included: `reports/nonlinear-formal-verification.json`) and discovery trace (evidence not included: `reports/nonlinear-discovery.json`). Qualification checks the recorded source hashes against the current files.
 
 ## What changed mathematically
 
@@ -144,7 +144,7 @@ These operation counts are not measured Metal instructions, FLOPs from a profile
 
 ## Using and reproducing the research module
 
-The module is [ojasx2/nonlinear_taylor_gpu.py](ojasx2/nonlinear_taylor_gpu.py). Supply MPS FP32 tensors with shapes `X[m,k]`, `A[k,n]`, `B[n,p]`, and optionally `V[k,n]` for SwiGLU. The tensors may require gradients normally:
+The module is [ojasx2/nonlinear_taylor_gpu.py](../ojasx2/nonlinear_taylor_gpu.py). Supply MPS FP32 tensors with shapes `X[m,k]`, `A[k,n]`, `B[n,p]`, and optionally `V[k,n]` for SwiGLU. The tensors may require gradients normally:
 
 ```python
 from ojasx2.nonlinear_taylor_gpu import taylor_block
@@ -162,11 +162,11 @@ The domain decision is treated as a discrete choice; differentiation computes th
 From this project directory, with the existing Python environment:
 
 ```sh
-/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/verify_nonlinear_foundation.py
-PYTORCH_ENABLE_MPS_FALLBACK=0 /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/search_nonlinear_gpu.py
-PYTORCH_ENABLE_MPS_FALLBACK=0 /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/repeat_nonlinear_gpu.py
-PYTORCH_ENABLE_MPS_FALLBACK=0 /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/gpu_nonlinear_edges.py
-/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/summarize_nonlinear_qualification.py
+.venv/bin/python -B tools/verify_nonlinear_foundation.py
+PYTORCH_ENABLE_MPS_FALLBACK=0 .venv/bin/python -B tools/search_nonlinear_gpu.py
+PYTORCH_ENABLE_MPS_FALLBACK=0 .venv/bin/python -B tools/repeat_nonlinear_gpu.py
+PYTORCH_ENABLE_MPS_FALLBACK=0 .venv/bin/python -B tools/gpu_nonlinear_edges.py
+.venv/bin/python -B tools/summarize_nonlinear_qualification.py
 ```
 
 Run GPU timing tools sequentially, without concurrent GPU benchmarks. The first command checks proofs only. The older broad verification commands also execute CPU numerical workloads; they were not used for this GPU-only experiment. In the agent sandbox MPS was unavailable; running the authorized tests outside the sandbox exposed the GPU and succeeded with fallback disabled.

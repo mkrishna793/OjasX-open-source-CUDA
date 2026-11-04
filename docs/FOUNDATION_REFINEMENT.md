@@ -8,8 +8,8 @@ numerical and validation failures, reducing the normalization residual model,
 and extending exact proofs to complete affine gradients and repeated indexing.
 It does not establish global minimum arithmetic or memory, or faster training
 across most complete models. Verification evidence is in
-[rocq-verification.json](reports/rocq-verification.json) and
-[foundation-edges.json](reports/foundation-edges.json).
+[rocq-verification.json](../reports/rocq-verification.json) and
+foundation-edges.json (evidence not included: `reports/foundation-edges.json`).
 
 ## Failures found and corrected
 
@@ -112,7 +112,7 @@ its test adapter intentionally limits sizes to 64 for bounded oracle runs.
 From the project root, with the recorded Python environment:
 
 ```sh
-/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/verify_rocq.py
+.venv/bin/python -B tools/verify_rocq.py
 ```
 
 The runner compiles 11 proof modules, audits all 100 theorem/lemma statements,

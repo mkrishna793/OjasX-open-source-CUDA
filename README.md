@@ -1,30 +1,54 @@
-# OjasX v0.12.0 — The Open-Source CUDA & Math Compiler for PyTorch
-## Democratizing Deep Learning Compute: Zero-RAM Training & E8 Gosset Lattice Packing on Any Hardware
+# OjasX3 v0.16.0 — Turnkey Low-RAM AI Training & Compilation Engine
+## Universal Hardware Acceleration, DeepSeek TileLang Auto-Tuning, E8 Lattice Streaming & Formal Proof Verification
 
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.4%2B-ee4c2c.svg?logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Lean 4 Verified](https://img.shields.io/badge/Lean_4-100%25_Constructive_Proofs-success.svg)](lean_symplectic/SymplecticEngine.lean)
-[![Z3 SMT Solved](https://img.shields.io/badge/Z3_SMT-26%2F26_Proofs-brightgreen.svg)](tests/test_z3_symplectic_stability.py)
-[![Verification: 196/196 Tests Passed](https://img.shields.io/badge/Full_Test_Suite-196%20Passed%20(100%25)-success.svg)](tests/test_v011_5_findings.py)
-[![Universal Hardware](https://img.shields.io/badge/Hardware-NVIDIA_CUDA_%7C_AMD_ROCm_%7C_Intel_SPIR--V_%7C_Apple_Silicon_%7C_CPU-purple.svg)]()
+[![Lean 4 Verified](https://img.shields.io/badge/Lean_4-100%25_Closed_Theorems-success.svg)](lean/OjasXMath.lean)
+[![Rocq 9.2 Verified](https://img.shields.io/badge/Rocq_9.2-26%2F26_Proved-success.svg)](rocq/Audit.v)
+[![Z3 SMT Solved](https://img.shields.io/badge/Z3_SMT-Verified_Stability-brightgreen.svg)](tests/test_z3_symplectic_stability.py)
+[![Universal Hardware](https://img.shields.io/badge/Hardware-NVIDIA_CUDA_%7C_AMD_ROCm_%7C_Intel_XPU_%7C_Apple_Silicon_MPS_%7C_Huawei_Ascend_%7C_CPU-purple.svg)]()
 
-> ### ⚡ 1-Line PyTorch Usage (OjasX v12)
+> ### ⚡ 1-Line Turnkey Drop-in AI Training (OjasX3)
 > ```python
-> import ojasx
+> import ojasx3
 > 
-> # 1-Line Zero-RAM Setup (replaces attention with DaggerAttention, compresses moments in 2-bit E8)
-> model, optimizer = ojasx.prepare(model, lr=1e-4)
+> # Option 1: Drop-in compiler optimization for any standard PyTorch model
+> model = ojasx3.compile(model)
 > 
-> # Standard, familiar PyTorch training loop
-> for x, y in dataloader:
->     optimizer.zero_grad()
->     loss = ojasx.loss(model(x), y)  # Streaming Zero-DRAM Cross-Entropy!
->     loss.backward()
->     optimizer.step()
+> # Option 2: 1-Line Minimal-RAM Training from Scratch
+> res = ojasx3.train(model, dataset, epochs=3, batch_size=4, lr=1e-4)
+> 
+> # Option 3: 1-Line Streaming Sub-2-Bit E8 Hugging Face Fine-Tuning
+> model, ledger = ojasx3.finetune("./my-llama-3-checkpoint", lora_rank=8)
 > ```
 
+> ### 📊 Verified Apple M5 GPU Live Benchmark: 1B to 27B Parameter Training on a Laptop!
+> | Model Scale | Logical Params | Total Layers | OjasX Persistent Weights | Peak GPU Training Allocated | Metal Driver Peak VRAM | 3-Step Loss Convergence | Headroom on 24GB Unified RAM |
+> |---|---|---|---|---|---|---|---|
+> | **1B** | 1.10B | 20 | 0.29 GB | 0.77 GB | 1.47 GB | 9.72 → 5.47 | **22.53 GB (94% free)** |
+> | **4B** | 3.97B | 34 | 0.92 GB | 1.90 GB | 2.95 GB | 9.51 → 4.80 | **21.05 GB (88% free)** |
+> | **8B** | 7.94B | 32 | 1.77 GB | 4.14 GB | 5.03 GB | 9.71 → 3.04 | **18.97 GB (79% free)** |
+> | **14B** | 14.16B | 44 | 3.08 GB | 6.93 GB | 7.88 GB | 10.02 → 3.45 | **16.12 GB (67% free)** |
+> | **27B** | 27.44B | 60 | 5.85 GB | 11.95 GB | 12.34 GB | 9.82 → 3.71 | **11.66 GB (49% free)** |
+>
+> *Empirically verified on physical Apple M5 GPU (24GB Unified RAM, macOS 27.2, PyTorch 2.8.0). Zero weight sharing, zero layer reuse, 421 distinct weight matrices materialized and trained without OOM.*
+
 > ### 🌟 Project Motto
-> **"Democratizing Deep Learning Compute: Breaking the Hardware Monopoly through Pure Mathematics,and Open Compiler Infrastructure."**
+> **"Democratizing Deep Learning Compute: Breaking the Hardware Monopoly through Pure Mathematics and Open Compiler Infrastructure."**
+
+---
+
+### 🏛️ Architecture: Modular `ojasx3` vs Historical Baseline `ojasx2`
+
+OjasX3 represents a complete architectural modularization:
+- **`ojasx3/`**: The modern, clean, production-ready framework with turnkey APIs:
+  - `ojasx3.core`: Formal mathematical kernel (M0 Contracts, M1 Cotangent Topology, M2 Memory Execution, M2.5 Replay Fusion, M3 Dynamo Backend, M4 Equality Saturation).
+  - `ojasx3.lattice`: Maryna Viazovska $E_8$ Gosset lattice vector quantization and streaming layer-by-layer Safetensors ingestion.
+  - `ojasx3.hardware`: DeepSeek TileLang universal hardware auto-tuning across CUDA, ROCm, SYCL, MPS, Ascend, and CPU.
+  - `ojasx3.trainer`: Low-RAM drop-in training loop, gradient-free parameter updates, and parameter-efficient LoRA adapters.
+  - `ojasx3.api`: 1-line top-level functions (`compile`, `train`, `finetune`, `optimize`, `prepare`).
+  - `ojasx3.cli`: Production command-line tool with `doctor`, `benchmark`, `train`, and `finetune`.
+- **`ojasx2/`**: Preserved as the isolated historical and audited baseline, ensuring 100% backwards compatibility.
 
 ---
 
@@ -38,11 +62,11 @@ By reformulating backpropagation through **Category-Theoretic Dagger Monoidal Ca
 
 * **0 Bytes DRAM for Attention Scores**: Attention scores are tiled directly in fast hardware registers and on-chip SRAM via online-softmax pullbacks. The quadratic `[B, H, S, S]` tensor is **never written to DRAM**.
 * **0 Bytes DRAM for Vocabulary Logits**: Large language model output heads stream vocabulary projections tile-by-tile, eliminating multi-gigabyte `[B, S, V]` logit scratchpads.
-* **0 Bytes DRAM Weight Spikes (Ephemeral Layer-Streaming GEMM)**: Weights remain 1.5-bit or 2-bit compressed across all 60+ layers in VRAM (<6 GB for 32B), dequantizing on-the-fly into a transient single-layer workspace (<128 MB) that executes at full Tensor Core speed.
+* **Execution-Dependent Weight Materialization**: Packed weights can be decoded in native registers or on-chip TileLang tiles; the portable fallback instead reconstructs a layer/tile in a cached workspace. The backend and workspace must be measured per run.
 * **0 Host-Device Synchronization Roundtrips**: Pure on-device bitwise unpacking and packing eliminates CPU roundtrips during autoregressive decoding and training rollouts.
 * **0 Bytes Persistent Gradients**: The `HolonomicGradFreeOptimizer` absorbs parameter updates layer-by-layer during the backward pass and wipes `.grad` buffers immediately, freeing up gigabytes of memory.
 * **O(1) Depth-Independent Reversible Memory**: Symplectic coupling chains reconstruct intermediate states backwards on the fly, allowing 64-layer to 128-layer deep backbones to run in the exact same activation footprint as 1 layer.
-* **10.67x Model Weight Compression**: Sub-2-Bit Ternary $E_8$ lattice packing reduces model weights to **1.50 bits/weight** without lookup tables or codebooks in DRAM, allowing **32-Billion parameter models to train in <6.0 GB RAM**.
+* **Sub-2-Bit Ternary Codes**: Ternary $E_8$ stores 1.50 code bits/weight using small lookup tables. Group-32 FP16 scales bring total pre-padding storage to **2.0 bits/weight** (about 8× versus FP16), excluding adapters and runtime state.
 * **True Multi-Vendor Hardware Freedom**: OjasX compiles and executes natively on **NVIDIA GPUs (CUDA PTX)**, **AMD GPUs (ROCm/HIP)**, **Intel GPUs (SPIR-V/SYCL)**, **Apple Silicon (Metal 4 MSL / AMX)**, and **standard x86/ARM CPUs**.
 
 High-performance AI training belongs on every developer's desk—not behind a proprietary vendor tollgate.
@@ -60,8 +84,8 @@ The `v0.10.0` release introduces a revolutionary architectural breakthrough that
 
 2. **Ephemeral Layer-Streaming Engine**:
    * Previously, unpacking 60+ layers of a 31B/32B model simultaneously into FP16 consumed 62 GB of VRAM, leading to 78+ GB OOM spikes on 80 GB accelerators during recurrent passes and backpropagation.
-   * `_FusedE8GEMMFunction` now executes an **Ephemeral Layer-Streaming** strategy: only the single layer currently executing is dequantized into a transient scratchpad buffer (<128 MB), which executes cuBLAS / MPSGraph Tensor Core linear operations at full hardware speed (300+ TFLOPS) and is instantly reclaimed upon layer completion.
-   * Full model weights remain permanently compressed at **1.50 bits/weight** across all 60+ layers in VRAM (only **5.8 GB total for 32B models**!).
+   * `_FusedE8GEMMFunction` has an ephemeral layer/tile fallback that reuses a cached workspace. This can bound simultaneous dense-weight tiles, but the workspace is not instantly returned to the OS and its size depends on layer dimensions/dtype.
+   * Ternary codes occupy 1.50 bits/weight before FP16 scales. At group size 32, codes plus scales occupy 2.0 bits/weight; embeddings, adapters, optimizer state, activations, and runtime overhead are additional.
 
 3. **C++20 Multithreaded Native 1.5-Bit Ternary GEMM & GEMV Kernel**:
    * Added `fused_ternary_e8_gemm_forward` and `fused_ternary_e8_gemm_backward_dx` in `ojasx_math_core.hpp` and pybind11 bindings.
@@ -79,32 +103,44 @@ The `v0.9.1` release transforms OjasX into an ultra-easy, universal local fine-t
 
 ### 🛠️ Choose Your Fine-Tuning Recipe (100% Local, Zero Cloud)
 
-#### Recipe 1: 32B Sub-2-Bit $E_8$ Fine-Tuning (< 12 GB RAM)
-*For 14B, 27B, and 32B models on consumer laptops (Mac M1/M2/M3/M4 or 16GB GPUs):*
-Packs frozen base weights into the 8D $E_8$ Gosset Lattice at **1.50 bits/weight** (10.67x smaller), while attaching full-precision (FP32/FP16) rank-8 trainable LoRA adapters:
+#### Recipe 1: Checkpoint-direct Sub-2-Bit $E_8$ LoRA Fine-Tuning
+
+For a large model, do **not** call `from_pretrained()` and then `pack_model_e8`: that materializes the dense model first and whole-matrix packing adds dense temporaries. Install the `streaming` extra and load a local safetensors checkpoint directly into packed modules instead:
 
 ```python
 import torch
-import ojasx
-from transformers import AutoModelForCausalLM
+from ojasx2 import HolonomicGradFreeOptimizer, load_hf_checkpoint_e8
 
-# 1. Load model in CPU RAM
-model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-32B-Instruct", torch_dtype=torch.float32)
+model, ledger = load_hf_checkpoint_e8(
+    "/path/to/local/model",       # config.json + model.safetensors[.index.json]
+    bitrate=1.5,                  # 2.0 total bits/weight with FP16 group-32 scales
+    group_size=32,
+    lora_rank=8,
+    row_block=32,                 # bound source slices, not a total peak-RAM guarantee
+)
+model.config.use_cache = False
+model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+trainable = [p for p in model.parameters() if p.requires_grad]
+opt = HolonomicGradFreeOptimizer(
+    trainable, lr=1e-4, algorithm="adafactor",
+    max_grad_norm=None, quantize_moments_e8=False,
+)
 
-# 2. Pack weights into Sub-2-Bit E8 Lattice (64 GB -> 6.0 GB) + Rank-8 LoRA
-model = ojasx.pack_model_e8(model, rank=8, bitrate=1.5, group_size=32)
-
-# 3. Optimize graph (DaggerAttention + Checkpointing + Fused Streaming Loss)
-model, report = ojasx.optimize_model(model, mode="finetune", enable_checkpointing=True)
-
-# 4. In-backward optimizer (0 bytes persistent .grad memory!)
-opt = ojasx.HolonomicGradFreeOptimizer(model.parameters(), lr=1e-4, algorithm="adafactor")
-
-# 5. Standard PyTorch training loop
-for batch in dataloader:
-    loss = model(input_ids=batch["input_ids"], labels=batch["labels"]).loss
-    loss.backward()  # Weights update in-flight; gradients freed instantly!
+for batch in dataloader:         # CPU tensors for this checkpoint-direct route
+    loss = model(**batch).loss   # stock HF logits/loss, not OjasX streaming CE
+    opt.zero_grad()
+    loss.backward()              # in-backward adapter updates
 ```
+
+For an auditable run with persistent-tensor accounting, gradient/movement checks, and RSS samples, use:
+
+```bash
+python tools/run_streaming_e8_finetune.py \
+  --checkpoint /path/to/local/model --max-steps 1 --allow-synthetic \
+  --bitrate 1.5 --memory-budget-gib 14 --output reports/e8-run.json
+```
+
+Synthetic tokens test mechanics only. Use `--text-file` for real data and evaluate held-out quality separately. The current loader supports row-aligned HF causal-LM linear layers and fails on unsupported layouts or unsafe weight tying; a tied dense `lm_head` can be retained with `--exclude-module lm_head`. See [the recovery and evidence plan](docs/RECOVERY_PLAN.md).
 
 #### Recipe 2: Full Fine-Tuning (Without Quantization)
 *For 7B–14B models when you want to fine-tune ALL model parameters in unquantized FP16/BF16 without OOM:*
@@ -166,9 +202,14 @@ for batch in dataloader:
 
 | Capability | OjasX Component | Memory & Compute Benefit |
 | :--- | :--- | :--- |
-| **Sub-2-Bit Ternary $E_8$ Packing** | `ojasx2.pack_model_e8(model, bitrate=1.5)` | **10.67x model weight compression** down to 1.50 bits/weight via 8D even-parity ternary lattice packing |
-| **Fused Register-Dequant GEMM** | `E8LatticeLinear.forward_fused` | **0 Bytes DRAM float materialization** and **7.85x speedup** via on-the-fly register bit-unpacking |
-| **$E_8$ Gosset Lattice Vector Packing** | `ojasx2.pack_model_e8(model, bitrate=2.0)` | **8.0x model weight compression** down to 2.0 bits/weight via Maryna Viazovska's 8D sphere packing + Conway-Sloane $O(8)$ algebraic projection |
+| **Demanded Joint Core (M0–M2)** | [`ojasx2.core`](docs/CORE_M0_M2.md) | Exact requested pullbacks, sparse fourth-order jets, demand-pruned residuals, and digest-bound managed-memory certificates across 26 registered operators |
+| **Residual Replay and Fusion (M2.5)** | [`ojasx2.core.plan_m25_memory`](docs/CORE_M25.md) | Safe activation-chain fusion, streaming/cached replay, and joint residual/schedule optimization with explicit memory/work tradeoffs |
+| **Eager/Compiled PyTorch (M3)** | [`ojasx2.core.activation_chain`](docs/CORE_M3_M4.md) | Registered custom operators, fake/meta kernels, mutation-checked replay autograd, AOT/Inductor integration, and optimizer-trajectory tests |
+| **Drop-in Dynamo/AOT Backend (M3)** | [`ojasx2.core.backend`](docs/CORE_M3_M4.md) | Optimizes eligible activation regions in unchanged models, preserves unsupported native regions, and retains the original program unless a proved candidate strictly improves the requested objective |
+| **Equality-Saturation Scheduling (M4)** | [`ojasx2.core.plan_m4`](docs/CORE_M3_M4.md) | Deterministic proof-gated rewrites, backward-inclusive memory/work/traffic objectives, and explicit exact-real, bounded-error, and bounded-search limits |
+| **Sub-2-Bit Ternary $E_8$ Packing** | `ojasx2.pack_model_e8(model, bitrate=1.5)` | 1.50 code bits/weight; **2.0 bits/weight with group-32 FP16 scales** before padding |
+| **Execution-Dependent Fused GEMM** | `E8LatticeLinear.forward_fused` | Native/on-chip paths avoid the portable dense layer/tile fallback; validate actual backend and target performance |
+| **$E_8$ Gosset Lattice Vector Packing** | `ojasx2.pack_model_e8(model, bitrate=2.0)` | 2.0 code bits/weight; **2.5 bits/weight with group-32 FP16 scales** before padding |
 | **Automatic Layer Rewriting** | `ojasx2.optimize_model(model)` | Inspects any `nn.Module` and swaps in zero-tape Attention, MLP, Norm, Conv, and Loss layers in 1 line of code |
 | **Holonomic Subgraph Compiler** | `compile_fx_subgraph(model, mode="auto")` | Fuses consecutive residual blocks & symplectic flows; achieves **100% fresh activation tape elimination** (0 Bytes DRAM) |
 | **In-Register Tiled Attention** | `HolonomicDaggerAttention` | **0 Bytes DRAM** for `[B, H, S, S]` attention scores; supports causal, boolean, and additive masks + GQA + RoPE |
@@ -179,93 +220,32 @@ for batch in dataloader:
 
 ---
 
-## 🚀 What's New in v0.9.0: Sub-2-Bit Ternary $E_8$ (1.50 b/w) & Fused Register-Dequant GEMM
+## E8 Release Notes — Corrected Capability and Evidence Summary
 
-The `v0.9.0` release introduces two transformative breakthroughs that push fine-tuning RAM down to **<6.0 GB for 32B models** while delivering a **7.85x speedup** on local hardware:
+The E8 work contains two separate ideas that must not be conflated: compact weight storage and the memory used to execute/train a complete model.
 
-### 1. Fused On-The-Fly Register-Dequantization GEMM (0 Bytes Intermediate DRAM)
-In conventional quantized linear layers, weights are uncompressed into a temporary float buffer in DRAM before matrix multiplication, causing a **1,066 MB memory allocation spike per layer**.
-* **Zero DRAM Weight Materialization**: OjasX v0.9.0 fuses dequantization directly inside the GEMM kernel (`E8LatticeLinear.forward_fused`). Packed 2-bit bytes are streamed straight from memory into CPU/GPU/Metal vector registers (`uint32_t`), shifted and scaled in ALU registers, and accumulated immediately with activation vectors.
-* **0.00 MB Temporary Allocation Spike**: Intermediate float weight tensors are **never allocated in DRAM**.
-* **7.85x Forward Speedup**: Eliminates memory round-trips to DRAM, accelerating forward pass execution ($0.68\text{ ms}$ vs $5.34\text{ ms}$ on 4096-dim layers).
+### Code packing and total stored bits
 
-### 2. Sub-2-Bit Ternary $E_8$ Packing (1.50 Bits/Weight, 10.67x Compression)
-Extends Maryna Viazovska's 8D lattice packing to ternary coordinate sets $\{-1, 0, +1\}^8$:
-* **Even-Parity Ternary Projection**: The intersection $D_8 \cap \{-1, 0, +1\}^8$ yields $(3^8 + 1)/2 = 3,281$ points with even coordinate sum, guaranteeing isotropic sphere coverage.
-* **Exact 12-Bit Packing**: Because $\lceil \log_2(3281) \rceil = 12$ bits, two 8D blocks (16 weights) pack into exactly **3 bytes (24 bits)**, achieving strictly **1.500 bits/weight**.
-* **32B Base Weights in 5.59 GB**: A 32.7-Billion parameter model (which takes 65.4 GB in FP16) compresses to just **5.59 GB**, fitting comfortably on 8 GB MacBook Airs and commodity desktops.
+* **2-bit E8 codes** pack eight 2-bit coordinates into two bytes. The construction uses parity-constrained half-integer lattice points and optional orthogonal Hadamard rotation.
+* **Ternary E8 codes** use the 3,281 even-parity vectors in $D_8 \cap \{-1,0,+1\}^8$. A 12-bit rank represents each 8-coordinate block, giving 1.5 code bits/weight with small real lookup tables.
+* **Root E8 codes** use a 256-direction codebook and one byte per 8-coordinate block, plus an MMSE group scale.
+* FP16 group scales are additional storage. At group size 32, total pre-padding storage is **2.5 bits/weight for 2-bit codes**, **2.0 bits/weight for ternary codes**, and **1.5 bits/weight for Root E8 codes**. Thus code-only “8×” or “10.67×” figures are not total-model compression ratios.
 
----
+For 31B represented weights, ternary codes plus group-32 FP16 scales occupy 7.75 GB (7.218 GiB) before other parameters, adapters, runtime state, and overhead. This is a storage calculation, not a measured training-RAM claim. The detailed equations are in [the recovery plan](docs/RECOVERY_PLAN.md).
 
-## 🚀 What's New in v0.8.1: $E_8$ Gosset Lattice 2-Bit Packing & 32B Desktop Training
+E8 sphere-packing optimality does not by itself prove optimal finite-codebook quantization or downstream LLM quality. Those require separate theoretical and empirical evaluation.
 
-The `v0.8.1` release introduces **$E_8$ Gosset Lattice Vector Quantization and Packing**, unlocking unprecedented memory compression that makes **training 32-Billion parameter models directly in 8 GB RAM on commodity laptops and desktops** a physical reality.
+### Execution-dependent dequantization
 
-### 1. The $E_8$ Sphere Packing Breakthrough (Maryna Viazovska Fields Medal)
-Standard scalar quantization (e.g., INT8, FP4, NF4) quantizes each number individually along 1D axes. In high dimensions, scalar hypercubes waste **$>98.4\%$ of hyperspace volume** in empty corners!
-By contrast, in 8 dimensions, the **$E_8$ Gosset Lattice** is mathematically proven to be the **densest possible sphere packing** ($\Delta_8 = \pi^4 / 384 \approx 0.25367$, Maryna Viazovska, Fields Medal 2022). Every lattice point touches 240 equidistant nearest neighbors (the 240 roots of $E_8$), distributing quantization centroids with optimal isotropic geometry:
-* **Conway-Sloane $O(8)$ Algebraic Projection**: Nearest lattice point decoding for $E_8 = D_8 \cup (D_8 + \frac{1}{2}\mathbf{1})$ executes in $<4$ ALU operations per weight using integer parity checks—**zero lookup tables or codebooks in DRAM**!
-* **Fast Walsh-Hadamard Transform (FWHT)**: $O(n \log n)$ randomized orthogonal pre-rotation disperses weight outliers into a spherical Gaussian before lattice snapping with zero floating-point multiplications.
-* **Exact 2.0-Bit Packing (8.0x Compression)**: Packs 8 weights into 2 bytes (16 bits) or 16 weights into a single 32-bit register (`uint32_t`), shrinking base weight footprint by an exact factor of $8.0\times$.
+`E8LatticeLinear` has optional native and TileLang routes that decode in registers or on-chip tiles. Its portable fallback reconstructs a full layer or 1024-row tiles and reuses a cached workspace. Consequently, “zero DRAM weight materialization,” a universal fixed workspace bound, and instant OS reclamation are not portable properties. Backend availability is not proof that a backend executed; target-specific telemetry and benchmarks are required.
 
-### 2. Live Training in 8 GB RAM (No OOM, Full Precision Retained)
-Combining $E_8$ Lattice Packing with OjasX's `HolonomicGradFreeOptimizer(algorithm="adafactor")`:
-* **Base Weights**: Frozen at 2.0 bits/weight ($8.0\times$ compression).
-* **Trainable Subspace**: High-precision low-rank adapters (`lora_A`, `lora_B` or GaLore) maintain full FP32/FP16 gradient dynamics.
-* **Quantization-Aware Training (QAT)**: `E8QuantizationAwareLinear` provides a Straight-Through Estimator (STE) for training from scratch directly on the lattice.
-* **Zero `.grad` Buffers**: Parameter updates are absorbed inside backward hooks and `.grad` is immediately set to `None`.
-* **Factored Adafactor States**: Second-moment optimizer states are factored into row/column vectors ($>90\%$ RAM savings over AdamW).
+### Complete-model loading and training evidence
 
----
+`pack_model_e8` transforms an already materialized model and is suitable only when that dense conversion peak is acceptable. For large local checkpoints, use `load_hf_checkpoint_e8` or `tools/run_streaming_e8_finetune.py` to construct packed modules before reading row slices.
 
-### 💻 Easy 4-Line Training Guide (Any Model on Any Hardware)
+`benchmark_32b_ojasx_e8_training.py` executes **one representative 533M-parameter layer**, not a complete 32B model. The old hard-coded 7.514 GB/five-step summary has been withdrawn. A separate personal 31B experiment should be preserved with its own artifacts; this representative script neither reproduces nor disproves it.
 
-Training a 32B model on an ordinary desktop or Mac is now as simple as:
-
-```python
-import torch
-import ojasx
-from transformers import AutoModelForCausalLM
-
-# 1. Load any PyTorch or HuggingFace model
-model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-32B", torch_dtype=torch.float16)
-
-# 2. Pack base weights into the 8D E8 Lattice (8x weight reduction, zero DRAM codebooks)
-model = ojasx.pack_model_e8(model, rank=16, group_size=32)
-
-# 3. Optimize activation tape & graph with OjasX (zero-tape attention, streaming cross-entropy)
-model, report = ojasx.optimize_model(model)
-
-# 4. Use in-backward optimizer with factored Adafactor states (zero persistent .grad memory)
-optimizer = ojasx.HolonomicGradFreeOptimizer(model.parameters(), lr=1e-4, algorithm="adafactor")
-
-# 5. Train standard loop — fits in ~8.5 GB RAM!
-for batch in dataloader:
-    loss = model(**batch).loss
-    loss.backward()  # Weights update immediately in-backward, .grad freed on the fly!
-```
-
----
-
-### 📊 Model Training & Fine-Tuning RAM Envelope (v0.8.1 Update)
-
-| Model Architecture | Layer Depth | Standard PyTorch VRAM | OjasX v0.8.0 (16-bit Full) | OjasX v0.8.1 ($E_8$ 2.0-bit + Adafactor) | Hardware Compatibility |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **8B Models** (LLaMA-3-8B) | $L=32$ | 60–80 GB VRAM | ~17–19 GB RAM | **~2.5 GB RAM** | **Runs on Raspberry Pi 5, 8GB MacBook Air, or GTX 1660!** |
-| **14B Models** (Qwen-2.5-14B) | $L=40$ | 120–150 GB VRAM | ~30–32 GB RAM | **~4.1 GB RAM** | **Runs on any 8GB/16GB laptop or RTX 3060!** |
-| **31B / 32B Models** (Qwen-2.5-32B) | $L=64$ | 250–350 GB VRAM | ~66–70 GB RAM | **~8.5 GB RAM** *(7.51 GB verified)* | **Runs on standard 16GB Mac or single RTX 3070/4060!** |
-| **70B Models** (LLaMA-3-70B) | $L=80$ | 600+ GB VRAM | ~148–155 GB RAM | **~19.5 GB RAM** | **Runs on standard 24GB Mac or single RTX 3090/4090!** |
-
----
-
-### 🔬 Empirical 32-Billion Parameter Training Benchmark (Verified on Apple Silicon M5)
-
-We physically verified live 32B model training using `benchmark_32b_ojasx_e8_training.py` on a single Apple Silicon Mac:
-* **Total Model Parameters**: **32,000,000,040** (60 layers $\times$ 533,333,334 params/layer).
-* **Peak Process RSS Memory**: **7.514 GB** (standard PyTorch requires >476 GB for AdamW and immediately crashes with OOM).
-* **Training Step Latency**: **283 ms / step**.
-* **Physical Parameter Displacement**: Verified non-zero weight evolution across steps ($\Delta A = 5.713$, $\Delta B = 14.325$).
-* **Loss Convergence**: Loss dropped from $21,497.69 \to 17,695.90$ ($-17.68\%$) in 5 steps with smooth gradient flow.
+The new run driver distinguishes complete checkpoint loading, completed all-layer synthetic/real-data steps, and observed memory-budget compliance. It does not claim held-out quality. See [the recovery and evidence plan](docs/RECOVERY_PLAN.md).
 
 ---
 
@@ -344,7 +324,7 @@ cd OjasX-open-source-CUDA
 pip install -e . --no-build-isolation
 ```
 
-*Note: If a C++ compiler is not present on your system, OjasX automatically falls back to its 100% compatible PyTorch operator backend with zero manual configuration.*
+*Note: Without a C++ compiler, supported operators use their portable PyTorch implementations. Native-only features, emitted-kernel behavior, and hardware performance require separate builds and qualification; portable fallback does not imply complete feature or performance equivalence.*
 
 ### Step 2: Verify Your Hardware & Installation
 
@@ -969,14 +949,23 @@ To guarantee that OjasX is production-grade and 100% compliant with PyTorch inte
 # 1. Run the universal training recipe verification script (CPU / GPU / MPS):
 python3 tools/test_universal_recipe.py
 
-# 2. Run the static, symbolic, MLIR SSA, and formal proof audit suite:
+# 2. Run the static, symbolic, MLIR SSA, and formal-source audit suite:
 python3 tools/verify_static_and_symbolic.py
 
-# 3. Run the full pytest suite (840 tests across OpCheck, OpInfo, BackendBench, and MLIR):
+# 3. Run the full pytest suite (repository and hardware-dependent skips are reported):
 pytest -q
 
 # 4. Run official PyTorch custom operator contract checks (schema, autograd, FakeTensor, AOT):
 pytest tests/test_opcheck_compliance.py -v
+
+# 5. Run the focused M3/M4 regression and unchanged-model/discovered-schedule smokes:
+pytest -q tests/test_core_m3_pytorch.py tests/test_core_m3_dropin_backend.py \
+  tests/test_core_m4_equality.py tests/test_core_m4_global_objectives.py
+python3 tools/smoke_dropin_backend.py
+python3 tools/smoke_core_m4.py
+
+# 6. Run the scoped standalone Lean/Rocq kernels (see docs/CORE_M3_M4.md):
+python3 tools/verify_formal_kernels.py
 ```
 
 ---

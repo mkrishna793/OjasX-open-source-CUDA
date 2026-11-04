@@ -1,0 +1,8 @@
+{
+  "broken": [],
+  "broken_count": 0,
+  "local_links_checked": 266,
+  "markdown_files": 34,
+  "policy": "document-relative local targets; external URLs and LaTeX excluded",
+  "schema_version": 1
+}

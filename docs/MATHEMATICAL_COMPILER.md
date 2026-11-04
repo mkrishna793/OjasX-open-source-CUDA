@@ -2,7 +2,7 @@
 
 This version implements a bounded mathematical compiler research prototype. It translates particular nonlinear computations into a compact linear operator space, composes the operators there, decodes the result, and differentiates with respect to every original parameter. The successful new example preserves the nonlinear primal over real arithmetic; it does not replace GELU/SiLU with an approximation.
 
-The useful result is specific: a trainable triangular nonlinear recurrence has a fixed three-observable representation. Both shared weights and separate original weights at every stage are supported. GPU tests cover forward values, all input/parameter gradients, four SGD steps, higher derivatives, and selected edge cases. Independent repeated full-step timing and retained-storage measurements are in [the repeat report](reports/koopman-repeat.json).
+The useful result is specific: a trainable triangular nonlinear recurrence has a fixed three-observable representation. Both shared weights and separate original weights at every stage are supported. GPU tests cover forward values, all input/parameter gradients, four SGD steps, higher derivatives, and selected edge cases. Independent repeated full-step timing and retained-storage measurements are in the repeat report (evidence not included: `reports/koopman-repeat.json`).
 
 This is not a compiler that has found huge reductions for every modern ML operation. Dense GELU/SiLU/SwiGLU layers do not acquire a cheap exact representation in the tested chart grammar. Unsupported representations retain native execution. The prototype requires explicit `accuracy="algebraic"`; strict mode retains the native computation.
 
@@ -68,7 +68,7 @@ For large batches, the wide batch is no longer propagated and retained at each s
 
 ## Tool-driven search and counterexamples
 
-[tools/discover_coordinate_compiler.py](tools/discover_coordinate_compiler.py) enumerates 36 operation/chart pairs using identity, log, reciprocal and logit coordinates. It tests symbolic affine closure for affine, scaling, homogeneous powers, shifted squares, exponential, sigmoid, SiLU and GELU stages. Six pairs have symbolic affine closure in that grammar. Symbolic simplification alone does not certify a chart's domain or GPU implementation.
+[tools/discover_coordinate_compiler.py](../tools/discover_coordinate_compiler.py) enumerates 36 operation/chart pairs using identity, log, reciprocal and logit coordinates. It tests symbolic affine closure for affine, scaling, homogeneous powers, shifted squares, exponential, sigmoid, SiLU and GELU stages. Six pairs have symbolic affine closure in that grammar. Symbolic simplification alone does not certify a chart's domain or GPU implementation.
 
 The Koopman example begins with a rejected state-only model. Z3 supplies a counterexample; adding `x²` permits sample-based coefficient synthesis, followed by universal SMT refutation of the negated identity. SymPy then derives the parameterized matrix and all parameter cotangents. It emits Lean and Rocq proof sources, which are kernel checked.
 
@@ -92,7 +92,7 @@ Positive homogeneous stages have a log conjugacy:
 
 Their nonlinear chain becomes a composition of affine actions in log coordinates. Lean proves the exact positive-domain identity and actual encoder/decoder derivatives. Every original stage weight gradient is computed from the decoded output and its exponent.
 
-The first GPU experiment found parameter-gradient pointwise tolerance failures in deeper square/cube chains, even with small relative L2 errors. The initial report is preserved in [coordinate-gpu-initial.json](reports/coordinate-gpu-initial.json). These are numerical counterexamples to the chosen FP32 contract, not failures of the real-arithmetic conjugacy.
+The first GPU experiment found parameter-gradient pointwise tolerance failures in deeper square/cube chains, even with small relative L2 errors. The initial report is preserved in coordinate-gpu-initial.json (evidence not included: `reports/coordinate-gpu-initial.json`). These are numerical counterexamples to the chosen FP32 contract, not failures of the real-arithmetic conjugacy.
 
 The revised log prototype limits the total exponent to 16 and retains native execution for the rejected cases. Its final six-case GPU qualification and nine selected edge checks pass, with higher-derivative checks against the native nonlinear map. Active log candidates remain slower, so this route is research evidence and a counterexample-driven refinement, not a recommended acceleration.
 
@@ -116,7 +116,7 @@ A future research model can be supported by providing a suitable encoding and st
 
 ## Using the prototype
 
-The implementation is [ojasx2/coordinate_compiler.py](ojasx2/coordinate_compiler.py). Its strict mode defaults to the native recurrence. Algebraic mode is explicit:
+The implementation is [ojasx2/coordinate_compiler.py](../ojasx2/coordinate_compiler.py). Its strict mode defaults to the native recurrence. Algebraic mode is explicit:
 
 ```python
 from ojasx2.coordinate_compiler import coordinate_koopman
@@ -136,13 +136,13 @@ This is a mathematical execution module and a bounded search/compiler prototype.
 From this project directory:
 
 ```sh
-/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/verify_coordinate_foundation.py
-PYTORCH_ENABLE_MPS_FALLBACK=0 /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/test_coordinate_gpu.py
-PYTORCH_ENABLE_MPS_FALLBACK=0 /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/test_koopman_gpu.py
-PYTORCH_ENABLE_MPS_FALLBACK=0 /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/repeat_koopman_gpu.py
-/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/summarize_coordinate_compiler.py
+.venv/bin/python -B tools/verify_coordinate_foundation.py
+PYTORCH_ENABLE_MPS_FALLBACK=0 .venv/bin/python -B tools/test_coordinate_gpu.py
+PYTORCH_ENABLE_MPS_FALLBACK=0 .venv/bin/python -B tools/test_koopman_gpu.py
+PYTORCH_ENABLE_MPS_FALLBACK=0 .venv/bin/python -B tools/repeat_koopman_gpu.py
+.venv/bin/python -B tools/summarize_coordinate_compiler.py
 ```
 
-Proof tools run on the host; all new ML references and benchmarks run on the GPU. Run benchmarks sequentially. Formal results, including the complete project theorem/statement counts and axiom audit, are in [coordinate-formal-verification.json](reports/coordinate-formal-verification.json). The combined current qualification is [coordinate-qualification.json](reports/coordinate-qualification.json).
+Proof tools run on the host; all new ML references and benchmarks run on the GPU. Run benchmarks sequentially. Formal results, including the complete project theorem/statement counts and axiom audit, are in coordinate-formal-verification.json (evidence not included: `reports/coordinate-formal-verification.json`). The combined current qualification is coordinate-qualification.json (evidence not included: `reports/coordinate-qualification.json`).
 
 The delivered improvement is a checked compiler contract plus a successful exact-real nonlinear representation for a particular family, with preserved original parameters and measured GPU savings. Broad huge reductions for modern dense activation workloads remain an open requirement of OjasX.

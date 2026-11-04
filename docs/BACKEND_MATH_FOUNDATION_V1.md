@@ -31,8 +31,8 @@ also passed:
 - **10 scoped Z3 checks**: five negated identities/guards proved unsatisfiable and
   five expected counterexamples retained.
 
-The reproducible evidence is in [rocq-verification.json](reports/rocq-verification.json)
-and [broad-foundation.json](reports/broad-foundation.json). These results establish
+The reproducible evidence is in [rocq-verification.json](../reports/rocq-verification.json)
+and broad-foundation.json (evidence not included: `reports/broad-foundation.json`). These results establish
 the listed coverage, not a percentage of all ML models.
 
 ## The common mathematical interface
@@ -210,7 +210,7 @@ would not establish a new advantage over optimized PyTorch.
 
 ## Backend obligations and future model support
 
-The contract manifest is [foundation_manifest.json](foundation_manifest.json).
+The contract manifest is [foundation_manifest.json](../foundation_manifest.json).
 Each backend primitive needs:
 
 1. Shape, dtype, device, aliasing and randomness semantics.
@@ -252,7 +252,7 @@ memory and minimum work” claim is not established by these local theorems.
 Run the complete Rocq verification from the project root:
 
 ```sh
-/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/verify_rocq.py
+.venv/bin/python -B tools/verify_rocq.py
 ```
 
 Use a derivative reference explicitly:

@@ -9,10 +9,10 @@ The gains depend strongly on the graph and shape. This prototype has a useful
 GPU linear-chain result and substantial activation-tape savings; several paths
 remain slower than native GPU PyTorch.
 
-Evidence: [final measurements](reports/mps-qualification.json),
-[initial measurements](reports/mps-qualification-initial.json),
-[GPU regression tests](tests/test_mps_qualification.py), and
-[full verification](reports/verification.json).
+Evidence: [final measurements](../reports/mps-qualification.json),
+initial measurements (evidence not included: `reports/mps-qualification-initial.json`),
+[GPU regression tests](../tests/test_mps_qualification.py), and
+[full verification](../reports/verification.json).
 
 ## Measured results
 
@@ -169,9 +169,9 @@ should use strict execution when speed is the objective.
 Reproduce from the rebuild directory with the recorded environment:
 
 ```sh
-PYTORCH_ENABLE_MPS_FALLBACK=0 /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B -m pytest tests/test_mps_qualification.py tests/test_hardware.py -q
-PYTORCH_ENABLE_MPS_FALLBACK=0 /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/qualify_mps.py
-PYTORCH_ENABLE_MPS_FALLBACK=0 /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/verify_all.py
+PYTORCH_ENABLE_MPS_FALLBACK=0 .venv/bin/python -B -m pytest tests/test_mps_qualification.py tests/test_hardware.py -q
+PYTORCH_ENABLE_MPS_FALLBACK=0 .venv/bin/python -B tools/qualify_mps.py
+PYTORCH_ENABLE_MPS_FALLBACK=0 .venv/bin/python -B tools/verify_all.py
 ```
 
 ## Hardware implementation implications

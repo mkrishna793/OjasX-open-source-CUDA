@@ -138,8 +138,8 @@ retains native PyTorch execution.
 
 ## GPU evidence and operation scaling
 
-Current evidence is in [the GPU report](reports/gradient-factor-gpu.json) and
-[the admission ledger](reports/gradient-qualification.json). The complete-step
+Current evidence is in the GPU report (evidence not included: `reports/gradient-factor-gpu.json`) and
+the admission ledger (evidence not included: `reports/gradient-qualification.json`). The complete-step
 timing includes forward, loss, input/W/b/Q gradients, ordinary SGD updates,
 numeric guards and the ReLU mask guard when applicable. CPU ML execution and
 MPS CPU fallback are disabled. Proof/search programs run on the host.
@@ -219,7 +219,7 @@ Run one complete bounded refinement cycle from this directory:
 
 ```sh
 PYTORCH_ENABLE_MPS_FALLBACK=0 \
-  /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B \
+  .venv/bin/python -B \
   tools/refine_gradient_foundation.py --gpu
 ```
 

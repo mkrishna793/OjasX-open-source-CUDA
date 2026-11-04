@@ -93,7 +93,7 @@ No optimization or Gaussian axioms are added. `rocq/SpectralFoundation.v` introd
 
 This is an absolute error contract for fixed upstream factors. When the loss or upstream cotangent also changes, additional terms appear; `spectral_loss_cotangent_error` makes them explicit. Cancellation can prevent conversion to a small relative error. Whole-model SGD/AdamW tests therefore complement local identities.
 
-Generated degree-2/4/6 biased coordinate examples include primal identities, all original-variable gradients and actual Lean derivative proofs. The generated Chebyshev identities and reference-tail bounds are checked in Lean. Rocq independently checks finite matrix reassociation, bias-folding rules and the generated rational polynomial identities. All proof modules, including earlier work, are compiled, audited for assumptions and independently kernel-rechecked by the final runner. Final counts are in [the formal report](reports/spectral-formal-verification.json).
+Generated degree-2/4/6 biased coordinate examples include primal identities, all original-variable gradients and actual Lean derivative proofs. The generated Chebyshev identities and reference-tail bounds are checked in Lean. Rocq independently checks finite matrix reassociation, bias-folding rules and the generated rational polynomial identities. All proof modules, including earlier work, are compiled, audited for assumptions and independently kernel-rechecked by the final runner. Final counts are in the formal report (evidence not included: `reports/spectral-formal-verification.json`).
 
 The valid conditions are now explicit: a matching polynomial primal/slope; retained original parameters; accounted feature and upstream widths; a bounded numerical domain or a separate rigorous remainder contract; acceptable whole-program gradient/optimizer error; and measured cost/memory eligibility. The tools refine these conditions rather than declaring desired savings as axioms.
 
@@ -116,7 +116,7 @@ Three composed GELU→projection→SiLU→projection classification models and o
 
 The suite also checks twelve polynomial cases, twelve repeated large cases, eleven policy/domain/numeric/frozen/noncontiguous/zero/cotangent edges, two higher-derivative comparisons and two scalar grids. All polynomial implementation and final admission checks passed. Four degree-4 candidates failed comparisons against the native activation and remain rejected. Hermite degree-4 accuracy claims also remain rejected. Higher derivatives are checked against the **same polynomial surrogate**, not asserted equal to native activation Hessians.
 
-Numerical comparisons retain the earlier criteria: `allclose` with absolute/relative tolerance 2e-4 plus relative L2 error ≤2e-4. No tolerance was relaxed to turn rejected degree-4 candidates into successes. The final [GPU report](reports/spectral-gpu.json) contains individual errors and optimizer checks.
+Numerical comparisons retain the earlier criteria: `allclose` with absolute/relative tolerance 2e-4 plus relative L2 error ≤2e-4. No tolerance was relaxed to turn rejected degree-4 candidates into successes. The final GPU report (evidence not included: `reports/spectral-gpu.json`) contains individual errors and optimizer checks.
 
 ## Cost, broad scaling and implementation
 
@@ -158,6 +158,6 @@ python -B tools/refine_spectral_foundation.py --qualify-existing-gpu
 
 The runner performs bounded symbolic discovery and counterexample checks, regenerates proof/coefficients, audits all Lean/Rocq modules, independently rechecks Rocq, optionally runs the GPU suite, and creates a source-hash-matched admission ledger. Numerical failures or stale evidence stop qualification. It installs no background automation and runs no legacy CPU ML test suites.
 
-Reports: [discovery and corrected assumptions](reports/spectral-discovery.json), [formal audit](reports/spectral-formal-verification.json), [GPU tests and raw approximation rejections](reports/spectral-gpu.json), and [qualified shapes/policies](reports/spectral-qualification.json).
+Reports: discovery and corrected assumptions (evidence not included: `reports/spectral-discovery.json`), formal audit (evidence not included: `reports/spectral-formal-verification.json`), GPU tests and raw approximation rejections (evidence not included: `reports/spectral-gpu.json`), and qualified shapes/policies (evidence not included: `reports/spectral-qualification.json`).
 
 The foundation now supports coordinate-sensitive polynomial representation and a bounded, tested approximation family for ordinary GELU/SiLU. The remaining broad bottleneck is feature growth with input dimension, along with whole-model numerical error. This work supplies conditional improvements; it does not establish an exact compact representation or dramatic savings for most existing training workloads.

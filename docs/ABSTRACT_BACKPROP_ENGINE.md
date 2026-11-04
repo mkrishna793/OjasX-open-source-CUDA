@@ -5,7 +5,7 @@ rewrite search, and a new nonlinear feature-contraction reference. This is
 scoped mathematical progress, not a universal cheaper-training theorem.
 The generated theorem claims become accepted only when the verification runner
 finishes the Lean kernel and dependency audit. Current evidence is in
-[abstract-verification.json](reports/abstract-verification.json).
+abstract-verification.json (evidence not included: `reports/abstract-verification.json`).
 
 ## What changed
 
@@ -16,10 +16,10 @@ sources. Rocq and Z3 remain complementary checkers. Mathlib serves as both a
 source of reusable theorems and an example of layered formalization; it is not
 a benchmark claiming that OjasX computes faster than Mathlib.
 
-The abstract source is [AbstractEngine.lean](lean/OjasXMath/AbstractEngine.lean).
+The abstract source is [AbstractEngine.lean](../lean/OjasXMath/AbstractEngine.lean).
 The machine-generated polynomial identities are in
-[Discovered.lean](lean/OjasXMath/Discovered.lean).
-The CPU reference is [feature_core.py](ojasx2/feature_core.py).
+[Discovered.lean](../lean/OjasXMath/Discovered.lean).
+The CPU reference is [feature_core.py](../ojasx2/feature_core.py).
 
 The previous [normalization and indexing refinement](FOUNDATION_REFINEMENT.md)
 still applies. Its 100 closed Rocq statements are retained. Lean now checks
@@ -199,7 +199,7 @@ composition theorem propagates reverse errors using an explicit Lipschitz
 bound. These are genuine conditional inequalities, not invented error bounds
 for an arbitrary GPU kernel.
 
-[certify_polynomial_roundoff.py](tools/certify_polynomial_roundoff.py) executes
+[certify_polynomial_roundoff.py](../tools/certify_polynomial_roundoff.py) executes
 24 bounded scalar traces of the native and feature circuits, including all
 operand gradients. Exact rational checks validate the local rounding budget
 `u*abs(operation)+eta`, including a subnormal absolute term. It propagates
@@ -211,7 +211,7 @@ orders. It is too expensive to be the proposed production implementation.
 
 ## Automated clue and theorem search
 
-[discover_backprop.py](tools/discover_backprop.py) implements this bounded loop:
+[discover_backprop.py](../tools/discover_backprop.py) implements this bounded loop:
 
 1. Derive degree-two/three polynomial coefficients with SymPy.
    A bounded basis-refinement loop first tries constant and linear feature
@@ -245,7 +245,7 @@ success accepted by the full verifier.
 From the project root:
 
 ```sh
-/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/verify_abstract_foundation.py
+.venv/bin/python -B tools/verify_abstract_foundation.py
 ```
 
 The runner regenerates the discovered identities and complete Lean audit,

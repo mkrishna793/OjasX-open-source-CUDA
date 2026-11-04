@@ -27,7 +27,7 @@ Lean checks the all-demand node cost and arbitrary-dimension associativity. Nati
 | 256 × 512 × 1024 × 2048 × 32 | 5.5713 | 1.2171 | 4.58× | 5.5780 |
 | 128 × 256 × 512 × 256 × 512 | 0.4650 | 0.4739 | 0.98× | 0.4839 |
 
-The large segment removes 87.25% of modeled scalar arithmetic and 93.75% of fresh saved storage, with 11.20% lower profiler incremental tensor peak. The large three-weight segment has dimensions batch 256, widths 512→1024→2048→32. The selected tree is `X @ (W1.T @ (W2.T @ W3.T))`. The earlier pair rule falls back and misses this opportunity. Nine GEMMs remain; their dimensions change. Modeled arithmetic and memory savings are in [research-extensions.json](reports/research-extensions.json), along with eleven randomized paired timing samples per variant. No optimized tree is selected for the wide-output control when its modeled saving is zero.
+The large segment removes 87.25% of modeled scalar arithmetic and 93.75% of fresh saved storage, with 11.20% lower profiler incremental tensor peak. The large three-weight segment has dimensions batch 256, widths 512→1024→2048→32. The selected tree is `X @ (W1.T @ (W2.T @ W3.T))`. The earlier pair rule falls back and misses this opportunity. Nine GEMMs remain; their dimensions change. Modeled arithmetic and memory savings are in research-extensions.json (evidence not included: `reports/research-extensions.json`), along with eleven randomized paired timing samples per variant. No optimized tree is selected for the wide-output control when its modeled saving is zero.
 
 ```python
 from ojasx2 import make_backend, linear_sequence, matrix_chain_plan
@@ -60,7 +60,7 @@ If an exact supplied factorization `D_ij=Σ_q U_iq V_jq` exists and `Q_ij=Σ_a G
 (Q ⊙ D)_ij = Σ_q Σ_a (U_iq G_ia) (V_jq C_ja)
 ```
 
-[Nonlinear.lean](lean/OjasXMath/Nonlinear.lean) proves this arbitrary-finite-index expansion. It supplies factors of width `r*p`; the conventional rank upper bound follows from the factor width. No decomposition algorithm or free low-rank assumption is supplied. If the width becomes large or discovering factors costs too much, the representation can lose. Smooth activations also leave the second weight gradient dependent on their actual H; a factored derivative alone does not reconstruct H.
+[Nonlinear.lean](../lean/OjasXMath/Nonlinear.lean) proves this arbitrary-finite-index expansion. It supplies factors of width `r*p`; the conventional rank upper bound follows from the factor width. No decomposition algorithm or free low-rank assumption is supplied. If the width becomes large or discovering factors costs too much, the representation can lose. Smooth activations also leave the second weight gradient dependent on their actual H; a factored derivative alone does not reconstruct H.
 
 ## 3. ReLU: a proved conditional branch-region schedule
 
@@ -87,7 +87,7 @@ The implementation checks the current batch mask, cost and finite inputs; it nev
 | common_mask | 7.7934 | 5.8602 | 1.33× | 4,194,304 → 2,048 | 21.86% |
 | random_distinct_masks | 7.5894 | 8.7254 | 0.87× | 4,194,304 → 4,194,304 | 0.00% |
 
-The common-mask case is deliberately constructed using first biases ±3 and small random inputs; it is not a claim that random ReLU batches commonly satisfy the premise. The varying-mask control had 512 unique mask rows and a full-rank sampled 64×128 mask. It uses the native backward and still pays detection overhead. The first implementation lowered tape but increased peak and slowed execution; [the preserved earlier report](reports/research-extensions-before-guard-optimization.json) records that negative finding. Optimizing finite-validation temporaries addressed the regression on the favorable case; it did not make the condition universal.
+The common-mask case is deliberately constructed using first biases ±3 and small random inputs; it is not a claim that random ReLU batches commonly satisfy the premise. The varying-mask control had 512 unique mask rows and a full-rank sampled 64×128 mask. It uses the native backward and still pays detection overhead. The first implementation lowered tape but increased peak and slowed execution; the preserved earlier report (evidence not included: `reports/research-extensions-before-guard-optimization.json`) records that negative finding. Optimizing finite-validation temporaries addressed the regression on the favorable case; it did not make the condition universal.
 
 A forty-step favorable synthetic SGD test keeps both dense weights and biases trainable. Its output/gradient/parameter comparisons are recorded in the research report. First and second derivatives, mutation checks, exact zero-boundary selection, autocast fallback and exception cases are tested. First-order raw-bit gradient equality is not claimed.
 
@@ -247,7 +247,7 @@ The practical goal is to avoid materializing large intermediates, reuse sufficie
 
 ## 8. Verification and remaining research
 
-The full runner passes **121 Lean statements, 33 scoped Z3 checks and 209 CPU tests**, with two unavailable-device skips. This phase adds 25 Lean statements, six Z3 models and 45 CPU tests to the preceding 96/27/164 baseline. The [source manifest](reports/verification.json) hashes all 52 checked sources. Detailed output is in [VERIFICATION.md](reports/VERIFICATION.md).
+The full runner passes **121 Lean statements, 33 scoped Z3 checks and 209 CPU tests**, with two unavailable-device skips. This phase adds 25 Lean statements, six Z3 models and 45 CPU tests to the preceding 96/27/164 baseline. The [source manifest](../reports/verification.json) hashes all 52 checked sources. Detailed output is in [VERIFICATION.md](../reports/VERIFICATION.md).
 
 These checks establish exact stated real algebra and scoped implementation conformance. They do not certify every Python instruction, all floating inputs, universal ML accuracy, all optimizers or any physical GPU kernel. Hardware output/tape/peak distinctions and strict-versus-algebraic use remain explicit.
 

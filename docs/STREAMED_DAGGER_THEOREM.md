@@ -2,7 +2,7 @@
 
 The new core statement characterizes the real gradient of any finite bilinear circuit with arbitrary linear encoders and decoder. The implementation specializes it to rank-7 matrix multiplication and combines it with a residual-memory policy. This is a verified formulation for OjasX, assembled from bilinear differentiation, adjoints and streaming; historical novelty has not been established.
 
-All source proofs are in [StreamedDagger.lean](lean/OjasXMath/StreamedDagger.lean). The root [axiom audit](lean/OjasXMath.lean) includes every project theorem. This guide describes the 6 October phase. The current project-wide run checks **121 Lean theorems, 33 Z3 models and 209 CPU tests**, with two unavailable-device skips; [the 7 October mathematical extension](BACKPROP_MATH_STRUCTURE.md) adds certified composition and general multilinear rules. The subsequent [joint contraction optimization](CONTRACTION_OPTIMIZATION.md) supplies a different, measured linear-chain speedup; its gains must not be applied to the rank-7 measurements below.
+All source proofs are in [StreamedDagger.lean](../lean/OjasXMath/StreamedDagger.lean). The root [axiom audit](../lean/OjasXMath.lean) includes every project theorem. This guide describes the 6 October phase. The current project-wide run checks **121 Lean theorems, 33 Z3 models and 209 CPU tests**, with two unavailable-device skips; [the 7 October mathematical extension](BACKPROP_MATH_STRUCTURE.md) adds certified composition and general multilinear rules. The subsequent [joint contraction optimization](CONTRACTION_OPTIMIZATION.md) supplies a different, measured linear-chain speedup; its gains must not be applied to the rank-7 measurements below.
 
 ## 1. One circuit and one joint cotangent rule
 
@@ -70,7 +70,7 @@ This does not mechanically prove the Python program or a future GPU kernel refin
 
 ## 3. Rank-7 specialization and streaming schedule
 
-The reference implementation [streamed.py](ojasx2/streamed.py) stores only the operands required by requested gradients:
+The reference implementation [streamed.py](../ojasx2/streamed.py) stores only the operands required by requested gradients:
 
 - Both input gradients requested: retain `A,B`.
 - Only `dA` requested: retain `B`.
@@ -100,7 +100,7 @@ In the measured both-gradient cached rank-7 case, unique operand-related saved s
 
 ## 4. Measurements, including the strongest baseline
 
-CPU FP32 joint forward/backward runs tested square sizes 256, 512, 1024, 2048 and 4096. All sampled outputs and both gradients passed the stated numerical tolerance. Timing medians and tensor-memory timelines are in [medium benchmarks](reports/streamed-benchmark-cpu.json) and [large benchmarks](reports/streamed-benchmark-heavy.json).
+CPU FP32 joint forward/backward runs tested square sizes 256, 512, 1024, 2048 and 4096. All sampled outputs and both gradients passed the stated numerical tolerance. Timing medians and tensor-memory timelines are in medium benchmarks (evidence not included: `reports/streamed-benchmark-cpu.json`) and large benchmarks (evidence not included: `reports/streamed-benchmark-heavy.json`).
 
 For square size 4096:
 
@@ -121,7 +121,7 @@ An eight-block residual FFN stack, batch 512, width 256 and hidden width 1024, a
 - Bit-identical sampled outputs, input gradients and every parameter gradient.
 - The same native GEMM calls; no projection recomputation.
 
-The CPU memory-focused version was slower in this run because it adds pointwise recomputation. Single-block examples reduced saved bytes but did not reduce peak tensor allocation. The [memory-backend report](reports/memory-backend.json) keeps these distinctions explicit.
+The CPU memory-focused version was slower in this run because it adds pointwise recomputation. Single-block examples reduced saved bytes but did not reduce peak tensor allocation. The memory-backend report (evidence not included: `reports/memory-backend.json`) keeps these distinctions explicit.
 
 ## 5. Use without changing the training loop
 
@@ -164,9 +164,9 @@ GEMM is already a computation performed by arithmetic execution units. The propo
 
 Future lowering should parameterize tile sizes and hardware limits, generate encoder expressions during tile loads, consume each `d_q` for both requested products, reuse gradient output storage only under proven alias/lifetime conditions, and qualify matrix-unit accumulation precision. Z3's integer tile-partition check covers logical tails, not arbitrary machine overflow, barriers or race freedom. Such obligations need target-specific discharge and real device tests.
 
-The [hardware probe](reports/hardware.json) confirms the laptop is an Apple M5 MacBook Air with 24 GB of memory and a 10-core Metal-capable GPU. This process reports zero Metal devices, and PyTorch reports MPS inaccessible. Core ML advertises a Neural Engine. Apple's [deployment guidance](https://machinelearning.apple.com/research/neural-engine-transformers) distinguishes GPU training workflows from Core ML's model execution across available engines.
+The hardware probe (evidence not included: `reports/hardware.json`) confirms the laptop is an Apple M5 MacBook Air with 24 GB of memory and a 10-core Metal-capable GPU. This process reports zero Metal devices, and PyTorch reports MPS inaccessible. Core ML advertises a Neural Engine. Apple's [deployment guidance](https://machinelearning.apple.com/research/neural-engine-transformers) distinguishes GPU training workflows from Core ML's model execution across available engines.
 
-Core ML tools 9.0 were installed in a separate project-local Python 3.12 environment. An explicit graph computes `A B`, `G Bᵀ` and `Aᵀ G`; all three FP16 results pass sampled tolerances against FP64 products of the quantized inputs. CPU-only and CPU+Neural-Engine configurations both execute, but their [compute plans](reports/coreml-probe-medium.json) select CPU. The runtime reports `IOSurfaceSharedEvent creation failed` and ANE compilation failure, even after the specific hardware-cache write permission was granted. Neural Engine execution has not been confirmed.
+Core ML tools 9.0 were installed in a separate project-local Python 3.12 environment. An explicit graph computes `A B`, `G Bᵀ` and `Aᵀ G`; all three FP16 results pass sampled tolerances against FP64 products of the quantized inputs. CPU-only and CPU+Neural-Engine configurations both execute, but their compute plans (evidence not included: `reports/coreml-probe-medium.json`) select CPU. The runtime reports `IOSurfaceSharedEvent creation failed` and ANE compilation failure, even after the specific hardware-cache write permission was granted. Neural Engine execution has not been confirmed.
 
 Reproduction commands on the laptop:
 

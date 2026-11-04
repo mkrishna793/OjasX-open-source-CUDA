@@ -12,9 +12,9 @@ The working architecture is a PyTorch-compatible compiler with mathematical opti
 
 The two supplied notes describe a dagger underlayer, S/A splitting, rank-7 bilinear mathematics, activation optics, Lean/Z3 verification, native C++/Metal kernels, a zero-copy allocator, a TileLang-inspired engine, and AOTAutograd/TorchInductor integration. The original PROJECT.md also explicitly includes the tile-engine goal. The original implementation and the rebuilt mathematical reference are distinct artifacts.
 
-The [combined audit](../OjasX-combined-analysis.md) found that several original guarantees exceeded the evidence: standard linear autograd already has two backward GEMMs; a four-add decoder is not the whole gradient calculation; general GELU/SiLU/SwiGLU derivatives cannot be obtained from their output alone; native shaders contained recomputation; and memory measurements did not establish zero tensor memory. These are reasons to refine the approach, not reasons to abandon the ambition.
+The combined audit (evidence not included: `../OjasX-combined-analysis.md`) found that several original guarantees exceeded the evidence: standard linear autograd already has two backward GEMMs; a four-add decoder is not the whole gradient calculation; general GELU/SiLU/SwiGLU derivatives cannot be obtained from their output alone; native shaders contained recomputation; and memory measurements did not establish zero tensor memory. These are reasons to refine the approach, not reasons to abandon the ambition.
 
-The rebuilt [verification report](reports/VERIFICATION.md) records 121 Lean statements, 33 scoped Z3 checks, and 209 CPU tests, with two unavailable-device skips. These qualify stated identities and finite CPU cases. They do not certify a production GPU compiler or arbitrary workloads.
+The rebuilt [verification report](../reports/VERIFICATION.md) records 121 Lean statements, 33 scoped Z3 checks, and 209 CPU tests, with two unavailable-device skips. These qualify stated identities and finite CPU cases. They do not certify a production GPU compiler or arbitrary workloads.
 
 **Define the one-accelerator challenge before optimizing**
 

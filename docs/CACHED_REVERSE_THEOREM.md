@@ -12,13 +12,13 @@ This is a construction from established calculus, adjoints and sufficient
 residuals. The contribution is the proved schedule and its implementation, not
 a claim to have invented reversible networks or a universal faster derivative.
 
-Evidence: [Lean proofs](lean/OjasXMath/CachedReverse.lean),
-[Z3 models and counterexamples](reports/cached-reverse-z3.json),
-[GPU measurements](reports/reversible-cache-mps.json),
-[initial GPU measurements](reports/reversible-cache-mps-initial.json),
-[CPU measurements](reports/reversible-cache-cpu.json),
-[regressions](tests/test_cached_reverse.py), and
-[complete verification](reports/verification.json).
+Evidence: [Lean proofs](../lean/OjasXMath/CachedReverse.lean),
+Z3 models and counterexamples (evidence not included: `reports/cached-reverse-z3.json`),
+GPU measurements (evidence not included: `reports/reversible-cache-mps.json`),
+initial GPU measurements (evidence not included: `reports/reversible-cache-mps-initial.json`),
+CPU measurements (evidence not included: `reports/reversible-cache-cpu.json`),
+[regressions](../tests/test_cached_reverse.py), and
+[complete verification](../reports/verification.json).
 
 | Final M5 SiLU experiment | Native | Old replay | Full cache + Metal | Speed vs native | Fresh tape reduction vs native |
 |---|---:|---:|---:|---:|---:|

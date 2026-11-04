@@ -2,11 +2,11 @@
 
 This phase was built and checked on 7 October 2026. It extends the earlier bilinear reference into a mathematical structure for the shared core of ML training: derivatives, joint input/parameter cotangents, composition, fanout and residual information. It is a foundation for qualifying ML operators, not certification of every existing PyTorch operator or a universal reduction in backward cost.
 
-This foundational phase added 34 Lean statements, twelve Z3 models and 33 CPU tests. The later [joint contraction implementation](CONTRACTION_OPTIMIZATION.md) adds a measured, shape-dependent optimization. The current runner checks **121 Lean theorems, 33 scoped Z3 models and 209 CPU tests**, with two device tests skipped. There are no unfinished Lean proofs or added project axioms. The [verification manifest](reports/verification.json) records source hashes and runtime versions; [the mathematical exploration report](reports/math-structure.json) records symbolic/counting and sampled gradient evidence.
+This foundational phase added 34 Lean statements, twelve Z3 models and 33 CPU tests. The later [joint contraction implementation](CONTRACTION_OPTIMIZATION.md) adds a measured, shape-dependent optimization. The current runner checks **121 Lean theorems, 33 scoped Z3 models and 209 CPU tests**, with two device tests skipped. There are no unfinished Lean proofs or added project axioms. The [verification manifest](../reports/verification.json) records source hashes and runtime versions; the mathematical exploration report (evidence not included: `reports/math-structure.json`) records symbolic/counting and sampled gradient evidence.
 
 ## 1. What a certified layer must supply
 
-A `CertifiedStage I J S` in [CertifiedBackprop.lean](lean/OjasXMath/CertifiedBackprop.lean) carries:
+A `CertifiedStage I J S` in [CertifiedBackprop.lean](../lean/OjasXMath/CertifiedBackprop.lean) carries:
 
 - `forward : input → residual × output`;
 - a continuous linear derivative at the actual input;
@@ -74,7 +74,7 @@ Then all input cotangents are given by the single indexed rule
 
 The same decoded cotangent `d` is available to every operand. The product excluding a slot is formed directly; it never divides by that slot. Zero factors and multiple zero factors are therefore valid. An empty excluded product is one.
 
-[Multilinear.lean](lean/OjasXMath/Multilinear.lean) proves the general joint pairing identity, genuine analytic directional derivatives of every output coordinate, and the derivative of the scalarized output in every joint direction:
+[Multilinear.lean](../lean/OjasXMath/Multilinear.lean) proves the general joint pairing identity, genuine analytic directional derivatives of every output coordinate, and the derivative of the scalarized output in every joint direction:
 
 \[
 \left.\frac{d}{dt}\langle F(a+t\,v),g\rangle\right|_{t=0}
@@ -87,7 +87,7 @@ The mathematical rule generalizes the old two-operand theorem. It can express te
 
 ## 4. A real arithmetic sharing result—and the strongest comparison
 
-The [offline mathematical reference](tools/math_structure.py) explores two division-free scalar circuits. Both return every gradient of `e_0*...*e_(r-1)` for the same upstream cotangent.
+The [offline mathematical reference](../tools/math_structure.py) explores two division-free scalar circuits. Both return every gradient of `e_0*...*e_(r-1)` for the same upstream cotangent.
 
 The prefix/suffix circuit builds the products on either side of each slot. For `r>=2`, it uses
 
@@ -139,7 +139,7 @@ The Python circuit uses `O(r)` temporary prefix entries plus required input/grad
 
 `certified_residual_reencoding` proves changing a stage's residual representation preserves its certified pullback when a decoder reproduces the old pullback on every reachable residual and every cotangent.
 
-The earlier [residual sufficiency theorem](lean/OjasXMath/Residuals.lean) supplies the information criterion:
+The earlier [residual sufficiency theorem](../lean/OjasXMath/Residuals.lean) supplies the information criterion:
 
 \[
 \mathrm{encode}(x)=\mathrm{encode}(x')
@@ -163,7 +163,7 @@ No low-rank approximation is silently substituted for an exact dense gradient. A
 
 ## 7. Geometric constraints
 
-[Geometry.lean](lean/OjasXMath/Geometry.lean) adds real-algebra proofs:
+[Geometry.lean](../lean/OjasXMath/Geometry.lean) adds real-algebra proofs:
 
 - On the unit sphere, `P_x(g)=g-x<x,g>` is tangent, idempotent, and preserves the pairing with every tangent direction.
 - For orthonormal-column matrices `X^T X=I`, the Stiefel expression

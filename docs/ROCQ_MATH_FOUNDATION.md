@@ -230,7 +230,7 @@ From the `OjasX_rebuilt` directory:
 
 ```sh
 ./tools/rocq.sh rocq --version
-/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/verify_rocq.py
+.venv/bin/python -B tools/verify_rocq.py
 ```
 
 The runner compiles all modules, audits every lemma/theorem, independently checks
