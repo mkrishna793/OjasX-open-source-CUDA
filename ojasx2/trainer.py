@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import math
 import os
+from pathlib import Path
 import sys
 import time
 from typing import Any, Callable, Dict, Iterable, Optional, Tuple, Union
@@ -68,7 +69,11 @@ class LowRAMTrainer:
         dtype: Optional[torch.dtype] = None,
         compile_backend: Optional[Union[str, bool]] = "ojasx_verified",
     ) -> None:
-        self.device = torch.device(device or _get_device_str())
+        if device is None or str(device).lower() == "auto":
+            dev_str = _get_device_str()
+        else:
+            dev_str = str(device)
+        self.device = torch.device(dev_str)
         self.fused_loss = fused_loss
         self.grad_accum_steps = max(1, grad_accum_steps)
         self.max_grad_norm = max_grad_norm
@@ -87,15 +92,22 @@ class LowRAMTrainer:
         self.model = model.to(device=self.device, dtype=master_dtype)
 
         self._compiled_model: Optional[Callable[..., Any]] = None
+        self.compile_error: Optional[str] = None
+        self.compile_succeeded: bool = False
         if self.compile_backend:
             backend_name = "ojasx_verified" if self.compile_backend is True else str(self.compile_backend)
-            if backend_name == "ojasx_verified":
+            if backend_name in ("ojasx_verified", "ojasx3"):
                 from .core.backend import register_backend
                 register_backend()
             try:
                 self._compiled_model = torch.compile(self.model, backend=backend_name)
-            except Exception:
+                self.compile_succeeded = True
+            except Exception as exc:
+                import logging
+                logging.getLogger("ojasx2.trainer").warning(f"Compilation with backend '{backend_name}' failed: {exc}")
+                self.compile_error = str(exc)
                 self._compiled_model = None
+                self.compile_succeeded = False
 
         # Initialize low-RAM optimizer with E8 momentum compression
         self.optimizer = HolonomicGradFreeOptimizer(
@@ -158,7 +170,10 @@ class LowRAMTrainer:
                 if self.compile_backend and self._compiled_model is not None:
                     try:
                         outputs = self._compiled_model(inputs)
-                    except Exception:
+                    except Exception as exc:
+                        import logging
+                        logging.getLogger("ojasx2.trainer").warning(f"Compiled forward execution failed: {exc}")
+                        self.compile_error = str(exc)
                         outputs = self.model(inputs)
                 else:
                     outputs = self.model(inputs)
@@ -276,8 +291,8 @@ def train(
 
 
 def finetune(
-    model: nn.Module,
-    dataloader: Iterable[Any],
+    model: Union[nn.Module, str, Path],
+    dataloader: Optional[Iterable[Any]] = None,
     epochs: int = 1,
     lr: float = 5e-5,
     grad_accum_steps: int = 2,
@@ -286,10 +301,33 @@ def finetune(
     dtype: Optional[torch.dtype] = None,
     device: Optional[Union[str, torch.device]] = None,
     compile_backend: Optional[Union[str, bool]] = "ojasx_verified",
+    bitrate: float = 1.5,
+    lora_rank: int = 16,
+    lora_alpha: float = 32.0,
+    **kwargs: Any,
 ) -> Dict[str, Any]:
     """Turnkey fine-tuning helper optimized for adapting pretrained models on minimal RAM."""
+    if isinstance(model, (str, Path)):
+        from .streaming_e8 import load_hf_checkpoint_e8
+        model_obj, _ = load_hf_checkpoint_e8(
+            model,
+            bitrate=bitrate,
+            lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
+            **kwargs,
+        )
+    else:
+        model_obj = model
+
+    if dataloader is None:
+        opt = HolonomicGradFreeOptimizer(
+            [p for p in model_obj.parameters() if p.requires_grad],
+            lr=lr,
+        )
+        return {"model": model_obj, "optimizer": opt}
+
     return train(
-        model=model,
+        model=model_obj,
         dataloader=dataloader,
         epochs=epochs,
         lr=lr,

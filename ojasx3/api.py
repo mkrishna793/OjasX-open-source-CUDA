@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, Iterable, Optional, Sequence, Tuple, Uni
 import torch
 import torch.nn as nn
 
-from ojasx3.core.backend import backend, register_backend, OjasXBackend, BackendConfig
+from ojasx2.core.backend import backend, register_backend, OjasXBackend, BackendConfig
 from ojasx3.trainer.trainer import LowRAMTrainer, train as _low_ram_train, finetune as _low_ram_finetune
 from ojasx3.trainer.optimizer import HolonomicGradFreeOptimizer
 from ojasx3.lattice.streaming import load_hf_checkpoint_e8
@@ -61,7 +61,7 @@ def train(
 
 
 def finetune(
-    checkpoint: Union[str, Path],
+    checkpoint: Union[str, Path, nn.Module],
     dataset: Optional[Iterable[Tuple[torch.Tensor, torch.Tensor]]] = None,
     *,
     bitrate: float = 1.5,
@@ -71,17 +71,20 @@ def finetune(
     epochs: int = 1,
     device: str = "auto",
     **kwargs: Any,
-) -> Tuple[nn.Module, HolonomicGradFreeOptimizer]:
-    """Fine-tune any large Hugging Face checkpoint on consumer RAM in 1 line."""
+) -> Union[Tuple[nn.Module, HolonomicGradFreeOptimizer], Dict[str, Any]]:
+    """Fine-tune any large Hugging Face checkpoint or model on consumer RAM in 1 line."""
     if dataset is None:
-        # Load-only mode returns model + optimizer
-        model, load_report = load_hf_checkpoint_e8(
-            checkpoint,
-            bitrate=bitrate,
-            lora_rank=lora_rank,
-            lora_alpha=lora_alpha,
-            **kwargs,
-        )
+        if isinstance(checkpoint, (str, Path)):
+            model, load_report = load_hf_checkpoint_e8(
+                checkpoint,
+                bitrate=bitrate,
+                lora_rank=lora_rank,
+                lora_alpha=lora_alpha,
+                **kwargs,
+            )
+        else:
+            from ojasx3.trainer.peft import attach_lora_adapters
+            model = attach_lora_adapters(checkpoint, rank=lora_rank, lora_alpha=lora_alpha)
         opt = HolonomicGradFreeOptimizer(
             [p for p in model.parameters() if p.requires_grad],
             lr=lr,
