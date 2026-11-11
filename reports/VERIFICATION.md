@@ -1,6 +1,6 @@
 # Verification status and evidence guide
 
-This guide separates executable checks from historical reports and unavailable hardware/toolchain scope. The original defect baseline and finding-by-finding remediation status are in [AUDIT.md](../AUDIT.md).
+This guide separates executable checks from historical reports and unavailable hardware/toolchain scope. The original defect baseline and finding-by-finding remediation status are in [AUDIT.md](../research/AUDIT.md).
 
 ## Current structured-core and M3/M4 evidence (2026-11-04 working tree)
 
@@ -28,7 +28,7 @@ This guide separates executable checks from historical reports and unavailable h
 
 ## Historical artifacts
 
-Several checked-in JSON reports contain source hashes from earlier revisions. They are historical artifacts, not hash-matched proof for the current working tree. `audit/evidence/report-hash-check.json` records the baseline mismatches. Do not cite their pass counts, speedups, or memory reductions as current results without rerunning the exact source and environment.
+Several checked-in JSON reports contain source hashes from earlier revisions. They are historical artifacts, not hash-matched proof for the current working tree. `research/audit/evidence/report-hash-check.json` records the baseline mismatches. Do not cite their pass counts, speedups, or memory reductions as current results without rerunning the exact source and environment.
 
 Missing historical evidence links in the documentation have been replaced by explicit “evidence not included” text. `markdown-link-check.json` covers first-party local Markdown targets using the document-relative paths readers actually follow; it does not validate external URLs or regenerate missing experiments.
 

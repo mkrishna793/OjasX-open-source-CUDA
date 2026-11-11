@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 commits_spec = [
     # 1. Audit baseline
     ("fix(audit): record formal audit baseline and remediation plan", [
-        "AUDIT.md", "audit/", "docs/RECOVERY_PLAN.md",
+        "research/AUDIT.md", "research/audit/", "docs/RECOVERY_PLAN.md",
     ]),
     # 2. Remediation findings F01-F10
     ("fix(audit): remediate findings F01-F10 on numerical stability and shape guards", [
@@ -88,7 +88,7 @@ commits_spec = [
     # 16. Maryna Viazovska E8 Gosset root lattice
     ("feat(lattice): optimize Maryna Viazovska E8 Gosset root lattice vector quantizer", [
         "ojasx2/math/lattice.py", "ojasx2/math/csrc/ojasx_math_core.hpp", "ojasx2/math/csrc/ojasx_math_bindings.cpp",
-        "tests/test_math_native.py", "benchmark_32b_ojasx_e8_training.py",
+        "tests/test_math_native.py", "benchmarks/benchmark_32b_ojasx_e8_training.py",
     ]),
     # 17. Streaming Safetensors Checkpoint Ingestion
     ("feat(lattice/streaming): add streaming Safetensors row-by-row checkpoint ingestion", [

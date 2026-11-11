@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import ojasx2
 from ojasx2.symplectic_engine import SymplecticTransformerBlock
 from ojasx2.grad_free_optimizer import HolonomicGradFreeOptimizer

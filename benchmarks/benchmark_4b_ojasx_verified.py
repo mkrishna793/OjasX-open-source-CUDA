@@ -29,7 +29,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # Ensure local ojasx2 package is loaded
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import ojasx2
 from ojasx2.symplectic_engine import SymplecticTransformerBlock
 from ojasx2.grad_free_optimizer import HolonomicGradFreeOptimizer
@@ -202,7 +202,7 @@ def run_4b_ojasx_training_test(num_steps: int = 3, seq_len: int = 32) -> None:
     watchdog.check_safety("Initialization")
 
     # 2. Clean Dataset
-    corpus_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "clean_text_corpus.txt")
+    corpus_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "clean_text_corpus.txt")
     dataset = CleanTextDataset(corpus_path, vocab_size=32000, seq_len=seq_len)
     batch_gen = dataset.get_batches(batch_size=1)
 

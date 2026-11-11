@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import ojasx2
 from ojasx2.symplectic_engine import SymplecticTransformerBlock
 from ojasx2.grad_free_optimizer import HolonomicGradFreeOptimizer
@@ -100,7 +100,7 @@ def run_8b_training(num_steps: int = 2):
     print("=" * 80)
 
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    corpus = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "clean_text_corpus.txt")
+    corpus = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "clean_text_corpus.txt")
     dataset = CleanDataset(corpus, vocab_size=32000, seq_len=32)
     batch_gen = dataset.get_batches()
 

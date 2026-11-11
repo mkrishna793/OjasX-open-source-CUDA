@@ -243,7 +243,7 @@ E8 sphere-packing optimality does not by itself prove optimal finite-codebook qu
 
 `pack_model_e8` transforms an already materialized model and is suitable only when that dense conversion peak is acceptable. For large local checkpoints, use `load_hf_checkpoint_e8` or `tools/run_streaming_e8_finetune.py` to construct packed modules before reading row slices.
 
-`benchmark_32b_ojasx_e8_training.py` executes **one representative 533M-parameter layer**, not a complete 32B model. The old hard-coded 7.514 GB/five-step summary has been withdrawn. A separate personal 31B experiment should be preserved with its own artifacts; this representative script neither reproduces nor disproves it.
+`benchmarks/benchmark_32b_ojasx_e8_training.py` executes **one representative 533M-parameter layer**, not a complete 32B model. The old hard-coded 7.514 GB/five-step summary has been withdrawn. A separate personal 31B experiment should be preserved with its own artifacts; this representative script neither reproduces nor disproves it.
 
 The new run driver distinguishes complete checkpoint loading, completed all-layer synthetic/real-data steps, and observed memory-budget compliance. It does not claim held-out quality. See [the recovery and evidence plan](docs/RECOVERY_PLAN.md).
 

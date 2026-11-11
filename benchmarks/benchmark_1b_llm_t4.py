@@ -19,7 +19,7 @@ import torch.nn.functional as F
 
 # Ensure ojasx2 is on path
 import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import ojasx2
 from ojasx2.smart_router import optimize_model
 

@@ -15,10 +15,15 @@ from __future__ import annotations
 import resource
 import sys
 import time
+from pathlib import Path
 from typing import Dict
 
 import torch
 import torch.nn.functional as F
+
+_REPO_ROOT = str(Path(__file__).resolve().parents[1])
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 from ojasx2.grad_free_optimizer import HolonomicGradFreeOptimizer
 from ojasx2.math.lattice import E8LatticeLinear

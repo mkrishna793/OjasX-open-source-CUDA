@@ -1,5 +1,7 @@
-include LICENSE README.md AUDIT.md pyproject.toml setup.py ojasx.py
+include LICENSE README.md research/AUDIT.md pyproject.toml setup.py ojasx.py
 
+recursive-include benchmarks *.py
+recursive-include research *.md *.py *.json *.txt
 recursive-include ojasx2 *.py *.yaml *.cpp *.hpp *.h *.mm *.metal *.m
 recursive-include ojasx3 *.py
 recursive-include tools *.py *.m *.sh
