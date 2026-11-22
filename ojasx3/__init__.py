@@ -54,3 +54,8 @@ __all__ = [
     "hardware",
     "trainer",
 ]
+
+from ojasx3.runtime.tape_hooks import E8ActivationTapeContext, TapeCompressionStats
+from ojasx3.compiler.universal import UniversalCompilerConfig, compile_universal
+from ojasx3.lattice.transforms import CWOFTLinear, apply_incoherence_transform
+from ojasx3.hardware.triton_e8_kernels import triton_fused_e8_2bit_gemm

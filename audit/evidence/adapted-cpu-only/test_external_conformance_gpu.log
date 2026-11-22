@@ -1,0 +1,30 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[08:59:45] [OjasX INFO] ojasx2.tile_fallback: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+[08:59:45] [OjasX INFO] ojasx2.tile_fallback: Tile fallbacks registration completed successfully.
+Error loading live generator for mm: module 'torch._C' has no attribute '_mps_get_name'
+Error loading live generator for bmm: module 'torch._C' has no attribute '_mps_get_name'
+Error loading live generator for addmm: module 'torch._C' has no attribute '_mps_get_name'
+Error loading live generator for nn.functional.gelu: module 'torch._C' has no attribute '_mps_get_name'
+Error loading live generator for nn.functional.silu: module 'torch._C' has no attribute '_mps_get_name'
+Error loading live generator for nn.functional.relu: module 'torch._C' has no attribute '_mps_get_name'
+Error loading live generator for softmax: module 'torch._C' has no attribute '_mps_get_name'
+Error loading live generator for nn.functional.layer_norm: module 'torch._C' has no attribute '_mps_get_name'
+Error loading live generator for nn.functional.conv2d: module 'torch._C' has no attribute '_mps_get_name'
+fatal: not a git repository (or any of the parent directories): .git
+Traceback (most recent call last):
+  File "/tmp/ojasx-audit/adapted-run/tools/test_external_conformance_gpu.py", line 209, in <module>
+    if __name__=='__main__':main()
+                            ^^^^^^
+  File "/tmp/ojasx-audit/adapted-run/tools/test_external_conformance_gpu.py", line 196, in main
+    provenance={name:subprocess.check_output(['git','-C',str(ROOT/'third_party'/name),'rev-parse','HEAD'],text=True).strip()
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/ojasx-audit/adapted-run/tools/test_external_conformance_gpu.py", line 196, in <dictcomp>
+    provenance={name:subprocess.check_output(['git','-C',str(ROOT/'third_party'/name),'rev-parse','HEAD'],text=True).strip()
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/subprocess.py", line 466, in check_output
+    return run(*popenargs, stdout=PIPE, timeout=timeout, check=True,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['git', '-C', '/tmp/ojasx-audit/adapted-run/third_party/TorchCTS', 'rev-parse', 'HEAD']' returned non-zero exit status 128.

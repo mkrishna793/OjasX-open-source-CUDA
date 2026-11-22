@@ -1,0 +1,8 @@
+{
+  "codegen": {
+    "checked_in_sha256": "ae9f5785902af852191cac1c4b370b7a8d3c6c2e4e569c654a49a894228f9baf",
+    "regenerated_sha256": "e2b3f55e896b84156ce9c38c28e58e92e5d004f15fef689b094918258b2d4925",
+    "regenerations_identical": true,
+    "check_argument_writes_output": true
+  }
+}

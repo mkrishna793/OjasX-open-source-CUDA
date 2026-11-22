@@ -1,0 +1,11 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[08:39:46] [OjasX INFO] ojasx2.tile_fallback: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+[08:39:46] [OjasX INFO] ojasx2.tile_fallback: Tile fallbacks registration completed successfully.
+GPU 256 64 (1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1)
+GPU 256 64 (2, 2, 2, 2)
+GPU 256 64 (2, 2, 2, 2, 2, 2, 2, 2)
+GPU 256 64 (3, 3, 3, 3, 3)
+GPU 1024 128 (2, 2, 2, 2)
+GPU 256 64 (2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2)
+Completed: 0 accuracy failures; 0 edge failures

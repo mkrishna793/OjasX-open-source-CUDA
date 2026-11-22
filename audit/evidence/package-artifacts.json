@@ -1,0 +1,11 @@
+{
+  "default_wheel": "ojasx_verified_core-0.13.0-py3-none-any.whl",
+  "sha256": "7c1a080265b6afa23b332d8063e0a116af37b673abbaa381509d9198d368c492",
+  "native_binaries": [],
+  "math_csrc_entries": [
+    "ojasx2/math/csrc/__init__.py"
+  ],
+  "sdist": "ojasx_verified_core-0.13.0.tar.gz",
+  "sdist_tilelang_entries": 0,
+  "sdist_math_native_sources": []
+}

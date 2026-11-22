@@ -1664,7 +1664,7 @@ class HolonomicSubgraphTransformer(Transformer):
             elif target in (F.silu, torch.ops.aten.silu.default, torch.ops.aten.silu):
                 return True, "silu", 0.0
             elif target in (F.gelu, torch.ops.aten.gelu.default, torch.ops.aten.gelu):
-                approx = node.kwargs.get("approximate", "tanh")
+                approx = node.kwargs.get("approximate", "none")
                 return True, "gelu" if approx == "tanh" else "gelu_exact", 0.0
             elif target in (torch.sigmoid, getattr(F, "sigmoid", None), torch.ops.aten.sigmoid.default, torch.ops.aten.sigmoid):
                 return True, "sigmoid", 0.0
@@ -1700,7 +1700,7 @@ class HolonomicSubgraphTransformer(Transformer):
             elif isinstance(mod, nn.SiLU):
                 return True, "silu", 0.0
             elif isinstance(mod, nn.GELU):
-                approx = getattr(mod, "approximate", "tanh")
+                approx = getattr(mod, "approximate", "none")
                 return True, "gelu" if approx == "tanh" else "gelu_exact", 0.0
             elif isinstance(mod, nn.Sigmoid):
                 return True, "sigmoid", 0.0

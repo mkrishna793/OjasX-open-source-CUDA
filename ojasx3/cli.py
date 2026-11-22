@@ -35,13 +35,19 @@ def main(argv=None) -> int:
         return 0
 
     if args.command == "benchmark":
-        print(f"Starting OjasX3 benchmark for scale {args.scale}...")
-        from tools.run_1b_to_27b_apple_m5_gpu_benchmark import run_single_scale
-        ladder = {"1B": (20, 2048, 5632, 16, 16384), "4B": (34, 3072, 8192, 24, 16384), "8B": (32, 4096, 14336, 32, 16384), "14B": (44, 5120, 13824, 40, 16384), "27B": (60, 6144, 16384, 48, 16384)}
-        nl, dm, df, nh, vs = ladder[args.scale]
+        import time
+        from ojasx2.math.lattice import E8LatticeLinear
+        print(f"Starting OjasX3 self-contained benchmark for scale {args.scale}...")
+        dim_map = {"1B": (2048, 2048), "4B": (3072, 3072), "8B": (4096, 4096), "14B": (5120, 5120), "27B": (6144, 6144)}
+        in_f, out_f = dim_map[args.scale]
         dev = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
-        res = run_single_scale(args.scale, nl, dm, df, nh, vs, steps=1, device=dev)
-        print(f"Completed {args.scale} benchmark: Peak RAM = {res['memory_gb']['mps_peak_training_allocated_gb']} GB")
+        layer = E8LatticeLinear(in_f, out_f, bitrate=1.5, group_size=32, rank=16).to(dev)
+        x = torch.randn(2, 32, in_f, device=dev)
+        t0 = time.perf_counter()
+        y = layer(x)
+        y.sum().backward()
+        dt_ms = (time.perf_counter() - t0) * 1000.0
+        print(f"Completed {args.scale} E8+LoRA layer step on {dev}: {dt_ms:.2f} ms")
         return 0
 
     return 0

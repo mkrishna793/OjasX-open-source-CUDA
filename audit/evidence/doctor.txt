@@ -1,0 +1,33 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[08:59:36] [OjasX INFO] ojasx2.tile_fallback: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+[08:59:36] [OjasX INFO] ojasx2.tile_fallback: Tile fallbacks registration completed successfully.
+
+==========================================================================================
+  OJASX v0.13.0 SYSTEM DIAGNOSTIC & WORKLOAD AUDIT REPORT
+==========================================================================================
+
+[1] HOST SILICON & HARDWARE ACCELERATION
+  • Operating System   : Linux 6.1.158+ (x86_64)
+  • Python & PyTorch   : Python 3.11.2 | PyTorch 2.15.0+cu132
+  • CPU Cores & Cache  : 2 Cores | L1d: 64 KB | L2: 4 MB
+  • Apple AMX Support  : DISABLED / Standard CPU
+  • Metal MPS GPU      : UNAVAILABLE
+  • Host RAM Capacity  : 3.8 GB Unified RAM
+  • Native C++ HAL     : PYTHON FALLBACK
+
+[2] LIVE NUMERICAL & GRADIENT VERIFICATION (5 WORKLOAD FAMILIES)
+------------------------------------------------------------------------------------------
+Workload Family                  | Detected Profile           | Fwd   | Grad  | Speedup  | Status
+------------------------------------------------------------------------------------------
+1. Modern LLM GLU (Split & Chunk) | MODERN_LLM_MLP             | OK    | OK    | 1.47   x | PASS
+2. Transformer Norms (LN/GN)     | TRANSFORMER_VIT_LAYERNORM  | OK    | OK    | 11.58  x | PASS
+3. Vision CNN (Conv/PackedReLU)  | VISION_CONV_UNET           | OK    | OK    | 12.22  x | PASS
+4. Tabular MLP (Adaptive)        | TABULAR_CLASSICAL_ML       | OK    | OK    | 0.74   x | PASS
+5. LoRA Frozen Backbone          | LORA_FROZEN_BACKBONE       | OK    | OK    | 1.3    x | PASS
+------------------------------------------------------------------------------------------
+
+[3] OVERALL HEALTH CHECK VERDICT
+  ✓ ALL SYSTEMS OPERATIONAL: 5 of 5 workload families verified with zero divergence.
+==========================================================================================
+

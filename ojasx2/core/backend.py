@@ -247,7 +247,7 @@ class BackendCompilationReport:
 @dataclass(frozen=True)
 class BackendConfig:
     planner: M4Config = field(
-        default_factory=lambda: M4Config(max_iterations=8, exact_node_limit=32)
+        default_factory=lambda: M4Config(max_iterations=8, exact_node_limit=12)
     )
     min_chain_length: int = 2
     use_inductor: bool = False

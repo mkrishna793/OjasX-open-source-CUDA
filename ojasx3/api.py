@@ -12,6 +12,9 @@ from ojasx3.trainer.optimizer import HolonomicGradFreeOptimizer
 from ojasx3.lattice.streaming import load_hf_checkpoint_e8
 from ojasx3.lattice.layers import pack_model_e8
 from ojasx2 import optimize as _legacy_optimize, prepare as _legacy_prepare
+from ojasx3.runtime.tape_hooks import E8ActivationTapeContext
+from ojasx3.compiler.universal import UniversalCompilerConfig, compile_universal
+from ojasx3.lattice.transforms import CWOFTLinear, apply_incoherence_transform
 
 
 def compile(
@@ -91,6 +94,9 @@ def finetune(
         )
         return model, opt
 
+    if isinstance(checkpoint, nn.Module):
+        from ojasx3.trainer.peft import attach_lora_adapters
+        checkpoint = attach_lora_adapters(checkpoint, rank=lora_rank, lora_alpha=lora_alpha)
     return _low_ram_finetune(
         checkpoint,
         dataset,
@@ -156,4 +162,9 @@ __all__ = [
     "finetune",
     "optimize",
     "prepare",
+    "compile_universal",
+    "UniversalCompilerConfig",
+    "E8ActivationTapeContext",
+    "CWOFTLinear",
+    "apply_incoherence_transform",
 ]

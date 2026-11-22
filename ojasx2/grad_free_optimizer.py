@@ -267,20 +267,43 @@ class HolonomicGradFreeOptimizer(Optimizer):
             else:
                 exp_avg_f32 = self._unpack_exp_avg(st, _p.shape, torch.float32)
 
-            exp_avg_sq = st.get("exp_avg_sq")
-            if exp_avg_sq is None:
-                exp_avg_sq = st["exp_avg_sq"] = torch.zeros_like(p_f32)
-            elif is_half and exp_avg_sq.dtype != torch.float32:
-                exp_avg_sq = st["exp_avg_sq"] = exp_avg_sq.float()
+            if "exp_avg_sq" not in st and "exp_avg_sq_packed" not in st:
+                exp_avg_sq = torch.zeros_like(p_f32)
+            elif "exp_avg_sq_packed" in st:
+                sqrt_v = (
+                    E8LatticePacker.unpack(
+                        st["exp_avg_sq_packed"], st["exp_avg_sq_scales"], st["exp_avg_sq_shape"], dtype=torch.float32
+                    ).reshape(_p.shape)
+                    + st.get("exp_avg_sq_mean", 0.0)
+                ).clamp_min_(0.0)
+                exp_avg_sq = sqrt_v.square()
+            else:
+                exp_avg_sq = st["exp_avg_sq"]
+                if is_half and exp_avg_sq.dtype != torch.float32:
+                    exp_avg_sq = exp_avg_sq.float()
 
             exp_avg_f32.mul_(beta1).add_(g_f32, alpha=1.0 - beta1)
             exp_avg_sq.mul_(beta2).addcmul_(g_f32, g_f32, value=1.0 - beta2)
             self._pack_exp_avg(st, exp_avg_f32, use_e8_mom, torch.float32)
+            sqrt_v_new = exp_avg_sq.sqrt()
+            if use_e8_mom and exp_avg_sq.numel() >= 32:
+                sqrt_v_mean = sqrt_v_new.mean()
+                packed_v, scales_v, shape_v = E8LatticePacker.pack(
+                    (sqrt_v_new - sqrt_v_mean).reshape(1, -1), group_size=32
+                )
+                st["exp_avg_sq_packed"] = packed_v
+                st["exp_avg_sq_scales"] = scales_v
+                st["exp_avg_sq_shape"] = shape_v
+                st["exp_avg_sq_mean"] = sqrt_v_mean
+                st.pop("exp_avg_sq", None)
+            else:
+                st["exp_avg_sq"] = exp_avg_sq
+                st.pop("exp_avg_sq_packed", None)
 
             bias_correction1 = 1.0 - (beta1 ** step)
             bias_correction2 = 1.0 - (beta2 ** step)
             step_size = lr / bias_correction1
-            denom = (exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(eps)
+            denom = (sqrt_v_new / math.sqrt(bias_correction2)).add_(eps)
 
             delta = -step_size * (exp_avg_f32 / denom)
             if is_half:

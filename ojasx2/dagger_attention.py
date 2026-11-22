@@ -501,6 +501,8 @@ def holonomic_dagger_attention(
     key_padding_mask: Optional[torch.Tensor] = None,
     tile_size: int = 128,
     prefer_native_sdpa: bool = False,
+    dropout_p: float = 0.0,
+    training: bool = False,
 ) -> torch.Tensor:
     """Functional entrypoint for Holonomic Dagger Attention.
 
@@ -517,14 +519,15 @@ def holonomic_dagger_attention(
         and not torch.compiler.is_compiling()
     ):
         H, H_kv = q.shape[1], k.shape[1]
+        eff_drop = float(dropout_p) if training and dropout_p > 0.0 else 0.0
         if H == H_kv:
             return F.scaled_dot_product_attention(
-                q, k, v, attn_mask=None, is_causal=is_causal, scale=sm_scale
+                q, k, v, attn_mask=None, dropout_p=eff_drop, is_causal=is_causal, scale=sm_scale
             )
         elif H % H_kv == 0:
             try:
                 return F.scaled_dot_product_attention(
-                    q, k, v, attn_mask=None, is_causal=is_causal, scale=sm_scale, enable_gqa=True
+                    q, k, v, attn_mask=None, dropout_p=eff_drop, is_causal=is_causal, scale=sm_scale, enable_gqa=True
                 )
             except TypeError:
                 rep = H // H_kv
@@ -533,6 +536,7 @@ def holonomic_dagger_attention(
                     k.repeat_interleave(rep, dim=1),
                     v.repeat_interleave(rep, dim=1),
                     attn_mask=None,
+                    dropout_p=eff_drop,
                     is_causal=is_causal,
                     scale=sm_scale,
                 )
@@ -588,7 +592,7 @@ def dagger_tiled_attention(
     Automatically broadcasts GQA heads and guarantees strictly 0 bytes of
     intermediate attention score matrices on the autograd tape.
     """
-    return holonomic_dagger_attention(
+    out = holonomic_dagger_attention(
         q,
         k,
         v,
@@ -598,7 +602,12 @@ def dagger_tiled_attention(
         key_padding_mask=key_padding_mask,
         tile_size=tile_size,
         prefer_native_sdpa=prefer_native_sdpa,
+        dropout_p=dropout_p,
+        training=training,
     )
+    if training and dropout_p > 0.0 and not (prefer_native_sdpa and key_padding_mask is None and attn_mask is None):
+        out = F.dropout(out, p=dropout_p, training=True)
+    return out
 
 
 
@@ -863,6 +872,16 @@ class DaggerAttention(nn.Module):
                 v = torch.cat([pkv[1], v], dim=2)
 
         present_kv = (k, v) if use_cache else None
+
+        sw = getattr(self, "sliding_window", None)
+        if getattr(self, "is_sliding", False) and sw is not None and int(sw) > 0:
+            n_kv = k.shape[2]
+            q_pos = torch.arange(N_q, device=q.device).unsqueeze(1) + (n_kv - N_q)
+            k_pos = torch.arange(n_kv, device=q.device).unsqueeze(0)
+            sw_allowed = (k_pos <= q_pos) & ((q_pos - k_pos) < int(sw))
+            sw_mask = torch.where(sw_allowed, torch.zeros((N_q, n_kv), device=q.device, dtype=q.dtype), torch.full((N_q, n_kv), -float("inf"), device=q.device, dtype=q.dtype))
+            eff_mask = sw_mask if eff_mask is None else (eff_mask + sw_mask)
+            causal = False
 
         attn_out = dagger_tiled_attention(
             q,

@@ -107,7 +107,7 @@ def _replay_backward(
 @torch.library.custom_op(
     _FORWARD_NAME,
     mutates_args=(),
-    device_types=("cpu", "cuda"),
+    device_types=("cpu", "cuda", "mps"),
     schema=_FORWARD_SCHEMA,
 )
 def _activation_chain_op(
@@ -135,7 +135,7 @@ def _activation_chain_fake(
 @torch.library.custom_op(
     _BACKWARD_NAME,
     mutates_args=(),
-    device_types=("cpu", "cuda"),
+    device_types=("cpu", "cuda", "mps"),
     schema=_BACKWARD_SCHEMA,
 )
 def _activation_chain_backward_op(

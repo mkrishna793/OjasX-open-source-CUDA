@@ -1,0 +1,43 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[08:36:59] [OjasX INFO] ojasx2.tile_fallback: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+[08:36:59] [OjasX INFO] ojasx2.tile_fallback: Tile fallbacks registration completed successfully.
+Running Production PyTorch Subsystems Qualification on CPU...
+
+========================================================================================
+LAYER 1: Declarative YAML Codegen (`holonomic_rope` & `holonomic_attention_softmax`)
+========================================================================================
+  [Codegen Ledger] Namespace: ojasx_holonomic | Ops: ['rmsnorm', 'swiglu', 'geglu', 'rope', 'attention_softmax_lse']
+  [HolonomicRoPE 4D] Fwd Max Diff: 0.00e+00 | Bwd Max Diff: 0.00e+00
+  [HolonomicRoPE Memory] Naive Saved: 0 B | Holonomic Fresh Saved: 0 B (0-Byte Token Tape!)
+  [HolonomicRoPE Inverse Recovery] Trainable (cos, sin) Grad Max Diff: 5.72e-06
+  [Attention Softmax LSE] Fwd Max Diff: 3.73e-08 | Bwd Max Diff: 7.45e-08
+  [Attention Softmax Memory] Native Fresh: 16,777,216 B | Holonomic LSE Fresh: 32,768 B (99.80% Saved!)
+  [Attention Softmax 2nd-Order HVP + Extreme Shift] Max Diff: 3.97e-06
+
+========================================================================================
+LAYER 2: OpenReg Accelerator Extender (`torch.ojasx`) & `HolonomicDispatchMode`
+========================================================================================
+  [OpenReg `torch.ojasx`] Registered: True | Stats: {'backend': 'ojasx_privateuse1', 'physical_backing': 'cpu', 'allocated_bytes': 0, 'device_count': 1}
+  [HolonomicDispatchMode] Total ATen Calls Intercepted: 53 | Unique Ops: 23
+
+========================================================================================
+LAYER 3: AOTAutograd Joint Forward-Backward Compiler & Custom Partitioner
+========================================================================================
+  [AOTAutograd Joint Graph] Joint Nodes: 137 | FW Nodes: 39 | BW Nodes: 119
+  [AOTAutograd Partition Cut] Saved Tensors Across Cut: 20 | BW Contractions: 14
+  [AOTAutograd Custom Ops in FW]: ['ojasx_verified.rmsnorm_aux.default', 'ojasx_holonomic.rope.default', 'ojasx_holonomic.rope.default', 'ojasx_holonomic.attention_softmax_lse.default']
+  [AOTAutograd Parity] Loss Diff: 0.00e+00 | Input Grad Diff: 0.00e+00 | Weight Grad Diff: 0.00e+00
+
+========================================================================================
+LAYER 4: Fused Backward-to-Optimizer Engine (`HolonomicGradFreeOptimizer`)
+========================================================================================
+  [SGD 3-Step Trajectory] Max Parameter Weight Diff vs torch.optim.SGD: 0.00e+00
+  [SGD Gradient RAM] Standard Persistent .grad: 134.75 MB | Holonomic Persistent .grad: 0.00 MB (Freed 134.75 MB in-flight, 100.0% eliminated!)
+  [ADAMW 3-Step Trajectory] Max Parameter Weight Diff vs torch.optim.ADAMW: 2.98e-07
+  [ADAMW Gradient RAM] Standard Persistent .grad: 134.75 MB | Holonomic Persistent .grad: 0.00 MB (Freed 134.75 MB in-flight, 100.0% eliminated!)
+
+========================================================================================
+ALL 4 PRODUCTION PYTORCH SUBSYSTEMS CERTIFIED. Residual GPU Memory: 0.00 MB
+Report written to: reports/PRODUCTION_PYTORCH_SUBSYSTEMS_REPORT.json
+========================================================================================

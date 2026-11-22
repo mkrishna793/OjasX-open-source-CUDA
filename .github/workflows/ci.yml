@@ -106,3 +106,99 @@ jobs:
             test-results.xml
             reports/remediation-z3.json
             reports/markdown-link-check.json
+
+  lean-formal:
+    name: Lean 4 Formal Verification (OjasXMath, CirculantWeighing & lean_symplectic)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install elan and pinned Lean 4 toolchain
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.elan/bin:$PATH"
+          elan toolchain install "$(cat lean/lean-toolchain)"
+
+      - name: Verify standalone Lean 4 modules and lean_symplectic
+        run: |
+          set -euo pipefail
+          lean --version
+          for f in \
+            lean/OjasXMath/M25ReplayCore.lean \
+            lean/OjasXMath/M4Equality.lean \
+            lean/OjasXMath/StructuredTopology.lean \
+            lean/OjasXMath/CirculantWeighing.lean \
+            lean_symplectic/SymplecticEngine.lean; do
+            echo "Checking $f"
+            out=$(lean "$f" 2>&1)
+            echo "$out"
+            if echo "$out" | grep -qE "sorryAx|Lean\.ofReduceBool|error:"; then
+              exit 1
+            fi
+          done
+
+      - name: Build Lean 4 OjasXMath library and audit axioms
+        working-directory: lean
+        run: |
+          set -euo pipefail
+          lake exe cache get || true
+          lake build
+          axioms=$(lake env lean OjasXMath.lean 2>&1)
+          echo "$axioms" | tail -n 30
+          if echo "$axioms" | grep -qE "sorryAx|Lean\.ofReduceBool|error:"; then
+            exit 1
+          fi
+
+  rocq-formal:
+    name: Rocq Formal Verification (rocq/, Audit.v & rocq_symplectic)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up OCaml and opam
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: 4.14.2
+
+      - name: Install Rocq Prover
+        run: opam install -y rocq-prover
+
+      - name: Verify rocq_symplectic/SymplecticEngine.v
+        run: |
+          set -euo pipefail
+          opam exec -- rocq --version
+          opam exec -- rocq compile rocq_symplectic/SymplecticEngine.v
+          python3 -c '
+          import re, subprocess, tempfile
+          from pathlib import Path
+          src = Path("rocq_symplectic/SymplecticEngine.v").read_text()
+          thms = re.findall(r"^(?:Theorem|Lemma)\s+(\w+)", src, re.M)
+          audit = src + "\n" + "".join(f"Print Assumptions {t}.\n" for t in thms)
+          with tempfile.TemporaryDirectory() as td:
+              p = Path(td) / "SympAudit.v"
+              p.write_text(audit)
+              r = subprocess.run(["opam", "exec", "--", "coqc", str(p)], capture_output=True, text=True, check=True)
+              closed = r.stdout.count("Closed under the global context")
+              print(f"rocq_symplectic closed: {closed}/{len(thms)}")
+              assert closed == len(thms) and "Axioms:" not in r.stdout
+          '
+
+      - name: Build all rocq/ modules, run 304-theorem Audit.v, and run rocq check
+        working-directory: rocq
+        run: |
+          set -euo pipefail
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            echo "Compiling $f"
+            opam exec -- rocq compile -Q . Ojasx "$f" > "/tmp/rocq_${f}.log" 2>&1 || { cat "/tmp/rocq_${f}.log"; exit 1; }
+          done < <(tr -d '\r' < _RocqProject | grep '\.v$')
+          closed=$(grep -c "Closed under the global context" /tmp/rocq_Audit.v.log)
+          echo "Audit.v closed statements: $closed"
+          [ "$closed" -eq 304 ]
+          ! grep -q "Axioms:" /tmp/rocq_Audit.v.log
+          tr -d '\r' < _RocqProject | grep '\.v$' | grep -v -E '^(Extract|Audit)\.v$' | sed 's/\.v$//' | sed 's/^/Ojasx./' | xargs opam exec -- rocq check -Q . Ojasx

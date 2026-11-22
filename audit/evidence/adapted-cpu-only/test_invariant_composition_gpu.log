@@ -1,0 +1,17 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[08:54:28] [OjasX INFO] ojasx2.tile_fallback: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+[08:54:28] [OjasX INFO] ojasx2.tile_fallback: Tile fallbacks registration completed successfully.
+GPU stacked radial model 3301
+GPU stacked radial model 3302
+GPU stacked radial model 3303
+GPU large stacked radial model 3311
+GPU large stacked radial model 3312
+GPU large stacked radial model 3313
+GPU chamber 2
+GPU chamber 4
+GPU chamber 8
+GPU large chamber repeat 3501
+GPU large chamber repeat 3502
+GPU large chamber repeat 3503
+GPU composition COMPLETE 0 failures

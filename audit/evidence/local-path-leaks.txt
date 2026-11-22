@@ -1,0 +1,29 @@
+./rocq/README.md:21:/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/verify_rocq.py
+./docs/ROCQ_MATH_FOUNDATION.md:233:/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/verify_rocq.py
+./docs/OJASX_SINGLE_GPU_PLAN.md:15:The [combined audit](../OjasX-combined-analysis.md) found that several original guarantees exceeded the evidence: standard linear autograd already has two backward GEMMs; a four-add decoder is not the whole gradient calculation; general GELU/SiLU/SwiGLU derivatives cannot be obtained from their output alone; native shaders contained recomputation; and memory measurements did not establish zero tensor memory. These are reasons to refine the approach, not reasons to abandon the ambition.
+./docs/OJASX_RESEARCH_AND_REFINEMENT_HISTORY.md:30:The original project and supplied architectural/monograph notes motivated a separate verified reference rebuild. The original OjasX implementation was preserved. This reference core does not replace its entire allocator, GPU driver or production compiler. The [combined project audit](../OjasX-combined-analysis.md) records the earlier architecture analysis.
+./docs/OJASX_RESEARCH_AND_REFINEMENT_HISTORY.md:326:The supplied notes remain original proposals, not proof certificates: [architecture](</Users/mohana/.codex/attachments/2d98fb04-5c83-4d32-946e-8c9d4da5d99b/Pasted text.txt>), [initial monograph](</Users/mohana/.codex/attachments/5756547f-8f02-413c-acc6-cf836cfb1384/Pasted text.txt>), [directional-arrow proposal](</Users/mohana/.codex/attachments/2fb26243-01a6-4cb3-9dc9-f8e9ff3c7815/Pasted text.txt>), [reversible proposal](</Users/mohana/.codex/attachments/820f08cd-44bc-4cdb-9117-cfa70a1c1b25/Pasted text.txt>), [Rocq workflow](</Users/mohana/.codex/attachments/95a9b6db-d558-4c4e-a305-c8a383dc1e3a/Pasted text.txt>), [alternative algebra](</Users/mohana/.codex/attachments/62d05f6e-f977-4d79-8054-3a8ae234a189/Pasted text.txt>), and [Hermite/Veronese proposal](</Users/mohana/.codex/attachments/050d1579-2cef-4630-ac14-4ac395260822/Pasted text.txt>).
+./docs/OJASX_RESEARCH_AND_REFINEMENT_HISTORY.md:333:cd /Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt
+./docs/OJASX_RESEARCH_AND_REFINEMENT_HISTORY.md:334:/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/refine_spectral_foundation.py --qualify-existing-gpu
+./docs/OJASX_MATHEMATICAL_FOUNDATION.md:407:/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/refine_objective_foundation.py
+./docs/OJASX_MATHEMATICAL_FOUNDATION.md:442:/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/verify_numerical_repairs.py
+./docs/OJASX_MATHEMATICAL_FOUNDATION.md:868:cd /Users/mohana/Documents/Codex/2026-10-06/v-2/outputs/OjasX_rebuilt
+./docs/OJASX_MATHEMATICAL_FOUNDATION.md:869:/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/refine_spectral_foundation.py --qualify-existing-gpu
+./docs/OJASX_MATHEMATICAL_FOUNDATION.md:875:PYTORCH_ENABLE_MPS_FALLBACK=0 /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/refine_spectral_foundation.py --gpu
+./docs/MATHEMATICAL_COMPILER.md:139:/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/verify_coordinate_foundation.py
+./docs/MATHEMATICAL_COMPILER.md:140:PYTORCH_ENABLE_MPS_FALLBACK=0 /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/test_coordinate_gpu.py
+./docs/MATHEMATICAL_COMPILER.md:141:PYTORCH_ENABLE_MPS_FALLBACK=0 /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/test_koopman_gpu.py
+./docs/MATHEMATICAL_COMPILER.md:142:PYTORCH_ENABLE_MPS_FALLBACK=0 /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/repeat_koopman_gpu.py
+./docs/MATHEMATICAL_COMPILER.md:143:/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/summarize_coordinate_compiler.py
+./docs/GPU_QUALIFICATION.md:172:PYTORCH_ENABLE_MPS_FALLBACK=0 /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B -m pytest tests/test_mps_qualification.py tests/test_hardware.py -q
+./docs/GPU_QUALIFICATION.md:173:PYTORCH_ENABLE_MPS_FALLBACK=0 /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/qualify_mps.py
+./docs/GPU_QUALIFICATION.md:174:PYTORCH_ENABLE_MPS_FALLBACK=0 /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/verify_all.py
+./docs/GPU_NONLINEAR_DISCOVERY.md:165:/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/verify_nonlinear_foundation.py
+./docs/GPU_NONLINEAR_DISCOVERY.md:166:PYTORCH_ENABLE_MPS_FALLBACK=0 /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/search_nonlinear_gpu.py
+./docs/GPU_NONLINEAR_DISCOVERY.md:167:PYTORCH_ENABLE_MPS_FALLBACK=0 /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/repeat_nonlinear_gpu.py
+./docs/GPU_NONLINEAR_DISCOVERY.md:168:PYTORCH_ENABLE_MPS_FALLBACK=0 /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/gpu_nonlinear_edges.py
+./docs/GPU_NONLINEAR_DISCOVERY.md:169:/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/summarize_nonlinear_qualification.py
+./docs/FOUNDATION_REFINEMENT.md:115:/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/verify_rocq.py
+./docs/BACKEND_MATH_FOUNDATION_V1.md:255:/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/verify_rocq.py
+./docs/ACTIVATION_BACKPROP_REFINEMENT.md:222:  /Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B \
+./docs/ABSTRACT_BACKPROP_ENGINE.md:248:/Users/mohana/.gemini/antigravity/scratch/venv/bin/python -B tools/verify_abstract_foundation.py

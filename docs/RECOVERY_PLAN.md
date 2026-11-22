@@ -6,7 +6,7 @@
 
 ### Historical root benchmark
 
-`benchmarks/benchmark_32b_ojasx_e8_training.py` constructed one `E8LatticeLinear(16384, 32552)` containing 533,332,768 represented base weights, attached rank-8 LoRA adapters, and ran three random-target steps. It did **not** construct 60 layers or a complete transformer. Its 60-layer memory figures were extrapolations, and its printed summary contained hard-coded values not derived from its own calculations.
+`benchmark_32b_ojasx_e8_training.py` constructed one `E8LatticeLinear(16384, 32552)` containing 533,332,768 represented base weights, attached rank-8 LoRA adapters, and ran three random-target steps. It did **not** construct 60 layers or a complete transformer. Its 60-layer memory figures were extrapolations, and its printed summary contained hard-coded values not derived from its own calculations.
 
 The script has now been corrected to report its real scope, actual losses/gradient norms, exact code-plus-scale storage, and OS high-water RSS. It remains useful as a large single-layer mechanical check. It is not full-model evidence.
 

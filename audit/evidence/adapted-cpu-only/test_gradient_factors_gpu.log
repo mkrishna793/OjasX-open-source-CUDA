@@ -1,0 +1,54 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[08:49:27] [OjasX INFO] ojasx2.tile_fallback: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+[08:49:27] [OjasX INFO] ojasx2.tile_fallback: Tile fallbacks registration completed successfully.
+GPU joint factors (128, 4, 512, 2) identity
+GPU joint factors (128, 4, 512, 2) relu
+GPU joint factors (128, 4, 512, 2) square
+GPU joint factors (128, 4, 512, 2) gelu
+GPU joint factors (128, 4, 512, 2) silu
+GPU joint factors (128, 4, 512, 2) tanh
+GPU joint factors (128, 4, 512, 2) sigmoid
+GPU joint factors (512, 4, 2048, 2) identity
+GPU joint factors (512, 4, 2048, 2) relu
+GPU joint factors (512, 4, 2048, 2) square
+GPU joint factors (512, 4, 2048, 2) gelu
+GPU joint factors (512, 4, 2048, 2) silu
+GPU joint factors (512, 4, 2048, 2) tanh
+GPU joint factors (512, 4, 2048, 2) sigmoid
+GPU joint factors (64, 32, 128, 8) identity
+GPU joint factors (64, 32, 128, 8) relu
+GPU joint factors (64, 32, 128, 8) square
+GPU joint factors (64, 32, 128, 8) gelu
+GPU joint factors (64, 32, 128, 8) silu
+GPU joint factors (64, 32, 128, 8) tanh
+GPU joint factors (64, 32, 128, 8) sigmoid
+GPU independent repeat identity 2301
+GPU independent repeat relu 2301
+GPU independent repeat square 2301
+GPU independent repeat identity 2302
+GPU independent repeat relu 2302
+GPU independent repeat square 2302
+GPU independent repeat identity 2303
+GPU independent repeat relu 2303
+GPU independent repeat square 2303
+GPU scaling (1024, 32, 2048, 1) identity
+GPU scaling (1024, 32, 2048, 1) relu
+GPU scaling (1024, 32, 2048, 1) square
+GPU scaling (1024, 128, 4096, 2) identity
+GPU scaling (1024, 128, 4096, 2) relu
+GPU scaling (1024, 128, 4096, 2) square
+GPU scaling (2048, 128, 4096, 2) identity
+GPU scaling (2048, 128, 4096, 2) relu
+GPU scaling (2048, 128, 4096, 2) square
+GPU scaling (8192, 128, 4096, 2) identity
+GPU scaling (8192, 128, 4096, 2) relu
+GPU scaling (8192, 128, 4096, 2) square
+GPU largest-shape repeat identity 2501
+GPU largest-shape repeat relu 2501
+GPU largest-shape repeat square 2501
+GPU largest-shape repeat identity 2502
+GPU largest-shape repeat relu 2502
+GPU largest-shape repeat square 2502
+GPU largest-shape repeat identity 2503
+GPU largest-shape repeat relu 2503

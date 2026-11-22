@@ -6,6 +6,12 @@
 #include <cstdint>
 #include <array>
 #include <vector>
+#if defined(__AVX2__)
+#include <immintrin.h>
+#elif defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
+
 #include <type_traits>
 #include <algorithm>
 #include <functional>
@@ -456,7 +462,9 @@ inline void fused_e8_gemm_forward(
     const size_t num_scale_groups = K / group_size;
 
     for (size_t m = 0; m < M; ++m) {
-        for (size_t n = 0; n < N; ++n) {
+        #pragma omp parallel for schedule(static) if(N >= 32)
+        for (int64_t n_i = 0; n_i < static_cast<int64_t>(N); ++n_i) {
+            const size_t n = static_cast<size_t>(n_i);
             float acc = (Bias != nullptr) ? static_cast<float>(Bias[n]) : 0.0f;
             const uint8_t* w_row = W_packed + n * packed_k_stride;
             const T* s_row = Scales + n * num_scale_groups;
@@ -595,7 +603,9 @@ inline void fused_ternary_e8_gemm_forward(
     const size_t blocks_per_group = group_size / 16;
 
     for (size_t m = 0; m < M; ++m) {
-        for (size_t n = 0; n < N; ++n) {
+        #pragma omp parallel for schedule(static) if(N >= 32)
+        for (int64_t n_i = 0; n_i < static_cast<int64_t>(N); ++n_i) {
+            const size_t n = static_cast<size_t>(n_i);
             float acc = (Bias != nullptr) ? static_cast<float>(Bias[n]) : 0.0f;
             const uint8_t* w_row = W_packed + n * packed_k_stride;
             const T* s_row = Scales + n * num_scale_groups;
@@ -614,16 +624,38 @@ inline void fused_ternary_e8_gemm_forward(
 
                     const uint32_t c0 = static_cast<uint32_t>(b0) | (static_cast<uint32_t>(b1 & 0x0F) << 8);
                     const uint32_t c1 = static_cast<uint32_t>((b1 >> 4) & 0x0F) | (static_cast<uint32_t>(b2) << 4);
+                    // Bounds check: 12-bit code can be 0..4095, LUT has exactly 3281 valid D8 ternary points
+                    const uint32_t sc0 = (c0 < 3281u) ? c0 : 0u;
+                    const uint32_t sc1 = (c1 < 3281u) ? c1 : 0u;
 
-                    const int8_t* coords0 = rank_to_coords + c0 * 8;
-                    const int8_t* coords1 = rank_to_coords + c1 * 8;
+                    const int8_t* coords0 = rank_to_coords + sc0 * 8;
+                    const int8_t* coords1 = rank_to_coords + sc1 * 8;
                     const size_t k_base = g * group_size + blk * 16;
 
-                    for (size_t d = 0; d < 8; ++d) {
-                        group_acc += static_cast<float>(x_row[k_base + d]) * static_cast<float>(coords0[d]);
-                    }
-                    for (size_t d = 0; d < 8; ++d) {
-                        group_acc += static_cast<float>(x_row[k_base + 8 + d]) * static_cast<float>(coords1[d]);
+#if defined(__AVX2__)
+                    if constexpr (std::is_same_v<T, float>) {
+                        __m256 xv0 = _mm256_loadu_ps(x_row + k_base);
+                        __m128i q8_0 = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(coords0));
+                        __m256 wv0 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(q8_0));
+                        __m256 xv1 = _mm256_loadu_ps(x_row + k_base + 8);
+                        __m128i q8_1 = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(coords1));
+                        __m256 wv1 = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(q8_1));
+                        __m256 prod = _mm256_fmadd_ps(xv0, wv0, _mm256_mul_ps(xv1, wv1));
+                        __m128 lo = _mm256_castps256_ps128(prod);
+                        __m128 hi = _mm256_extractf128_ps(prod, 1);
+                        __m128 sum4 = _mm_add_ps(lo, hi);
+                        sum4 = _mm_hadd_ps(sum4, sum4);
+                        sum4 = _mm_hadd_ps(sum4, sum4);
+                        group_acc += _mm_cvtss_f32(sum4);
+                    } else
+#endif
+                    {
+                        for (size_t d = 0; d < 8; ++d) {
+                            group_acc += static_cast<float>(x_row[k_base + d]) * static_cast<float>(coords0[d]);
+                        }
+                        for (size_t d = 0; d < 8; ++d) {
+                            group_acc += static_cast<float>(x_row[k_base + 8 + d]) * static_cast<float>(coords1[d]);
+                        }
                     }
                 }
                 acc += group_acc * scale;
@@ -681,9 +713,11 @@ inline void fused_ternary_e8_gemm_backward_dx(
 
                     const uint32_t c0 = static_cast<uint32_t>(b0) | (static_cast<uint32_t>(b1 & 0x0F) << 8);
                     const uint32_t c1 = static_cast<uint32_t>((b1 >> 4) & 0x0F) | (static_cast<uint32_t>(b2) << 4);
+                    const uint32_t sc0 = (c0 < 3281u) ? c0 : 0u;
+                    const uint32_t sc1 = (c1 < 3281u) ? c1 : 0u;
 
-                    const int8_t* coords0 = rank_to_coords + c0 * 8;
-                    const int8_t* coords1 = rank_to_coords + c1 * 8;
+                    const int8_t* coords0 = rank_to_coords + sc0 * 8;
+                    const int8_t* coords1 = rank_to_coords + sc1 * 8;
                     const size_t k_base = k_group_base + blk * 16;
 
                     for (size_t d = 0; d < 8; ++d) {
@@ -702,6 +736,50 @@ inline void fused_ternary_e8_gemm_backward_dx(
 }
 
 } // namespace lattice
+
+
+inline void fwht_block64_f32(const float* __restrict__ X, float* __restrict__ Y, size_t num_blocks) {
+    #pragma omp parallel for schedule(static) if(num_blocks >= 8)
+    for (int64_t bi = 0; bi < static_cast<int64_t>(num_blocks); ++bi) {
+        alignas(32) float buf[64];
+        const float* src = X + static_cast<size_t>(bi) * 64;
+        float* dst = Y + static_cast<size_t>(bi) * 64;
+        for (size_t i = 0; i < 64; ++i) buf[i] = src[i];
+        for (size_t stride = 1; stride < 64; stride <<= 1) {
+            for (size_t base = 0; base < 64; base += (stride << 1)) {
+                for (size_t j = 0; j < stride; ++j) {
+                    const float a = buf[base + j];
+                    const float b = buf[base + j + stride];
+                    buf[base + j] = a + b;
+                    buf[base + j + stride] = a - b;
+                }
+            }
+        }
+        for (size_t i = 0; i < 64; ++i) dst[i] = buf[i] * 0.125f;
+    }
+}
+
+inline void cw120_36_apply_f32(const float* __restrict__ X, float* __restrict__ Y, size_t num_blocks, bool transpose = false) {
+    static constexpr int kPos[21] = {17, 26, 30, 37, 42, 54, 57, 58, 60, 62, 68, 70, 77, 84, 94, 97, 98, 106, 112, 116, 117};
+    static constexpr int kNeg[15] = {0, 2, 6, 8, 14, 18, 24, 50, 52, 56, 66, 74, 78, 102, 110};
+    constexpr float kInv6 = 1.0f / 6.0f;
+    #pragma omp parallel for schedule(static) if(num_blocks >= 4)
+    for (int64_t bi = 0; bi < static_cast<int64_t>(num_blocks); ++bi) {
+        const float* src = X + static_cast<size_t>(bi) * 120;
+        float* dst = Y + static_cast<size_t>(bi) * 120;
+        for (int i = 0; i < 120; ++i) {
+            float acc = 0.0f;
+            if (!transpose) {
+                for (int p : kPos) { int j = i + p; if (j >= 120) j -= 120; acc += src[j]; }
+                for (int q : kNeg) { int j = i + q; if (j >= 120) j -= 120; acc -= src[j]; }
+            } else {
+                for (int p : kPos) { int j = i - p; if (j < 0) j += 120; acc += src[j]; }
+                for (int q : kNeg) { int j = i - q; if (j < 0) j += 120; acc -= src[j]; }
+            }
+            dst[i] = acc * kInv6;
+        }
+    }
+}
 
 } // namespace ojasx::math
 

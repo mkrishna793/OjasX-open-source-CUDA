@@ -1,4 +1,4 @@
-From Stdlib Require Import QArith.Qcanon Ring Bool.
+From Stdlib Require Import QArith.Qcanon Ring Field Bool.
 From Ojasx Require Import Matrix.
 Open Scope Qc_scope.
 
@@ -22,15 +22,21 @@ Proof. ring. Qed.
 
 (* Raw derivative inputs and normalized Taylor coefficients: the order-four
    convolution is exactly the binomial form of Leibniz' product rule. *)
+#[local] Definition q2 : Qc := 1 + 1.
+#[local] Definition q3 : Qc := 1 + 1 + 1.
+#[local] Definition q4 : Qc := q2 * q2.
+#[local] Definition q6 : Qc := q2 * q3.
+#[local] Definition q24 : Qc := q4 * q6.
+
 Theorem core_normalized_product_order_four
   (a0 a1 a2 a3 a4 b0 b1 b2 b3 b4 : Qc) :
-  24*(a0*(b4/24)+a1*(b3/6)+(a2/2)*(b2/2)+(a3/6)*b1+(a4/24)*b0)=
-  a0*b4+4*a1*b3+6*a2*b2+4*a3*b1+a4*b0.
-Proof. ring. Qed.
+  q24*(a0*(b4/q24)+a1*(b3/q6)+(a2/q2)*(b2/q2)+(a3/q6)*b1+(a4/q24)*b0)=
+  a0*b4+q4*a1*b3+q6*a2*b2+q4*a3*b1+a4*b0.
+Proof. unfold q24, q6, q4, q3, q2. field; repeat split; vm_compute; discriminate. Qed.
 
 Theorem core_jet_horner_order_four (d c0 c1 c2 c3 c4 : Qc) :
   c0+d*(c1+d*(c2+d*(c3+d*c4)))=
-  c0+c1*d+c2*d^2+c3*d^3+c4*d^4.
+  c0+c1*d+c2*(d*d)+c3*(d*d*d)+c4*(d*d*d*d).
 Proof. ring. Qed.
 
 Definition linearDemand (rx rw rb : bool) (x w dx dw db g : Qc) : Qc :=

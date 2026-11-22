@@ -3,8 +3,8 @@
 
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.4%2B-ee4c2c.svg?logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Lean 4 Verified](https://img.shields.io/badge/Lean_4-100%25_Closed_Theorems-success.svg)](lean/OjasXMath.lean)
-[![Rocq 9.2 Verified](https://img.shields.io/badge/Rocq_9.2-26%2F26_Proved-success.svg)](rocq/Audit.v)
+[![Lean 4 Verified](https://img.shields.io/badge/Lean_4-Standalone_%2B_Symplectic_%2B_CW(120%2C36)-success.svg)](lean/OjasXMath.lean)
+[![Rocq 9.3 Verified](https://img.shields.io/badge/Rocq_9.3-304%2F304_%2B_23%2F23_Symplectic-success.svg)](rocq/Audit.v)
 [![Z3 SMT Solved](https://img.shields.io/badge/Z3_SMT-Verified_Stability-brightgreen.svg)](tests/test_z3_symplectic_stability.py)
 [![Universal Hardware](https://img.shields.io/badge/Hardware-NVIDIA_CUDA_%7C_AMD_ROCm_%7C_Intel_XPU_%7C_Apple_Silicon_MPS_%7C_Huawei_Ascend_%7C_CPU-purple.svg)]()
 
@@ -32,6 +32,28 @@
 > | **27B** | 27.44B | 60 | 5.85 GB | 11.95 GB | 12.34 GB | 9.82 → 3.71 | **11.66 GB (49% free)** |
 >
 > *Empirically verified on physical Apple M5 GPU (24GB Unified RAM, macOS 27.2, PyTorch 2.8.0). Zero weight sharing, zero layer reuse, 421 distinct weight matrices materialized and trained without OOM.*
+>
+> ### 📊 Verified `1.12B → 31.17B` Full-Architecture Production End-to-End Training Benchmark (Apple M5 24GB, PyTorch 2.15.0)
+> Full production decoder stack (`Embedding(32000)` + all `22–62` layers with `RMSNorm`, 4-projection Causal Multi-Head `SDPA`, 3-projection SwiGLU `gate + up + down` with Hadamard-rotated 2.0-bit $E_8$ `gs=32` + `r=16`, `FusedLinearCrossEntropy(32000)`, GradCkpt, `bfloat16`, `HolonomicGradFreeOptimizer`):
+>
+> | Tier | Total Arch Params | Layers / Width / FFN | Trainable Params | Model Footprint | Loss (`Start → Min / End`) | Step Time (`seq_len=128`) | Throughput | Peak MPS Alloc / Driver | Host RSS |
+> |---|---|---|---|---|---|---|---|---|---|
+> | **1B** | `1.12B` | `22L, d=2048, ff=5632` | `143.96M` | `570.2 MB` | `10.69 → 4.88` (end `5.09`) | `2.86s` | `44.8 tok/s` | `1,722.5 MB` / `4,393.7 MB` | `488.7 MB` |
+> | **3B** | `3.02B` | `28L, d=3072, ff=8192` | `221.10M` | `1,261.7 MB` | `11.19 → 5.25` (end `10.06`) | `7.26s` | `17.6 tok/s` | `4,454.0 MB` / `9,745.7 MB` | `495.8 MB` |
+> | **7B** | `7.14B` | `34L, d=4096, ff=11008` | `304.90M` | `2,632.2 MB` | `11.31 → 6.28` (end `10.63`) | `18.34s` | `7.0 tok/s` | `8,658.6 MB` / `14,377.7 MB` | `495.8 MB` |
+> | **14B** | `14.09B` | `50L, d=5120, ff=13824` | `399.88M` | `4,864.3 MB` | `11.56 → 6.09` (end `7.09`) | `75.54s` | `1.7 tok/s` | `14,702.4 MB` / `21,097.7 MB` | `495.8 MB` |
+> | **31B** | `31.17B` | `62L, d=6656, ff=19456` | `334.45M` | `9,862.8 MB` | `11.88 → 6.06` (end `6.22`) | `117.04s` | `1.09 tok/s` | **`12,813.3 MB` / `20,385.7 MB`** | `580.2 MB` |
+>
+> ### 📊 Verified `Qwen/Qwen2.5-1.5B` (1.54B) WikiText-2 & 100-Step Fine-Tuning Benchmark (Apple Silicon MPS, PyTorch 2.15.0)
+> **Perplexity (`64 × 512 = 32,768` tokens):** `FP16 = 11.77` | `BF16 = 11.78` | `4-bit NF4 (bs=64) = 12.83` | `Rotated-E8 (gs=8) = 134.37` | `Rotated-E8 (gs=32) = 469.31` | `Unrotated E8 (gs=32) = 63,429.91`
+>
+> | Method (100 Steps, `seq_len=256`) | Train Loss (`1 → 100` / Mean `1–10 → 91–100`) | Val Loss (`Pre → Post`) | Throughput (`tok/s`) | Peak MPS Alloc / Driver | Peak RSS |
+> |---|---|---|---|---|---|
+> | **OjasX (`E8` 2.0b + Hadamard + `DaggerAttention` + GradCkpt + FusedLCE + `HolonomicGradFreeOptimizer`)** | `6.25 → 3.84` (`4.99 → 3.33`) | `6.14 → 3.21` (`PPL 463.4 → 24.85`) | `60.93` | **`1508.6 MB` / `2569.7 MB`** | `2298.1 MB` |
+> | **PyTorch AMP (`bf16`) + SDPA + GradCkpt (LoRA `r=16`)** | `2.92 → 2.88` (`3.09 → 2.58`) | `2.37 → 2.40` | **`257.77`** | `3403.3 MB` / `4346.8 MB` | `1538.3 MB` |
+> | **QLoRA (4-bit NF4 + LoRA `r=16` + GradCkpt)** | `3.00 → 2.95` (`3.14 → 2.63`) | `2.47 → 2.45` | `48.57` | `1684.5 MB` / `3275.7 MB` | `907.4 MB` |
+>
+> **Formal Verification (CI-Wired):** Rocq 9.3.0 (`304/304` `rocq/Audit.v` + `23/23` `rocq_symplectic/SymplecticEngine.v`, `0` axioms, `rocq check` clean across all 30 modules); Lean 4 (`4` standalone modules including `CW(120,36)` / `CW(2m,4)` / `CW(14m,16)` in `CirculantWeighing.lean` + `10/10` `lean_symplectic/SymplecticEngine.lean` theorems).
 
 > ### 🌟 Project Motto
 > **"Democratizing Deep Learning Compute: Breaking the Hardware Monopoly through Pure Mathematics and Open Compiler Infrastructure."**
@@ -243,7 +265,7 @@ E8 sphere-packing optimality does not by itself prove optimal finite-codebook qu
 
 `pack_model_e8` transforms an already materialized model and is suitable only when that dense conversion peak is acceptable. For large local checkpoints, use `load_hf_checkpoint_e8` or `tools/run_streaming_e8_finetune.py` to construct packed modules before reading row slices.
 
-`benchmarks/benchmark_32b_ojasx_e8_training.py` executes **one representative 533M-parameter layer**, not a complete 32B model. The old hard-coded 7.514 GB/five-step summary has been withdrawn. A separate personal 31B experiment should be preserved with its own artifacts; this representative script neither reproduces nor disproves it.
+`benchmark_32b_ojasx_e8_training.py` executes **one representative 533M-parameter layer**, not a complete 32B model. The old hard-coded 7.514 GB/five-step summary has been withdrawn. A separate personal 31B experiment should be preserved with its own artifacts; this representative script neither reproduces nor disproves it.
 
 The new run driver distinguishes complete checkpoint loading, completed all-layer synthetic/real-data steps, and observed memory-budget compliance. It does not claim held-out quality. See [the recovery and evidence plan](docs/RECOVERY_PLAN.md).
 

@@ -40,7 +40,9 @@ class LoRALinear(nn.Module):
         self.scaling = self.lora_alpha / max(1, self.rank)
 
         params = list(base_layer.parameters())
-        device = params[0].device if params else None
+        buffers = list(base_layer.buffers())
+        ref_tensor = params[0] if params else (buffers[0] if buffers else None)
+        device = ref_tensor.device if ref_tensor is not None else None
         dtype = params[0].dtype if params else torch.float32
         if dtype not in (torch.float16, torch.bfloat16, torch.float32, torch.float64):
             dtype = torch.float32
@@ -83,7 +85,13 @@ def attach_lora_adapters(
     def _replace(parent: nn.Module, prefix: str = ""):
         for child_name, child in list(parent.named_children()):
             full_name = f"{prefix}.{child_name}" if prefix else child_name
-            if isinstance(child, (nn.Linear, E8LatticeLinear)):
+            if isinstance(child, E8LatticeLinear) and getattr(child, "rank", 0) > 0:
+                if target_modules is None or any(t in full_name for t in target_modules):
+                    if getattr(child, "lora_A", None) is not None:
+                        child.lora_A.requires_grad = True
+                    if getattr(child, "lora_B", None) is not None:
+                        child.lora_B.requires_grad = True
+            elif isinstance(child, (nn.Linear, E8LatticeLinear)):
                 if not isinstance(child, LoRALinear):
                     if target_modules is None or any(t in full_name for t in target_modules):
                         wrapped = LoRALinear(

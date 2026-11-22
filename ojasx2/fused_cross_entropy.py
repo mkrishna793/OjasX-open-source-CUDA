@@ -75,7 +75,6 @@ def _streaming_fused_lce_forward(
     compute_dtype = torch.float32 if h.dtype in (torch.float16, torch.bfloat16) else h.dtype
     h_2d = h.reshape(m, d)
     h_2d_comp = h_2d if h_2d.dtype == compute_dtype else h_2d.to(compute_dtype)
-    w_comp = w if w.dtype == compute_dtype else w.to(compute_dtype)
     b_comp = (bias if bias.dtype == compute_dtype else bias.to(compute_dtype)) if bias is not None else None
     t_1d = targets.reshape(m)
 
@@ -83,8 +82,10 @@ def _streaming_fused_lce_forward(
     mask = (t_1d != ignore_index) & (t_1d >= 0) & (t_1d < v)
     clamped_t = torch.clamp(t_1d, 0, v - 1)
 
-    # Target dot-product z_{m, y_m} computed in O(M x D) without logits tensor
-    w_target = w_comp[clamped_t]
+    # Target dot-product z_{m, y_m} computed in O(M x D) without casting full LM head
+    w_target = w[clamped_t]
+    if w_target.dtype != compute_dtype:
+        w_target = w_target.to(compute_dtype)
     z_target = (h_2d_comp * w_target).sum(dim=-1)
     if b_comp is not None:
         z_target = z_target + b_comp[clamped_t]
@@ -111,7 +112,7 @@ def _streaming_fused_lce_forward(
 
         for v_s in range(0, v, tile_voc):
             v_e = min(v_s + tile_voc, v)
-            w_chunk = w_comp[v_s:v_e]
+            w_chunk = w[v_s:v_e].to(compute_dtype) if w.dtype != compute_dtype else w[v_s:v_e]
             z_tile = torch.matmul(h_chunk, w_chunk.t())
             if b_comp is not None:
                 z_tile = z_tile + b_comp[v_s:v_e]
@@ -188,7 +189,6 @@ def _streaming_fused_lce_backward(
     compute_dtype = torch.float32 if h.dtype in (torch.float16, torch.bfloat16) else h.dtype
     h_2d = h.reshape(m, d)
     h_2d = h_2d if h_2d.dtype == compute_dtype else h_2d.to(compute_dtype)
-    w_comp = w if w.dtype == compute_dtype else w.to(compute_dtype)
     b_comp = (bias if bias.dtype == compute_dtype else bias.to(compute_dtype)) if bias is not None else None
     t_1d = targets.reshape(m)
     lse_1d = lse.reshape(m)
@@ -223,7 +223,7 @@ def _streaming_fused_lce_backward(
     eps = label_smoothing
     target_scale = c * (1.0 - eps)
     if needs_dh and dh_2d is not None:
-        dh_2d -= target_scale.unsqueeze(-1) * w_comp[clamped_t]
+        dh_2d -= target_scale.unsqueeze(-1) * (w[clamped_t].to(compute_dtype) if w.dtype != compute_dtype else w[clamped_t])
     if needs_dw and dw is not None:
         dw.index_add_(0, clamped_t, -(target_scale.unsqueeze(-1) * h_2d))
     if needs_db and db is not None:
@@ -233,7 +233,7 @@ def _streaming_fused_lce_backward(
     if eps > 0.0:
         c_sum = c.sum()
         if needs_dh and dh_2d is not None:
-            w_mean = w_comp.mean(dim=0)
+            w_mean = w.mean(dim=0, dtype=compute_dtype)
             dh_2d -= (c * eps).unsqueeze(-1) * w_mean
         if needs_dw and dw is not None:
             h_weighted = (c.unsqueeze(-1) * h_2d).sum(dim=0)
@@ -253,7 +253,7 @@ def _streaming_fused_lce_backward(
 
         for v_s in range(0, v, tile_voc):
             v_e = min(v_s + tile_voc, v)
-            w_chunk = w_comp[v_s:v_e]
+            w_chunk = w[v_s:v_e].to(compute_dtype) if w.dtype != compute_dtype else w[v_s:v_e]
             z_tile = torch.matmul(h_chunk, w_chunk.t())
             if b_comp is not None:
                 z_tile = z_tile + b_comp[v_s:v_e]

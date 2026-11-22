@@ -209,7 +209,7 @@ def _build_tl_e8_2bit_gemm(
     packed_K = K // 4
     num_groups = K // group_size
     packed_block_K = block_K // 4
-    groups_per_block = max(1, block_K // group_size)
+    groups_per_block = max(1, (block_K + group_size - 1) // group_size)
 
     @tilelang.jit(out_idx=[3])
     def _kernel():
@@ -242,15 +242,16 @@ def _build_tl_e8_2bit_gemm(
                         W_packed[bx * block_N : (bx + 1) * block_N, ko * packed_block_K : (ko + 1) * packed_block_K],
                         W_pack_shared,
                     )
+                    scale_base = (ko * block_K) // group_size
                     T.copy(
-                        Scales[bx * block_N : (bx + 1) * block_N, ko * groups_per_block : (ko + 1) * groups_per_block],
+                        Scales[bx * block_N : (bx + 1) * block_N, scale_base : scale_base + groups_per_block],
                         S_shared,
                     )
 
                     # In-SRAM bitwise unpacking: 1 byte -> 4 E8 coordinates
                     for i, j_byte in T.Parallel(block_N, packed_block_K):
                         b_val = W_pack_shared[i, j_byte]
-                        g_idx = (j_byte * 4) // group_size
+                        g_idx = ((ko * block_K + j_byte * 4) // group_size) - scale_base
                         s_val = S_shared[i, g_idx]
                         for sub in T.serial(4):
                             q_bits = (b_val >> (sub * 2)) & T.uint8(3)
@@ -290,7 +291,7 @@ def _build_tl_ternary_e8_1_5bit_gemm(
     num_groups = K // group_size
     packed_block_K = (block_K * 3) // 16
     blocks16_per_tile = block_K // 16
-    groups_per_block = max(1, block_K // group_size)
+    groups_per_block = max(1, (block_K + group_size - 1) // group_size)
 
     @tilelang.jit(out_idx=[4])
     def _kernel():
@@ -324,8 +325,9 @@ def _build_tl_ternary_e8_1_5bit_gemm(
                         W_packed[bx * block_N : (bx + 1) * block_N, ko * packed_block_K : (ko + 1) * packed_block_K],
                         W_pack_shared,
                     )
+                    scale_base = (ko * block_K) // group_size
                     T.copy(
-                        Scales[bx * block_N : (bx + 1) * block_N, ko * groups_per_block : (ko + 1) * groups_per_block],
+                        Scales[bx * block_N : (bx + 1) * block_N, scale_base : scale_base + groups_per_block],
                         S_shared,
                     )
 

@@ -495,18 +495,32 @@ class SymplecticCouplingFunction(torch.autograd.Function):
             ctx.save_for_backward(q1.detach().to(acc_dtype), q2.detach().to(acc_dtype))
             return q1.clone(), q2.clone()
 
+        def _snap_rng() -> Tuple[Any, Any, Any]:
+            c_rng = torch.get_rng_state()
+            cu_rng = torch.cuda.get_rng_state(q1.device) if q1.is_cuda else None
+            m_rng = None
+            if q1.device.type == "mps" and hasattr(torch, "mps") and hasattr(torch.mps, "get_rng_state"):
+                try:
+                    m_rng = torch.mps.get_rng_state()
+                except Exception:
+                    m_rng = None
+            return (c_rng, cu_rng, m_rng)
+
         buf1 = q1.detach().to(acc_dtype).clone()
         buf2 = q2.detach().to(acc_dtype).clone()
         squeezes: List[torch.Tensor] = []
+        ctx.layer_rng_states = []
 
         with torch.no_grad():
             if scheme == "stormer_verlet":
+                ctx.init_f0_rng = _snap_rng()
                 f_0, _ = _extract_fg(ctx.couplings[0])
                 delta_0 = f_0(buf2.to(ctx.orig_dtype))
                 LAST_SYMPLECTIC_METRICS.forward_f_evals += 1
                 buf1.add_(delta_0.to(acc_dtype), alpha=0.5)
 
                 for l in range(L):
+                    ctx.layer_rng_states.append(_snap_rng())
                     f_l, g_l = _extract_fg(ctx.couplings[l])
                     delta_g = g_l(buf1.to(ctx.orig_dtype))
                     LAST_SYMPLECTIC_METRICS.forward_g_evals += 1
@@ -617,8 +631,23 @@ class SymplecticCouplingFunction(torch.autograd.Function):
                 except Exception:
                     pass
 
+            def _restore_rng(snap: Tuple[Any, Any, Any]) -> None:
+                c_rng, cu_rng, m_rng = snap
+                if c_rng is not None:
+                    torch.set_rng_state(c_rng)
+                if buf1.is_cuda and cu_rng is not None:
+                    torch.cuda.set_rng_state(cu_rng, device=buf1.device)
+                if buf1.device.type == "mps" and m_rng is not None and hasattr(torch, "mps") and hasattr(torch.mps, "set_rng_state"):
+                    try:
+                        torch.mps.set_rng_state(m_rng)
+                    except Exception:
+                        pass
+
+            layer_rngs = getattr(ctx, "layer_rng_states", None)
             if scheme == "stormer_verlet":
                 for l in reversed(range(L)):
+                    if layer_rngs and l < len(layer_rngs):
+                        _restore_rng(layer_rngs[l])
                     if enable_squeeze:
                         k = squeezes[l]
                         buf1 = torch.ldexp(buf1, -k)

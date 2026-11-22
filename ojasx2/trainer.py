@@ -86,6 +86,12 @@ class LowRAMTrainer:
         if self.dtype not in (torch.float16, torch.bfloat16, torch.float32, torch.float64):
             raise ValueError("Trainer dtype must be float16, bfloat16, float32, or float64")
         self.use_autocast = self.dtype in (torch.float16, torch.bfloat16)
+        self.use_grad_scaler = self.device.type == "cuda" and self.dtype == torch.float16
+        self.grad_scaler = (
+            torch.amp.GradScaler("cuda", enabled=True)
+            if (self.use_grad_scaler and hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"))
+            else None
+        )
         # AMP keeps FP32 master weights. Full-precision modes convert the model
         # itself, so the dtype option has an observable meaning in both modes.
         master_dtype = torch.float32 if self.use_autocast else self.dtype
@@ -196,14 +202,21 @@ class LowRAMTrainer:
 
             # The optimizer owns microbatch averaging. Dividing here as well
             # would scale every accumulated gradient by 1/N twice.
-            loss_val.backward()
+            if self.grad_scaler is not None:
+                self.grad_scaler.scale(loss_val).backward()
+            else:
+                loss_val.backward()
 
             total_loss += float(loss_val.item())
             total_tokens += batch_tokens
             step_count += 1
 
             if (batch_idx + 1) % self.grad_accum_steps == 0:
-                self.optimizer.step()
+                if self.grad_scaler is not None:
+                    self.grad_scaler.step(self.optimizer)
+                    self.grad_scaler.update()
+                else:
+                    self.optimizer.step()
                 self.optimizer.zero_grad()
                 optimizer_steps += 1
 
@@ -222,7 +235,11 @@ class LowRAMTrainer:
         flushed = self.optimizer.flush_accumulation()
         if flushed:
             optimizer_steps += 1
-            self.optimizer.step()
+            if self.grad_scaler is not None:
+                self.grad_scaler.step(self.optimizer)
+                self.grad_scaler.update()
+            else:
+                self.optimizer.step()
         self.optimizer.zero_grad()
 
         elapsed = max(1e-5, time.perf_counter() - t0)

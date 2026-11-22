@@ -1,0 +1,15 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[08:59:33] [OjasX INFO] ojasx2.tile_fallback: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+[08:59:33] [OjasX INFO] ojasx2.tile_fallback: Tile fallbacks registration completed successfully.
+==============================================================================
+OjasX Holonomic Mathematical Engine — v0.13.0
+==============================================================================
+  Physical Execution Device : CPU
+  PyTorch Runtime Version   : 2.15.0+cu132
+  C++ OpenReg Guard Dylib   : MISSING (libojasx_openreg.dylib)
+  Registered Device Module  : torch.ojasx (available=True)
+  TorchDynamo Backends      : ['holonomic', 'holonomic_aot']
+  Declarative YAML Ops      : ['rmsnorm', 'swiglu', 'geglu', 'rope', 'attention_softmax_lse']
+  Live GPU Smoke Check      : PASSED (Residual Mem: 0.00 MB)
+==============================================================================

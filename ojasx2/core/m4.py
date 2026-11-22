@@ -539,7 +539,7 @@ def default_rewrite_rules() -> Tuple[RewriteRule, ...]:
 
 
 def _element_size(dtype: torch.dtype) -> int:
-    return torch.empty((), dtype=dtype).element_size()
+    return torch.empty((), dtype=dtype, device="meta").element_size()
 
 
 def _nbytes(signature: Tuple[Tuple[int, ...], torch.dtype]) -> int:

@@ -668,10 +668,8 @@ def _derive_matrix_status(results: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def test_backendbench_generate_v05_matrix_report(tmp_path):
+def test_backendbench_generate_v05_matrix_report():
     """Write a report derived solely from workload results gathered by this runner."""
-    import os
-    report_file = REPORT_FILE if os.environ.get("OJASX_WRITE_MATRIX_REPORT") == "1" else tmp_path / "OJASX_V05_TEST_DATABASE_MATRIX.json"
     derived = _derive_matrix_status(_WORKLOAD_RESULTS)
     silicon = probe_hardware_profile()
     source_paths = [
@@ -736,13 +734,12 @@ def test_backendbench_generate_v05_matrix_report(tmp_path):
         },
     }
 
-    report_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(report_file, "w", encoding="utf-8") as report:
+    with open(REPORT_FILE, "w", encoding="utf-8") as report:
         json.dump(matrix_data, report, indent=2)
         report.write("\n")
 
-    assert report_file.exists(), "Failed to generate report JSON file!"
-    written = json.loads(report_file.read_text())
+    assert REPORT_FILE.exists(), "Failed to generate report JSON file!"
+    written = json.loads(REPORT_FILE.read_text())
     assert written["status"] == derived["status"]
     assert written["verification_mechanisms"]["mechanism_3_backendbench_workload_matrix"]["workload_families_tested"] == len(_WORKLOAD_RESULTS)
     if RUN_1B:

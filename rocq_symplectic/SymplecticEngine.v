@@ -106,6 +106,8 @@ Theorem theorem3_euler_time_reversibility_backward_forward (f g : Qc -> Qc) (pt 
 Proof.
   destruct pt as [q p].
   unfold euler_backward, euler_forward. simpl.
+  assert (Hq : q + f (p + g q) - f (p + g q) = q) by ring.
+  rewrite Hq.
   f_equal; ring.
 Qed.
 
@@ -114,6 +116,8 @@ Theorem theorem3_euler_time_reversibility_forward_backward (f g : Qc -> Qc) (pt 
 Proof.
   destruct pt as [q p].
   unfold euler_backward, euler_forward. simpl.
+  assert (Hp : p - g (q - f p) + g (q - f p) = p) by ring.
+  rewrite Hp.
   f_equal; ring.
 Qed.
 
@@ -137,6 +141,10 @@ Theorem theorem3_sv_time_reversibility_backward_forward (f g1 g2 : Qc -> Qc) (pt
 Proof.
   destruct pt as [q p].
   unfold sv_backward, sv_forward. simpl.
+  assert (Hph : p + g1 q + g2 (q + f (p + g1 q)) - g2 (q + f (p + g1 q)) = p + g1 q) by ring.
+  rewrite Hph.
+  assert (Hq : q + f (p + g1 q) - f (p + g1 q) = q) by ring.
+  rewrite Hq.
   f_equal; ring.
 Qed.
 
@@ -145,6 +153,10 @@ Theorem theorem3_sv_time_reversibility_forward_backward (f g1 g2 : Qc -> Qc) (pt
 Proof.
   destruct pt as [q p].
   unfold sv_backward, sv_forward. simpl.
+  assert (Hph : p - g2 q - g1 (q - f (p - g2 q)) + g1 (q - f (p - g2 q)) = p - g2 q) by ring.
+  rewrite Hph.
+  assert (Hq : q - f (p - g2 q) + f (p - g2 q) = q) by ring.
+  rewrite Hq.
   f_equal; ring.
 Qed.
 
@@ -203,21 +215,9 @@ Theorem theorem5_sherman_morrison_factored (d1 d2 u1 u2 v1 v2 d1_inv d2_inv : Qc
 Proof.
   intros H1 H2.
   rewrite theorem5_sherman_morrison_det2.
-  transitivity (d1 * d2 + (d1 * d2) * ((u1 * v1) * d1_inv) + (d1 * d2) * ((u2 * v2) * d2_inv)).
-  - rewrite <- (Qcmul_assoc d1 d2 ((u1 * v1) * d1_inv)).
-    rewrite (Qcmul_comm d2 ((u1 * v1) * d1_inv)).
-    rewrite <- (Qcmul_assoc d1 ((u1 * v1) * d1_inv) d2).
-    rewrite (Qcmul_comm (u1 * v1) d1_inv).
-    rewrite (Qcmul_assoc d1 d1_inv (u1 * v1)).
-    rewrite H1.
-    rewrite (Qcmul_1_l (u1 * v1)).
-    rewrite <- (Qcmul_assoc d1 d2 ((u2 * v2) * d2_inv)).
-    rewrite (Qcmul_comm (u2 * v2) d2_inv).
-    rewrite (Qcmul_assoc d2 d2_inv (u2 * v2)).
-    rewrite H2.
-    rewrite (Qcmul_1_l (u2 * v2)).
-    ring.
-  - ring.
+  replace (d1 * (u2 * v2)) with (d1 * (u2 * v2) * (d2 * d2_inv)) by (rewrite H2; ring).
+  replace (d2 * (u1 * v1)) with (d2 * (u1 * v1) * (d1 * d1_inv)) by (rewrite H1; ring).
+  ring.
 Qed.
 
 Theorem theorem5_structured_jacobian_adjoint_duality (A : mat2) (x g : point2) :

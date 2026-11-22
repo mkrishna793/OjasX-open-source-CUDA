@@ -1,0 +1,60 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[08:36:52] [OjasX INFO] ojasx2.tile_fallback: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+[08:36:52] [OjasX INFO] ojasx2.tile_fallback: Tile fallbacks registration completed successfully.
+/home/user/OjasX-open-source-CUDA/.venv/lib/python3.11/site-packages/torch/jit/_script.py:1491: FutureWarning: `torch.jit.script` is deprecated. Please switch to `torch.compile` or `torch.export`.
+  warnings.warn(
+{
+  "status": "passed",
+  "exact_fraction_cases": 72,
+  "floating_cases": 96,
+  "training": {
+    "higher_order_all_operands": 2,
+    "optimizer_steps": [
+      {
+        "degree": 2,
+        "optimizer": "SGD",
+        "steps": 4,
+        "max_parameter_error": 0.0
+      },
+      {
+        "degree": 2,
+        "optimizer": "AdamW",
+        "steps": 4,
+        "max_parameter_error": 0.0
+      },
+      {
+        "degree": 3,
+        "optimizer": "SGD",
+        "steps": 4,
+        "max_parameter_error": 0.0
+      },
+      {
+        "degree": 3,
+        "optimizer": "AdamW",
+        "steps": 4,
+        "max_parameter_error": 0.0
+      }
+    ]
+  },
+  "boundary": {
+    "invalid_rejections": 10,
+    "measurement_shape": [
+      64,
+      2,
+      128,
+      2
+    ],
+    "measurements": {
+      "native": {
+        "fresh_saved_storage_bytes": 131072,
+        "one_forward_backward_seconds": 0.0003769170000396116
+      },
+      "reference_core": {
+        "fresh_saved_storage_bytes": 18600,
+        "one_forward_backward_seconds": 0.0006992560000753656
+      }
+    },
+    "scope": "Single CPU observation, not a benchmark or allocator peak. Logical residual count is not actual graph storage."
+  }
+}

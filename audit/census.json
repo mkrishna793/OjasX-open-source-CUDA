@@ -1,0 +1,71 @@
+{
+  "tracked_paths": 835,
+  "physical_lines": 361154,
+  "by_area": {
+    "CI/release": {
+      "files": 2,
+      "physical_lines": 159
+    },
+    "configuration/metadata": {
+      "files": 8,
+      "physical_lines": 1675
+    },
+    "documentation": {
+      "files": 26,
+      "physical_lines": 6676
+    },
+    "assets": {
+      "files": 3,
+      "physical_lines": 0
+    },
+    "root benchmarks": {
+      "files": 7,
+      "physical_lines": 1623
+    },
+    "corpus": {
+      "files": 1,
+      "physical_lines": 40000
+    },
+    "experiments": {
+      "files": 8,
+      "physical_lines": 1290
+    },
+    "Lean formal": {
+      "files": 36,
+      "physical_lines": 4927
+    },
+    "package": {
+      "files": 71,
+      "physical_lines": 29890
+    },
+    "checked-in evidence": {
+      "files": 13,
+      "physical_lines": 22709
+    },
+    "Rocq/OCaml formal": {
+      "files": 41,
+      "physical_lines": 5915
+    },
+    "tests": {
+      "files": 50,
+      "physical_lines": 12967
+    },
+    "external dependency": {
+      "files": 2,
+      "physical_lines": 0
+    },
+    "benchmark data": {
+      "files": 1,
+      "physical_lines": 0
+    },
+    "vendored TileLang": {
+      "files": 471,
+      "physical_lines": 219863
+    },
+    "tools": {
+      "files": 95,
+      "physical_lines": 13460
+    }
+  },
+  "python_files": 228
+}

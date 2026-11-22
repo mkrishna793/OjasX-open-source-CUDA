@@ -329,7 +329,6 @@ class EGraph:
                 for class_id, node in snapshot:
                     if self.find(class_id) == class_id:
                         self._apply_rule(rule, class_id, node)
-                    self.rebuild()
             self.rebuild()
             after = (
                 sum(self.find(class_id) == class_id for class_id in self.classes),

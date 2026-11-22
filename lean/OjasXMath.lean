@@ -2,6 +2,7 @@ import OjasXMath.AbstractEngine
 import OjasXMath.Algebra
 import OjasXMath.CachedReverse
 import OjasXMath.CertifiedBackprop
+import OjasXMath.CirculantWeighing
 import OjasXMath.Composition
 import OjasXMath.CoreOperators
 import OjasXMath.Contraction
@@ -630,3 +631,12 @@ import OjasXMath.StreamedDagger
 #print axioms OjasXMath.structured_materialize_identity
 #print axioms OjasXMath.m4_original_retained_without_strict_improvement
 #print axioms OjasXMath.m4_bounded_error_budget_nonnegative
+#print axioms OjasXMath.cw4Entry_zero_idx
+#print axioms OjasXMath.cw4Entry_pos
+#print axioms OjasXMath.cw4Entry_off
+#print axioms OjasXMath.cw4_dot_diag
+#print axioms OjasXMath.cw4_dot_off_diag
+#print axioms OjasXMath.cw28_16_orthogonal
+#print axioms OjasXMath.cw56_16_orthogonal
+#print axioms OjasXMath.cw120_36_support_valid
+#print axioms OjasXMath.cw120_36_orthogonal

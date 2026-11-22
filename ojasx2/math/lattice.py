@@ -59,12 +59,21 @@ except Exception:
 # 0. Thread- & Stream-Safe Reusable Ephemeral Layer Scratchpad Manager
 # ==============================================================================
 
-_EPHEMERAL_WORKSPACES: Dict[Tuple[str, Optional[int], torch.dtype, int, int], torch.Tensor] = {}
+from collections import OrderedDict as _OrderedDict
+
+_EPHEMERAL_WORKSPACES: "_OrderedDict[Tuple[str, Optional[int], torch.dtype, int, int], torch.Tensor]" = _OrderedDict()
+_EPHEMERAL_WORKSPACE_MAX_ENTRIES = 4
 _WORKSPACE_LOCK = threading.Lock()
 
 
+def clear_ephemeral_workspaces() -> None:
+    """Release all cached ephemeral layer scratchpads."""
+    with _WORKSPACE_LOCK:
+        _EPHEMERAL_WORKSPACES.clear()
+
+
 def _get_ephemeral_workspace(numel: int, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
-    """Returns a thread-local and CUDA-stream-local scratchpad buffer on `device`."""
+    """Returns a bounded LRU thread-local and stream-local scratchpad buffer on `device`."""
     tid = threading.get_ident()
     stream_id = 0
     if device.type == "cuda" and torch.cuda.is_available():
@@ -74,14 +83,17 @@ def _get_ephemeral_workspace(numel: int, dtype: torch.dtype, device: torch.devic
             stream_id = 0
 
     key = (device.type, device.index, dtype, tid, stream_id)
-    buf = _EPHEMERAL_WORKSPACES.get(key)
-    if buf is None or buf.numel() < numel:
-        with _WORKSPACE_LOCK:
-            buf = _EPHEMERAL_WORKSPACES.get(key)
-            if buf is None or buf.numel() < numel:
-                buf = torch.empty(numel, dtype=dtype, device=device)
-                _EPHEMERAL_WORKSPACES[key] = buf
-    return buf[:numel]
+    with _WORKSPACE_LOCK:
+        buf = _EPHEMERAL_WORKSPACES.get(key)
+        if buf is not None and buf.numel() >= numel:
+            _EPHEMERAL_WORKSPACES.move_to_end(key)
+            return buf[:numel]
+        buf = torch.empty(numel, dtype=dtype, device=device)
+        _EPHEMERAL_WORKSPACES[key] = buf
+        _EPHEMERAL_WORKSPACES.move_to_end(key)
+        while len(_EPHEMERAL_WORKSPACES) > _EPHEMERAL_WORKSPACE_MAX_ENTRIES:
+            _EPHEMERAL_WORKSPACES.popitem(last=False)
+        return buf[:numel]
 
 
 # ==============================================================================
@@ -214,6 +226,7 @@ class E8LatticePacker:
     def pack(
         w: torch.Tensor,
         group_size: int = 8,
+        mmse: bool = True,
     ) -> Tuple[torch.Tensor, torch.Tensor, Tuple[int, int]]:
         orig_shape = w.shape
         m, n = orig_shape
@@ -228,16 +241,24 @@ class E8LatticePacker:
 
         w_groups = flat.view(-1, group_size)
         scales = torch.norm(w_groups, dim=-1, keepdim=True) / math.sqrt(group_size) + 1e-8
-        w_norm = (w_groups / scales).view(-1, 8)
-
-        x_shift = w_norm - 0.5
-        f2 = torch.clamp(torch.round(x_shift), -2.0, 1.0)
-        sum2 = torch.sum(f2, dim=-1, keepdim=True).long()
-        alt_f2 = torch.where(x_shift >= f2, torch.clamp(f2 + 1.0, -2.0, 1.0), torch.clamp(f2 - 1.0, -2.0, 1.0))
-        penalty = (alt_f2 - x_shift) ** 2 - (f2 - x_shift) ** 2
-        worst2 = torch.argmin(penalty, dim=-1, keepdim=True)
-        f2_even = torch.where(sum2 % 2 != 0, f2.scatter(-1, worst2, alt_f2.gather(-1, worst2)), f2)
-        w_e8 = f2_even + 0.5
+        iters = 2 if mmse else 1
+        for _ in range(iters):
+            w_norm = (w_groups / scales).view(-1, 8)
+            x_shift = w_norm - 0.5
+            f2 = torch.clamp(torch.round(x_shift), -2.0, 1.0)
+            sum2 = torch.sum(f2, dim=-1, keepdim=True).long()
+            # Ensure alt_f2 strictly differs from f2 even at clamped boundaries (-2.0 and 1.0)
+            alt_f2 = torch.where(x_shift >= f2, f2 + 1.0, f2 - 1.0)
+            alt_f2 = torch.where(alt_f2 > 1.0, f2 - 1.0, torch.where(alt_f2 < -2.0, f2 + 1.0, alt_f2))
+            penalty = (alt_f2 - x_shift) ** 2 - (f2 - x_shift) ** 2
+            worst2 = torch.argmin(penalty, dim=-1, keepdim=True)
+            f2_even = torch.where(sum2 % 2 != 0, f2.scatter(-1, worst2, alt_f2.gather(-1, worst2)), f2)
+            w_e8 = f2_even + 0.5
+            if mmse:
+                q_grp = w_e8.view(-1, group_size)
+                num = torch.sum(w_groups * q_grp, dim=-1, keepdim=True)
+                den = torch.sum(q_grp * q_grp, dim=-1, keepdim=True).clamp_min(1e-8)
+                scales = (num / den).clamp_min(1e-8)
 
         codes = torch.clamp(torch.round(w_e8 + 1.5), 0, 3).to(torch.uint8)
         codes_flat = codes.view(-1, 4)
@@ -339,6 +360,7 @@ class TernaryE8LatticePacker:
     def pack(
         w: torch.Tensor,
         group_size: int = 32,
+        mmse: bool = True,
     ) -> Tuple[torch.Tensor, torch.Tensor, Tuple[int, int]]:
         orig_shape = w.shape
         m, n = orig_shape
@@ -354,18 +376,24 @@ class TernaryE8LatticePacker:
 
         w_groups = flat.view(-1, group_size)
         scales = torch.norm(w_groups, dim=-1, keepdim=True) / math.sqrt(group_size) + 1e-8
-        v = (w_groups / scales).view(-1, 8)
-
-        q = torch.clamp(torch.round(v), -1.0, 1.0)
-        parity = torch.sum(q, dim=-1, keepdim=True).long() % 2
-        alt_q = torch.where(
-            q == 0.0,
-            torch.where(v >= 0.0, torch.ones_like(q), -torch.ones_like(q)),
-            torch.zeros_like(q),
-        )
-        penalty = (alt_q - v) ** 2 - (q - v) ** 2
-        worst = torch.argmin(penalty, dim=-1, keepdim=True)
-        q_even = torch.where(parity != 0, q.scatter(-1, worst, alt_q.gather(-1, worst)), q)
+        iters = 2 if mmse else 1
+        for _ in range(iters):
+            v = (w_groups / scales).view(-1, 8)
+            q = torch.clamp(torch.round(v), -1.0, 1.0)
+            parity = torch.sum(q, dim=-1, keepdim=True).long() % 2
+            alt_q = torch.where(
+                q == 0.0,
+                torch.where(v >= 0.0, torch.ones_like(q), -torch.ones_like(q)),
+                torch.zeros_like(q),
+            )
+            penalty = (alt_q - v) ** 2 - (q - v) ** 2
+            worst = torch.argmin(penalty, dim=-1, keepdim=True)
+            q_even = torch.where(parity != 0, q.scatter(-1, worst, alt_q.gather(-1, worst)), q)
+            if mmse:
+                q_grp = q_even.view(-1, group_size)
+                num = torch.sum(w_groups * q_grp, dim=-1, keepdim=True)
+                den = torch.sum(q_grp * q_grp, dim=-1, keepdim=True).clamp_min(1e-8)
+                scales = (num / den).clamp_min(1e-8)
 
         _, raw_to_rank, powers = _get_ternary_e8_luts(device)
         digits = q_even.long() + 1
@@ -690,10 +718,10 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
 
             w_layer = packer.unpack(
                 packed_weight, block_scales, (out_features, in_features),
-                dtype=x_dtype, use_workspace=True,
+                dtype=gy_2d.dtype, use_workspace=True,
             )
             grad_x_2d = gy_2d.matmul(w_layer)
-            grad_x = grad_x_2d.reshape(x_shape)
+            grad_x = grad_x_2d.reshape(x_shape).to(x_dtype)
         else:
             chunk_size = 1024
             bytes_per_row = int(in_features * bitrate) // 8
@@ -943,3 +971,69 @@ def pack_model_e8(
             )
 
     return target_model
+
+
+def stochastic_pack_2bit(
+    x: torch.Tensor,
+    group_size: int = 32,
+    incoherence: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor, Tuple[int, ...], torch.dtype, Optional[Tuple[str, int]]]:
+    """Unbiased stochastic 2-bit packer (levels {-1.5, -0.5, 0.5, 1.5}) with optional
+    exact orthogonal Hadamard/CW incoherence rotation.
+
+    Guarantees E[stochastic_unpack_2bit(stochastic_pack_2bit(x))] == x for unbiased
+    autograd activation compression without recomputing forward matmuls.
+    """
+    orig_shape = tuple(x.shape)
+    orig_dtype = x.dtype
+    x_f = x.detach().to(torch.float32)
+    spec = None
+    if incoherence and x_f.ndim >= 1 and x_f.shape[-1] >= 4:
+        from ojasx3.lattice.transforms import select_incoherence_spec, apply_incoherence_transform
+        spec = select_incoherence_spec(x_f.shape[-1])
+        if spec[0] != "identity":
+            x_f = apply_incoherence_transform(x_f, inverse=False, spec=spec)
+
+    flat = x_f.reshape(-1)
+    total = flat.numel()
+    pad_len = (-total) % group_size
+    if pad_len > 0:
+        flat = F.pad(flat, (0, pad_len))
+    groups = flat.view(-1, group_size)
+    scales = groups.abs().amax(dim=-1, keepdim=True).div(1.5).clamp_min(1e-8)
+    wn = groups / scales
+    lo = torch.clamp(torch.floor(wn - 0.5) + 0.5, -1.5, 0.5)
+    prob = torch.clamp(wn - lo, 0.0, 1.0)
+    q = lo + (torch.rand_like(wn) < prob).to(torch.float32)
+    codes = torch.clamp(torch.round(q + 1.5), 0, 3).to(torch.uint8).view(-1, 4)
+    packed = (
+        codes[:, 0]
+        | (codes[:, 1] << 2)
+        | (codes[:, 2] << 4)
+        | (codes[:, 3] << 6)
+    )
+    return packed, scales.squeeze(-1).to(torch.float16), orig_shape, orig_dtype, spec
+
+
+def stochastic_unpack_2bit(
+    packed: torch.Tensor,
+    scales: torch.Tensor,
+    orig_shape: Tuple[int, ...],
+    orig_dtype: torch.dtype,
+    spec: Optional[Tuple[str, int]] = None,
+) -> torch.Tensor:
+    """Inverse of stochastic_pack_2bit."""
+    c0 = packed & 0x03
+    c1 = (packed >> 2) & 0x03
+    c2 = (packed >> 4) & 0x03
+    c3 = (packed >> 6) & 0x03
+    padded = packed.numel() * 4
+    group_size = padded // max(1, scales.numel())
+    q = torch.stack([c0, c1, c2, c3], dim=-1).to(torch.float32).sub_(1.5).view(-1, group_size)
+    vals = (q * scales.to(torch.float32).unsqueeze(-1)).reshape(-1)
+    total = math.prod(orig_shape) if orig_shape else 1
+    out = vals[:total].reshape(orig_shape)
+    if spec is not None and spec[0] != "identity":
+        from ojasx3.lattice.transforms import apply_incoherence_transform
+        out = apply_incoherence_transform(out, inverse=True, spec=spec)
+    return out.to(orig_dtype)

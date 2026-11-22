@@ -104,9 +104,27 @@ def build_native_tile_library() -> Path:
 def build_native_math_library() -> Optional[Path]:
     math_csrc_dir = ROOT / "ojasx2" / "math" / "csrc"
     system = platform.system()
+    if system == "Linux":
+        torch, torch_dir, include_dirs, lib_dir = _torch_build_paths()
+        include_dirs.insert(0, str(math_csrc_dir))
+        out_lib = math_csrc_dir / "ojasx_math_native.so"
+        tmp_lib = out_lib.with_suffix(".so.tmp")
+        cmd = [
+            "g++", "-std=c++20", "-O3", "-march=native", "-fopenmp", "-shared", "-fPIC",
+            "-DOJASX_NO_METAL=1",
+            str(math_csrc_dir / "ojasx_math_bindings.cpp"),
+            *[f"-I{directory}" for directory in include_dirs],
+            f"-L{lib_dir}", f"-Wl,-rpath,{lib_dir}",
+            "-ltorch", "-ltorch_cpu", "-ltorch_python", "-lc10",
+            "-o", str(tmp_lib),
+        ]
+        try:
+            subprocess.run(cmd, check=True)
+            os.replace(tmp_lib, out_lib)
+        finally:
+            tmp_lib.unlink(missing_ok=True)
+        return out_lib
     if system != "Darwin":
-        # The math bindings contain Objective-C++/Metal sources. Do not pretend
-        # that a tile-only Linux/Windows build includes this separate component.
         return None
 
     torch, torch_dir, include_dirs, lib_dir = _torch_build_paths()

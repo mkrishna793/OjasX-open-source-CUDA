@@ -1,0 +1,6 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[09:08:18] [OjasX INFO] ojasx2.tile_fallback: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+[09:08:18] [OjasX INFO] ojasx2.tile_fallback: Tile fallbacks registration completed successfully.
+isolated version 0.13.0 module /tmp/ojasx-audit/wheel-install/ojasx2/__init__.py
+NameError: name 'value' is not defined

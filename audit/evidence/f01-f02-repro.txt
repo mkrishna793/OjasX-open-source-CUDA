@@ -1,0 +1,17 @@
+[OjasX Tile Fallback] INFO: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[09:07:50] [OjasX INFO] ojasx2.tile_fallback: Registering tile fallbacks for universal hardware support (CUDA/ROCm/CPU/XPU/MPS)...
+[OjasX Tile Fallback] INFO: Tile fallbacks registration completed successfully.
+[09:07:50] [OjasX INFO] ojasx2.tile_fallback: Tile fallbacks registration completed successfully.
+F01 checked_value_and_grad:
+NameError: name 'value' is not defined
+
+F02 two identical microbatches, raw gradient G=2, N=2:
+parameter_after_double_scaled_sgd 0.8999999761581421
+effective_gradient_inferred 1.000000238418579 expected_G 2.0
+single_scaled_reference_parameter 0.800000011920929
+
+F02 partial third microbatch state:
+accum_count_after_3_microbatches 1
+pending_grad_accum [0.5]
+accum_count_after_zero_grad 0
+pending_after_zero_grad None
