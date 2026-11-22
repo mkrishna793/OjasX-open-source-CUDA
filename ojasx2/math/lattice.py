@@ -616,6 +616,43 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
         if y_tl is not None:
             return y_tl.reshape(*x_orig_shape[:-1], out_features)
 
+        # Zero-copy Apple Silicon MPS fused Metal 4 dequant-GEMM (no full-weight DRAM unpack)
+        if x.device.type == "mps" and in_features % group_size == 0:
+            try:
+                from ojasx3.hardware.metal_e8_dispatch import (
+                    metal_fused_e8_2bit_gemm,
+                    metal_fused_ternary_e8_gemm,
+                )
+                if bitrate == 2.0 and in_features % 4 == 0:
+                    y_mps = metal_fused_e8_2bit_gemm(
+                        x_2d, packed_weight, block_scales, bias,
+                        out_features=out_features, in_features=in_features, group_size=group_size,
+                    )
+                    if y_mps is not None:
+                        return y_mps.reshape(*x_orig_shape[:-1], out_features)
+                elif bitrate == 1.5 and lut_coords is not None and in_features % 16 == 0 and group_size % 16 == 0:
+                    y_mps = metal_fused_ternary_e8_gemm(
+                        x_2d, packed_weight, block_scales, lut_coords, bias,
+                        out_features=out_features, in_features=in_features, group_size=group_size,
+                    )
+                    if y_mps is not None:
+                        return y_mps.reshape(*x_orig_shape[:-1], out_features)
+            except Exception:
+                pass
+
+        # NVIDIA CUDA / AMD ROCm fused Triton 2-bit E8 dequant-GEMM (no full-weight DRAM unpack)
+        if x.is_cuda and bitrate == 2.0 and in_features % group_size == 0 and in_features % 4 == 0:
+            try:
+                from ojasx3.hardware.triton_e8_kernels import triton_fused_e8_2bit_gemm
+                y_tr = triton_fused_e8_2bit_gemm(
+                    x_2d, packed_weight, block_scales, bias,
+                    out_features=out_features, in_features=in_features, group_size=group_size,
+                )
+                if y_tr is not None:
+                    return y_tr.reshape(*x_orig_shape[:-1], out_features)
+            except Exception:
+                pass
+
         if (
             _HAS_NATIVE
             and x.is_cpu
@@ -726,17 +763,17 @@ class _FusedE8GEMMFunction(torch.autograd.Function):
             chunk_size = 1024
             bytes_per_row = int(in_features * bitrate) // 8
             scales_per_row = in_features // group_size
-            grad_x_2d = torch.zeros(gy_2d.shape[0], in_features, dtype=x_dtype, device=x_device)
+            grad_x_2d = torch.zeros(gy_2d.shape[0], in_features, dtype=gy_2d.dtype, device=x_device)
 
             for n_start in range(0, out_features, chunk_size):
                 n_end = min(n_start + chunk_size, out_features)
                 n_chunk = n_end - n_start
                 p_chunk = packed_weight[n_start * bytes_per_row : n_end * bytes_per_row]
                 s_chunk = block_scales[n_start * scales_per_row : n_end * scales_per_row]
-                w_tile = packer.unpack(p_chunk, s_chunk, (n_chunk, in_features), dtype=x_dtype, use_workspace=True)
+                w_tile = packer.unpack(p_chunk, s_chunk, (n_chunk, in_features), dtype=gy_2d.dtype, use_workspace=True)
                 grad_x_2d.add_(gy_2d[:, n_start:n_end].matmul(w_tile))
 
-            grad_x = grad_x_2d.reshape(x_shape)
+            grad_x = grad_x_2d.reshape(x_shape).to(x_dtype)
 
         if use_hadamard and in_features % 32 == 0:
             grad_x = fwht_block32(grad_x)

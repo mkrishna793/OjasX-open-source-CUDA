@@ -476,6 +476,44 @@ inline void fused_e8_gemm_forward(
                 const size_t bytes_per_group = group_size / 4;
                 float group_acc = 0.0f;
 
+#if defined(__AVX2__)
+                if constexpr (std::is_same_v<T, float>) {
+                    __m256 v_acc = _mm256_setzero_ps();
+                    const __m256 v_bias = _mm256_set1_ps(-1.5f);
+                    size_t b = 0;
+                    for (; b + 1 < bytes_per_group; b += 2) {
+                        const uint8_t b0 = w_row[byte_start + b];
+                        const uint8_t b1 = w_row[byte_start + b + 1];
+                        const size_t k_idx = g * group_size + b * 4;
+                        __m256 xv = _mm256_loadu_ps(x_row + k_idx);
+                        __m256 wv = _mm256_add_ps(_mm256_setr_ps(
+                            static_cast<float>(b0 & 0x03),
+                            static_cast<float>((b0 >> 2) & 0x03),
+                            static_cast<float>((b0 >> 4) & 0x03),
+                            static_cast<float>((b0 >> 6) & 0x03),
+                            static_cast<float>(b1 & 0x03),
+                            static_cast<float>((b1 >> 2) & 0x03),
+                            static_cast<float>((b1 >> 4) & 0x03),
+                            static_cast<float>((b1 >> 6) & 0x03)
+                        ), v_bias);
+                        v_acc = _mm256_fmadd_ps(xv, wv, v_acc);
+                    }
+                    __m128 lo = _mm256_castps256_ps128(v_acc);
+                    __m128 hi = _mm256_extractf128_ps(v_acc, 1);
+                    __m128 sum4 = _mm_add_ps(lo, hi);
+                    sum4 = _mm_hadd_ps(sum4, sum4);
+                    sum4 = _mm_hadd_ps(sum4, sum4);
+                    group_acc += _mm_cvtss_f32(sum4);
+                    for (; b < bytes_per_group; ++b) {
+                        const uint8_t byte_val = w_row[byte_start + b];
+                        const size_t k_idx = g * group_size + b * 4;
+                        group_acc += x_row[k_idx + 0] * (static_cast<float>(byte_val & 0x03) - 1.5f)
+                                   + x_row[k_idx + 1] * (static_cast<float>((byte_val >> 2) & 0x03) - 1.5f)
+                                   + x_row[k_idx + 2] * (static_cast<float>((byte_val >> 4) & 0x03) - 1.5f)
+                                   + x_row[k_idx + 3] * (static_cast<float>((byte_val >> 6) & 0x03) - 1.5f);
+                    }
+                } else
+#endif
                 for (size_t b = 0; b < bytes_per_group; ++b) {
                     const uint8_t byte_val = w_row[byte_start + b];
                     const size_t k_idx = g * group_size + b * 4;

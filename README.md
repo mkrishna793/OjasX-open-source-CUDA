@@ -238,7 +238,7 @@ for batch in dataloader:
 | **Streaming Tiled Cross-Entropy** | `HolonomicFusedLinearCrossEntropy` | **0 Bytes DRAM** for `[B, S, V]` vocabulary logits; culls zero-cotangent padding tokens before backward GEMMs |
 | **Zero-Persistent-Grad Optimizer** | `HolonomicGradFreeOptimizer` | **100% elimination** of persistent `.grad` buffers (`param.grad = None` immediately upon per-layer backward hook) |
 | **Depth-Independent Reversible Stack** | `SymplecticTransformerBlock` | **O(1) constant activation memory** across arbitrary depth `D` (64 layers use the same activation memory as 1 layer) |
-| **3-Dialect MLIR & Native Kernels** | `compile_mlir=True` / `backend="ojasx_mlir"` | Lowers `ojasx.holonomic -> ojasx.subgraph -> ojasx.tile` to **CUDA PTX, AMD ROCm, Intel SPIR-V, Apple Metal, and CPU AVX2/NEON/AMX** |
+| **Unified Architecture-Agnostic Compiler & Fused Kernels** | `ojasx3.compile_universal()` | Combines `saved_tensors_hooks` (Hadamard+E8 tape), `loss_fx` tiled CE, zero-copy Metal 4 MPS & Triton E8 GEMM, and AVX2/NEON C++20 kernels |
 
 ---
 
@@ -781,7 +781,7 @@ In **OjasX v0.7.0**, the Symplectic and Holonomic memory-reduction engines are g
 
 | Metric | Official PyTorch Eager | OjasX v0.7.0 (C++ / MLIR Backend) | Improvement / Difference |
 | :--- | :---: | :---: | :---: |
-| **Forward + Backward Step Time** | **101,398.58 ms (101.4s)** | **7,119.22 ms (7.1s)** | **⚡ 14.24× FASTER!** |
+| **Forward + Backward Step Time (V06 CPU Eager vs Unfused Python E8)** | **2,148.2 ms** | **34,751.4 ms** | *Unfused CPU Python fallback (use MPS Metal 4 / Triton fused E8 for GPU speed; see Qwen2.5-1.5B MPS table above)* |
 | **Activation Tape Memory per Step** | **2,482.07 MB (2.48 GB)** | **692.66 MB (0.69 GB)** | **💾 -72.09% Memory Reduction** |
 | **Net Memory Saved per Step** | Baseline | **1,789.41 MB Saved** | Frees up ~1.79 GB of VRAM every step |
 | **Attention Scores in DRAM** | Full Materialization (~1.2 GB) | **0 Bytes** | Computed in hardware SRAM & registers |
@@ -837,7 +837,7 @@ In **OjasX v0.7.0**, the Symplectic and Holonomic memory-reduction engines are g
 
 ```
 Official PyTorch:  ████████████████████████████████████████ (101.4 sec)
-OjasX v0.7.0:      ███ (7.1 sec)   [⚡ 14.24× FASTER SPEEDUP]
+OjasX3 (MPS Qwen2.5-1.5B, 100 steps): 60.93 tok/s vs QLoRA 48.57 tok/s (1.25x faster than QLoRA, 1,508 MB vs 1,685 MB MPS Alloc)
 ```
 
 ### B. Whole-Model 1B LLM Activation Memory per Step (Lower is Better)
