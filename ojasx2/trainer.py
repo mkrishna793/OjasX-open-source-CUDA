@@ -68,6 +68,9 @@ class LowRAMTrainer:
         device: Optional[Union[str, torch.device]] = None,
         dtype: Optional[torch.dtype] = None,
         compile_backend: Optional[Union[str, bool]] = "ojasx_verified",
+        safety_policy: Optional[Any] = None,
+        safety_calibration_data: Optional[Any] = None,
+        **kwargs: Any,
     ) -> None:
         if device is None or str(device).lower() == "auto":
             dev_str = _get_device_str()
@@ -78,6 +81,9 @@ class LowRAMTrainer:
         self.grad_accum_steps = max(1, grad_accum_steps)
         self.max_grad_norm = max_grad_norm
         self.compile_backend = compile_backend
+        self.safety_policy = safety_policy
+        self.safety_calibration_data = safety_calibration_data
+        self.extra_kwargs = dict(kwargs)
 
         if dtype is None:
             self.dtype = torch.float16 if self.device.type in ("cuda", "mps") else torch.float32
@@ -279,6 +285,9 @@ def train(
     device: Optional[Union[str, torch.device]] = None,
     log_interval: int = 10,
     compile_backend: Optional[Union[str, bool]] = "ojasx_verified",
+    safety_policy: Optional[Any] = None,
+    safety_calibration_data: Optional[Any] = None,
+    **kwargs: Any,
 ) -> Dict[str, Any]:
     """Turnkey high-level training entrypoint for training brand-new or custom models."""
     trainer = LowRAMTrainer(
@@ -292,6 +301,9 @@ def train(
         dtype=dtype,
         device=device,
         compile_backend=compile_backend,
+        safety_policy=safety_policy,
+        safety_calibration_data=safety_calibration_data,
+        **kwargs,
     )
 
     history = []

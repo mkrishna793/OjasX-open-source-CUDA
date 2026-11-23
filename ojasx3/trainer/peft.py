@@ -20,6 +20,8 @@ class LoRALinear(nn.Module):
         rank: int = 16,
         lora_alpha: float = 32.0,
         lora_dropout: float = 0.0,
+        safety_policy: Optional[Any] = None,
+        safety_lock: Optional[Any] = None,
     ) -> None:
         super().__init__()
         self.base_layer = base_layer
@@ -54,6 +56,8 @@ class LoRALinear(nn.Module):
             torch.zeros(out_f, self.rank, device=device, dtype=dtype)
         )
         self.dropout = nn.Dropout(p=lora_dropout) if lora_dropout > 0.0 else nn.Identity()
+        self.safety_policy = safety_policy
+        self.safety_lock = safety_lock
 
     @property
     def in_features(self) -> int:
@@ -76,6 +80,8 @@ def attach_lora_adapters(
     lora_alpha: float = 32.0,
     target_modules: Optional[Sequence[str]] = None,
     lora_dropout: float = 0.0,
+    safety_policy: Optional[Any] = None,
+    safety_lock: Optional[Any] = None,
 ) -> nn.Module:
     """Attach trainable LoRA adapters to linear layers in-place and freeze base weights."""
     # First, freeze all existing parameters
@@ -99,6 +105,8 @@ def attach_lora_adapters(
                             rank=rank,
                             lora_alpha=lora_alpha,
                             lora_dropout=lora_dropout,
+                            safety_policy=safety_policy,
+                            safety_lock=safety_lock,
                         )
                         setattr(parent, child_name, wrapped)
             else:

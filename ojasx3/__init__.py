@@ -75,3 +75,27 @@ from ojasx3.hardware.metal_e8_dispatch import (
     metal_fused_e8_2bit_gemm,
     metal_fused_ternary_e8_gemm,
 )
+
+# Phase 5: OjasX-LogicIR Compiler, 2.125-bit Dual-Rail 9B Trainer & Zero-Xcode Metal 4 Runtime
+from ojasx_logic import (
+    AlgNode,
+    optimize_algmat,
+    LogicIRModule,
+    choose_alu_route,
+    emit_logic_ir_mlir,
+    emit_standalone_mlir_suite,
+    pack_ternary_dual_rail,
+    unpack_ternary_dual_rail,
+    estimate_llm_memory_budget,
+)
+from ojasx_logic.trainer import (
+    DualRailLoRALinear,
+    quantize_module_to_dual_rail_lora,
+    load_and_quantize_hf_model,
+    run_dual_rail_lora_training,
+)
+from ojasx_logic.backend.metal_mps_runtime import (
+    metal_runtime_status,
+    mps_dual_rail_linear_forward,
+    mps_dual_rail_popcnt_gemm_16x16,
+)

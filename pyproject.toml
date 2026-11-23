@@ -51,7 +51,7 @@ py-modules = ["ojasx"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["ojasx2", "ojasx2.*", "ojasx3", "ojasx3.*"]
+include = ["ojasx2", "ojasx2.*", "ojasx3", "ojasx3.*", "ojasx_safety", "ojasx_safety.*", "ojasx_logic", "ojasx_logic.*"]
 exclude = ["third_party*", "tests*", "reports*", "rocq*", "lean*"]
 
 [tool.setuptools.package-data]
@@ -66,8 +66,11 @@ ojasx2 = [
     "native_build.json",
 ]
 "ojasx2.math.csrc" = ["*.cpp", "*.hpp", "*.h", "*.mm", "*.so", "*.dylib", "*.pyd"]
+ojasx_safety = ["csrc/*.cpp", "firewall/weights/*"]
+ojasx_logic = ["csrc/*.hpp", "csrc/*.metal"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-ra"
+
