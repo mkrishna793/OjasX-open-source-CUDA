@@ -184,7 +184,7 @@ import torch
 import torch.nn as nn
 from typing import Optional, Union, Tuple, Any
 
-__version__ = "0.16.0"
+__version__ = "0.20.0"
 
 
 # =============================================================================

@@ -211,10 +211,20 @@ class BuildExtWithNativeKernels(build_ext):
 if __name__ == "__main__":
     setup(
         name="ojasx-verified-core",
-        version="0.16.0",
+        version="0.20.0",
         py_modules=["ojasx"],
         packages=find_packages(
-            where=".", include=["ojasx2", "ojasx2.*", "ojasx3", "ojasx3.*"],
+            where=".",
+            include=[
+                "ojasx2",
+                "ojasx2.*",
+                "ojasx3",
+                "ojasx3.*",
+                "ojasx_safety",
+                "ojasx_safety.*",
+                "ojasx_logic",
+                "ojasx_logic.*",
+            ],
             exclude=["third_party*", "tests*", "reports*", "rocq*", "lean*"],
         ),
         package_data={
@@ -237,6 +247,8 @@ if __name__ == "__main__":
                 "*.dylib",
                 "*.pyd",
             ],
+            "ojasx_safety": ["csrc/*.cpp", "firewall/weights/*"],
+            "ojasx_logic": ["csrc/*.hpp", "csrc/*.metal"],
         },
         cmdclass={
             "build_py": BuildPyWithNativeKernels,

@@ -1,4 +1,4 @@
-# OjasX3 v0.17.0 — Turnkey Low-RAM AI Training, LogicIR Compiler & Aegis Safety Engine
+# OjasX3 v0.20.0 — Turnkey Low-RAM AI Training, LogicIR Compiler & Aegis Safety Engine
 ## Universal Hardware Acceleration, 2.125-Bit Dual-Rail & E8 Lattice Streaming, OjasX-LogicIR & Formal Verification
 
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.4%2B-ee4c2c.svg?logo=pytorch&logoColor=white)](https://pytorch.org/)
@@ -21,12 +21,12 @@
 > # Option 3: 1-Line Streaming Sub-2-Bit E8 Hugging Face Fine-Tuning
 > model, ledger = ojasx3.finetune("./my-llama-3-checkpoint", lora_rank=8)
 >
-> # Option 4 (NEW in v0.17.0): Train Your Own Custom LLM from Scratch or Fine-Tune 1.5B–9B+ Models on .txt / .jsonl
+> # Option 4 (NEW in v0.20.0): Train Your Own Custom LLM from Scratch or Fine-Tune 1.5B–9B+ Models on .txt / .jsonl
 > res = ojasx3.train_custom_llm("my_corpus.txt", preset="small-150m", mode="dual_rail", steps=100, save_dir="./my_llm")
 > res_ft = ojasx3.train_custom_llm("my_sft.jsonl", checkpoint="Qwen/Qwen2.5-1.5B", steps=100, save_dir="./my_adapter")
 > ```
 >
-> ### 🚀 Quickstart: Train Your Own Custom LLM Faster & With Less Memory (`v0.17.0`)
+> ### 🚀 Quickstart: Train Your Own Custom LLM Faster & With Less Memory (`v0.20.0`)
 >
 > **1. Install OjasX Complete:**
 > ```bash

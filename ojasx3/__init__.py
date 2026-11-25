@@ -2,10 +2,10 @@
 OjasX3: Universal Turnkey AI Training & Mathematical Execution Engine
 ===================================================================
 
-Release v0.17.0 — Modular, Turnkey, Drop-In, Multi-Hardware AI System
+Release v0.20.0 — Modular, Turnkey, Drop-In, Multi-Hardware AI System
 """
 
-__version__ = "0.17.0"
+__version__ = "0.20.0"
 
 # Turnkey public 1-line APIs
 from .api import (
