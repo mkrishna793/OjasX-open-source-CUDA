@@ -15,6 +15,15 @@ from ojasx2 import optimize as _legacy_optimize, prepare as _legacy_prepare
 from ojasx3.runtime.tape_hooks import E8ActivationTapeContext
 from ojasx3.compiler.universal import UniversalCompilerConfig, compile_universal
 from ojasx3.lattice.transforms import CWOFTLinear, apply_incoherence_transform
+from ojasx3.trainer.custom_llm import (
+    CUSTOM_LLM_PRESETS,
+    CustomLLMConfig,
+    CustomLLMTrainResult,
+    OjasXCustomCausalLM,
+    build_custom_llm,
+    load_text_or_jsonl_batches,
+    train_custom_llm,
+)
 
 
 def compile(
@@ -162,6 +171,13 @@ __all__ = [
     "finetune",
     "optimize",
     "prepare",
+    "train_custom_llm",
+    "build_custom_llm",
+    "load_text_or_jsonl_batches",
+    "CustomLLMConfig",
+    "CUSTOM_LLM_PRESETS",
+    "OjasXCustomCausalLM",
+    "CustomLLMTrainResult",
     "compile_universal",
     "UniversalCompilerConfig",
     "E8ActivationTapeContext",

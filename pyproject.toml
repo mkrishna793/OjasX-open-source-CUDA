@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ojasx-verified-core"
-version = "0.16.0"
+version = "0.17.0"
 description = "OjasX3: Turnkey low-RAM AI training & compilation engine with E8 lattice streaming, TileLang universal acceleration, and formal verification"
 readme = "README.md"
 requires-python = ">=3.9"

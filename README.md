@@ -1,5 +1,5 @@
-# OjasX3 v0.16.0 — Turnkey Low-RAM AI Training & Compilation Engine
-## Universal Hardware Acceleration, DeepSeek TileLang Auto-Tuning, E8 Lattice Streaming & Formal Proof Verification
+# OjasX3 v0.17.0 — Turnkey Low-RAM AI Training, LogicIR Compiler & Aegis Safety Engine
+## Universal Hardware Acceleration, 2.125-Bit Dual-Rail & E8 Lattice Streaming, OjasX-LogicIR & Formal Verification
 
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.4%2B-ee4c2c.svg?logo=pytorch&logoColor=white)](https://pytorch.org/)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
@@ -20,6 +20,53 @@
 > 
 > # Option 3: 1-Line Streaming Sub-2-Bit E8 Hugging Face Fine-Tuning
 > model, ledger = ojasx3.finetune("./my-llama-3-checkpoint", lora_rank=8)
+>
+> # Option 4 (NEW in v0.17.0): Train Your Own Custom LLM from Scratch or Fine-Tune 1.5B–9B+ Models on .txt / .jsonl
+> res = ojasx3.train_custom_llm("my_corpus.txt", preset="small-150m", mode="dual_rail", steps=100, save_dir="./my_llm")
+> res_ft = ojasx3.train_custom_llm("my_sft.jsonl", checkpoint="Qwen/Qwen2.5-1.5B", steps=100, save_dir="./my_adapter")
+> ```
+>
+> ### 🚀 Quickstart: Train Your Own Custom LLM Faster & With Less Memory (`v0.17.0`)
+>
+> **1. Install OjasX Complete:**
+> ```bash
+> pip install -e ".[test,streaming]"
+> ```
+>
+> **2. Train a Brand-New Custom LLM from Scratch (Python or CLI):**
+> Built-in presets (`nano-15m`, `tiny-50m`, `small-150m`, `medium-350m`, `1b`, `3b`, `7b`) combine GQA Causal Multi-Head SDPA, 3-Projection SwiGLU, `RMSNorm`, **0-byte vocabulary logit `FusedLinearCrossEntropy`**, gradient checkpointing, **`HolonomicGradFreeOptimizer`** (in-backward `.grad` freeing), and **`2.125-bit Dual-Rail` (`7.53×` compression)** or **`2.0-bit Rotated-E8`** or **`bfloat16`**:
+> ```python
+> import ojasx3
+>
+> # Pass a .txt file, a .jsonl file (with "text" or "prompt"/"completion"), or a list of strings:
+> res = ojasx3.train_custom_llm(
+>     data="my_training_data.jsonl",
+>     preset="small-150m",        # or CustomLLMConfig(vocab_size=32000, d_model=1024, n_heads=16, n_kv_heads=4, d_ff=2816, n_layers=16)
+>     mode="dual_rail",           # "dual_rail" (2.125-bit + LoRA, 7.53x compression), "e8" (2.0-bit rotated E8), or "bf16" (full dense)
+>     steps=100,
+>     seq_len=256,
+>     lr=1e-3,
+>     save_dir="./checkpoints/my_custom_llm",
+> )
+> print(f"Loss: {res.loss_start:.4f} -> {res.loss_end:.4f} | Speed: {res.tokens_per_sec:.1f} tok/s | Peak VRAM: {res.peak_device_alloc_mb:.1f} MB")
+> ```
+> Or directly from the terminal:
+> ```bash
+> ojasx3 train-llm --preset tiny-50m --data my_corpus.txt --mode dual_rail --steps 50 --seq-len 128 --save-dir ./my_custom_llm
+> ```
+>
+> **3. Fine-Tune Any 1.5B–9B+ HuggingFace Checkpoint (`Qwen2.5-1.5B`, `Qwen3-8B`, etc.) on Your Laptop:**
+> Stream-quantizes linear weights on CPU to **2.125-bit Dual-Rail (`7.53×` compression: `100.38 tok/s` in `1.00 GB` MPS alloc on `Qwen2.5-1.5B`; `4.61 GB` MPS alloc on `Qwen3-8B`)**:
+> ```bash
+> ojasx3 finetune-llm --model Qwen/Qwen2.5-1.5B --data my_sft.jsonl --steps 50 --seq-len 256 --lora-r 16 --save-dir ./my_qwen_adapter
+> ```
+>
+> **4. Zero-Lock-In Export to Standard HuggingFace `peft` or Merged `.safetensors` (`vLLM` / `Ollama` / `llama.cpp`):**
+> ```python
+> from ojasx3.trainer.export import export_peft_adapter, merge_and_export_hf
+>
+> export_peft_adapter(res.model, "./exported_peft_adapter")
+> merge_and_export_hf(res.model, "./exported_merged_hf_model")
 > ```
 
 > ### 📊 Verified Apple M5 GPU Live Benchmark: 1B to 27B Parameter Training on a Laptop!
